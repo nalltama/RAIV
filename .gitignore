@@ -1,0 +1,31 @@
+﻿# User-local settings
+setting.json
+
+# Python cache/runtime output
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build/package output
+build/
+dist/
+*.spec
+*.zip
+*.7z
+*.rar
+
+# Editor/OS noise
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# RAIV temporary/output leftovers
+realcugan_qt_archive_*/
+realcugan_qt_work_*/
+*_realcugan_x*.png
