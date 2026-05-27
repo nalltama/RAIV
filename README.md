@@ -82,7 +82,8 @@ Real-ESRGAN モデル:
 
 - ビューアー先読み枚数
 - 背景色
-- 2画面表示による漫画の見開き表示
+- 見開き表示による漫画の左右2枚表示
+- 横長画像を既に見開きのページとして扱う1枚表示
 - 比較モード、比較スライダー、境界線色、境界線太さ
 - 表示リセット、ページ送り間隔
 - 現在ページ位置の表示とスライダー移動
@@ -94,6 +95,14 @@ Real-ESRGAN モデル:
 - 全画面時のマウスカーソル非表示
 - ログ表示
 - 内部プロファイリング表示
+
+画像調整:
+
+- GIMP `.cur` トーンカーブファイルを使った表示補正
+- モノクロ漫画を疑似4色刷り風に表示
+- トーンカーブを画面上で確認しながら調整し、`.cur` として保存
+
+`.cur` ファイルはアプリフォルダ内の `cur` フォルダから読み込みます。
 
 その他:
 
@@ -139,9 +148,10 @@ Real-ESRGAN モデル:
 - 右カーソル: 前ページへ移動（キーコンフィグで変更可能）
 - `F3`: サムネイル列の固定/自動表示を切り替え（キーコンフィグで変更可能）
 - `F4`: 右ペインの固定/自動表示を切り替え（キーコンフィグで変更可能）
-- `W`: 2画面表示を切り替え（キーコンフィグで変更可能）
-- `Q`: 2画面表示中に1ページ送り（キーコンフィグで変更可能）
-- `E`: 2画面表示中に1ページ戻し（キーコンフィグで変更可能）
+- `W`: 見開き表示を切り替え（キーコンフィグで変更可能）
+- `Q`: 見開き表示中に1ページ送り（キーコンフィグで変更可能）
+- `E`: 見開き表示中に1ページ戻し（キーコンフィグで変更可能）
+- `T`: トーンカーブ補正を切り替え（キーコンフィグで変更可能）
 - `R`: 画像を右回転（キーコンフィグで変更可能）
 - `L`: 画像を左回転（キーコンフィグで変更可能）
 - `H`: 画像を左右反転（キーコンフィグで変更可能）
@@ -267,7 +277,8 @@ General:
 
 - Viewer prefetch count
 - Background color
-- Two-page view for manga spreads
+- Spread view for manga pages
+- Show landscape images as a single page when they are already spread pages
 - Compare mode, compare slider, divider color, divider width
 - Reset view, page navigation interval
 - Current page slider and page count
@@ -279,6 +290,14 @@ General:
 - Hide mouse cursor in fullscreen
 - Log display
 - Internal profiling display
+
+Image Adjustment:
+
+- Display adjustment using GIMP `.cur` tone curve files
+- Pseudo four-color printing style for monochrome manga
+- Edit tone curves while viewing the graph and save them as `.cur`
+
+`.cur` files are loaded from the `cur` folder inside the application folder.
 
 Other:
 
@@ -324,9 +343,10 @@ Keyboard:
 - Right arrow: previous page, configurable
 - `F3`: toggle thumbnail strip pinned/auto mode, configurable
 - `F4`: toggle right panel pinned/auto mode, configurable
-- `W`: toggle two-page view, configurable
-- `Q`: shift one page forward in two-page view, configurable
-- `E`: shift one page backward in two-page view, configurable
+- `W`: toggle spread view, configurable
+- `Q`: shift one page forward in spread view, configurable
+- `E`: shift one page backward in spread view, configurable
+- `T`: toggle tone curve adjustment, configurable
 - `R`: rotate image right, configurable
 - `L`: rotate image left, configurable
 - `H`: flip image horizontally, configurable

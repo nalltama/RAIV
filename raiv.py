@@ -90,6 +90,7 @@ APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
+CURVE_DIR = APP_DIR / "cur"
 REALESRGAN_FIXED_SCALE = 4
 BUNDLED_REALCUGAN_EXE = APP_DIR / "tools" / "realcugan-ncnn-vulkan" / "realcugan-ncnn-vulkan.exe"
 BUNDLED_REALESRGAN_EXE = APP_DIR / "tools" / "realesrgan-ncnn-vulkan" / "realesrgan-ncnn-vulkan.exe"
@@ -157,9 +158,10 @@ ACTION_DEFS = [
     ("toggle_thumbnail_panel", "サムネイル固定/自動表示"),
     ("toggle_side_panel", "右ペイン固定/自動表示"),
     ("toggle_compare", "比較モードオン/オフ"),
-    ("toggle_dual_page", "2画面表示オン/オフ"),
-    ("dual_page_shift_forward", "1ページ送り(2画面表示時)"),
-    ("dual_page_shift_backward", "1ページ戻し(2画面表示時)"),
+    ("toggle_dual_page", "見開き表示オン/オフ"),
+    ("dual_page_shift_forward", "1ページ送り(見開き表示時)"),
+    ("dual_page_shift_backward", "1ページ戻し(見開き表示時)"),
+    ("toggle_tone_curve", "トーンカーブ補正オン/オフ"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
     ("rotate_right", "画像右回転"),
@@ -207,9 +209,10 @@ UI_TEXT_EN = {
     "サムネイル固定/自動表示": "Thumbnail pinned/auto",
     "右ペイン固定/自動表示": "Right panel pinned/auto",
     "比較モードオン/オフ": "Toggle compare mode",
-    "2画面表示オン/オフ": "Toggle two-page view",
-    "1ページ送り(2画面表示時)": "Shift one page forward (two-page view)",
-    "1ページ戻し(2画面表示時)": "Shift one page backward (two-page view)",
+    "見開き表示オン/オフ": "Toggle spread view",
+    "1ページ送り(見開き表示時)": "Shift one page forward (spread view)",
+    "1ページ戻し(見開き表示時)": "Shift one page backward (spread view)",
+    "トーンカーブ補正オン/オフ": "Toggle tone curve adjustment",
     "等倍表示": "Actual size",
     "画面フィット表示": "Fit to window",
     "画像右回転": "Rotate right",
@@ -222,6 +225,7 @@ UI_TEXT_EN = {
     "自動表示": "Auto",
     "エンジン設定": "Engine",
     "全般": "General",
+    "画像調整": "Image Adjustment",
     "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
@@ -256,8 +260,10 @@ UI_TEXT_EN = {
     "Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。": "Lanczos4 uses OpenCV when available; otherwise it falls back to Lanczos3-equivalent processing.",
     "選択": "Select",
     "背景色": "Background color",
-    "2画面表示": "Two-page view",
-    "2画面表示時は比較モードは無効です。": "Compare mode is disabled while using two-page view.",
+    "見開き表示": "Spread view",
+    "見開き表示時は比較モードは無効です。": "Compare mode is disabled while using spread view.",
+    "横長画像は1枚表示にする": "Show landscape images as a single page",
+    "横長画像を既に見開きのページとして扱い、隣の画像と並べずに表示します。": "Treat landscape images as already-spread pages and do not pair them with the next image.",
     "比較モード": "Compare mode",
     "比較スライダー": "Compare slider",
     "中央に戻す": "Center",
@@ -281,6 +287,20 @@ UI_TEXT_EN = {
     "横スクロールのページ送り方向を反転": "Reverse horizontal wheel direction",
     "全画面表示時にマウスカーソルを非表示": "Hide mouse cursor in fullscreen",
     "画像またはフォルダ/アーカイブをドロップしてください": "Drop an image, folder, or archive",
+    "トーンカーブ補正を使う": "Use tone curve adjustment",
+    "GIMP .curファイルを使い、輝度に応じてRGBを割り当てます。モノクロ漫画を疑似4色刷りのように表示できます。": "Uses a GIMP .cur file to map luminance to RGB, making monochrome manga look like pseudo four-color printing.",
+    "トーンカーブ": "Tone curve",
+    "再読み込み": "Reload",
+    "フォルダ": "Folder",
+    "curフォルダを開く": "Open cur folder",
+    "チャンネル": "Channel",
+    "保存": "Save",
+    "選択中の曲線をドラッグして調整できます。保存するとcurフォルダへGIMP旧形式.curとして出力します。": "Drag the selected curve to adjust it. Save writes a GIMP legacy-format .cur file into the cur folder.",
+    "値": "Value",
+    "赤": "Red",
+    "緑": "Green",
+    "青": "Blue",
+    "アルファ": "Alpha",
     "状態": "Status",
     "ログを表示": "Show log",
     "拡大前メモリ読込": "Original memory load",
@@ -347,6 +367,7 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
         "toggle_dual_page": {"keyboard": key_binding(Qt.Key_W), "mouse": None},
         "dual_page_shift_forward": {"keyboard": key_binding(Qt.Key_Q), "mouse": None},
         "dual_page_shift_backward": {"keyboard": key_binding(Qt.Key_E), "mouse": None},
+        "toggle_tone_curve": {"keyboard": key_binding(Qt.Key_T), "mouse": None},
         "actual_size": {"keyboard": None, "mouse": mouse_binding(Qt.RightButton, double=True)},
         "fit_view": {"keyboard": None, "mouse": mouse_binding(Qt.LeftButton, double=True)},
         "rotate_right": {"keyboard": key_binding(Qt.Key_R), "mouse": None},
@@ -382,6 +403,9 @@ class AppConfig:
     compare_swap_sides: bool = False
     compare_shift_drag_moves_boundary: bool = False
     dual_page_enabled: bool = False
+    dual_page_landscape_single: bool = True
+    tone_curve_enabled: bool = False
+    tone_curve_file: str = ""
     hide_cursor_in_fullscreen: bool = False
     show_log_panel: bool = False
     show_profile_panel: bool = False
@@ -637,6 +661,122 @@ def duplicate_binding_signatures(bindings: dict[str, dict[str, dict | None]], ki
     return duplicates
 
 
+CURVE_CHANNELS = ("value", "red", "green", "blue", "alpha")
+CURVE_CHANNEL_LABELS = {
+    "value": "値",
+    "red": "赤",
+    "green": "緑",
+    "blue": "青",
+    "alpha": "アルファ",
+}
+
+
+@dataclass
+class ToneCurve:
+    name: str = ""
+    path: str = ""
+    points: dict[str, list[tuple[int, int]]] = field(default_factory=dict)
+
+    def normalized_points(self, channel: str) -> list[tuple[int, int]]:
+        points = [(max(0, min(255, int(x))), max(0, min(255, int(y)))) for x, y in self.points.get(channel, []) if x >= 0 and y >= 0]
+        if not points:
+            points = [(0, 0), (255, 255)]
+        if all(x != 0 for x, _y in points):
+            points.append((0, 0))
+        if all(x != 255 for x, _y in points):
+            points.append((255, 255))
+        return sorted(set(points), key=lambda item: item[0])
+
+    def lut(self, channel: str) -> list[int]:
+        points = self.normalized_points(channel)
+        output = [0] * 256
+        for index, (x0, y0) in enumerate(points[:-1]):
+            x1, y1 = points[index + 1]
+            if x1 <= x0:
+                continue
+            for x in range(max(0, x0), min(255, x1) + 1):
+                ratio = (x - x0) / (x1 - x0)
+                output[x] = max(0, min(255, round(y0 + (y1 - y0) * ratio)))
+        first_x, first_y = points[0]
+        last_x, last_y = points[-1]
+        for x in range(0, max(0, first_x)):
+            output[x] = first_y
+        for x in range(min(255, last_x), 256):
+            output[x] = last_y
+        return output
+
+    def copy(self) -> "ToneCurve":
+        return ToneCurve(self.name, self.path, {channel: list(points) for channel, points in self.points.items()})
+
+
+def default_tone_curve(name: str = "linear") -> ToneCurve:
+    return ToneCurve(name=name, points={channel: [(0, 0), (255, 255)] for channel in CURVE_CHANNELS})
+
+
+def parse_legacy_cur(path: Path, text: str) -> ToneCurve:
+    curve = default_tone_curve(path.stem)
+    lines = [line.strip() for line in text.splitlines() if line.strip() and not line.strip().startswith("#")]
+    for channel, line in zip(CURVE_CHANNELS, lines):
+        values = [int(float(value)) for value in line.split()]
+        points: list[tuple[int, int]] = []
+        for index in range(0, len(values) - 1, 2):
+            x, y = values[index], values[index + 1]
+            if x >= 0 and y >= 0:
+                points.append((x, y))
+        if points:
+            curve.points[channel] = points
+    curve.path = str(path)
+    return curve
+
+
+def parse_modern_cur(path: Path, text: str) -> ToneCurve:
+    curve = default_tone_curve(path.stem)
+    for channel in CURVE_CHANNELS:
+        match = re.search(rf"\(channel\s+{re.escape(channel)}\)(.*?)(?=\n\(channel\s+|\Z)", text, re.S)
+        if not match:
+            continue
+        block = match.group(1)
+        points_match = re.search(r"\(points\s+(\d+)\s+([^)]*)\)", block, re.S)
+        if points_match:
+            numbers = [float(value) for value in points_match.group(2).split()]
+            points: list[tuple[int, int]] = []
+            for index in range(0, len(numbers) - 1, 2):
+                x, y = numbers[index], numbers[index + 1]
+                if x >= 0 and y >= 0:
+                    points.append((round(x * 255), round(y * 255)))
+            if points:
+                curve.points[channel] = points
+    curve.path = str(path)
+    return curve
+
+
+def load_tone_curve(path: Path) -> ToneCurve | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if "GIMP curves tool settings" in text:
+            return parse_modern_cur(path, text)
+        if "GIMP Curves File" in text:
+            return parse_legacy_cur(path, text)
+    except Exception:
+        return None
+    return None
+
+
+def save_legacy_cur(path: Path, curve: ToneCurve) -> None:
+    lines = ["# GIMP Curves File"]
+    for channel in CURVE_CHANNELS:
+        points = curve.normalized_points(channel)
+        pairs: list[str] = []
+        for index in range(17):
+            if index < len(points):
+                x, y = points[index]
+                pairs.extend([str(x), str(y)])
+            else:
+                pairs.extend(["-1", "-1"])
+        lines.append(" ".join(pairs) + " ")
+    path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+
+
 class KeyBindingDialog(QDialog):
     def __init__(self, parent: QWidget, title: str, kind: str, binding: dict | None) -> None:
         super().__init__(parent)
@@ -746,6 +886,139 @@ class KeyBindingDialog(QDialog):
         self.preview_label.setText(f"{self.dialog_text('現在')}: {text}")
 
 
+class ToneCurveGraph(QWidget):
+    curveChanged = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.curve = default_tone_curve()
+        self.channel = "value"
+        self.drag_index: int | None = None
+        self.setMinimumHeight(220)
+        self.setMinimumWidth(96)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setMouseTracking(True)
+
+    def set_curve(self, curve: ToneCurve | None) -> None:
+        self.curve = curve.copy() if curve is not None else default_tone_curve()
+        self.drag_index = None
+        self.update()
+
+    def set_channel(self, channel: str) -> None:
+        if channel in CURVE_CHANNELS:
+            self.channel = channel
+            self.drag_index = None
+            self.update()
+
+    def graph_rect(self) -> QRect:
+        rect = self.rect()
+        left_margin = min(24, max(8, rect.width() // 6))
+        right_margin = min(12, max(4, rect.width() // 12))
+        return rect.adjusted(left_margin, 12, -right_margin, -24)
+
+    def point_to_pos(self, point: tuple[int, int]) -> QPoint:
+        rect = self.graph_rect()
+        x = rect.left() + round(point[0] / 255 * rect.width())
+        y = rect.bottom() - round(point[1] / 255 * rect.height())
+        return QPoint(x, y)
+
+    def pos_to_point(self, pos: QPoint) -> tuple[int, int]:
+        rect = self.graph_rect()
+        x = max(rect.left(), min(rect.right(), pos.x()))
+        y = max(rect.top(), min(rect.bottom(), pos.y()))
+        value_x = round((x - rect.left()) / max(1, rect.width()) * 255)
+        value_y = round((rect.bottom() - y) / max(1, rect.height()) * 255)
+        return max(0, min(255, value_x)), max(0, min(255, value_y))
+
+    def paintEvent(self, _event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), self.palette().window())
+        rect = self.graph_rect()
+        painter.setPen(QPen(self.palette().mid().color(), 1))
+        painter.drawRect(rect)
+        for index in range(1, 4):
+            x = rect.left() + rect.width() * index // 4
+            y = rect.top() + rect.height() * index // 4
+            painter.drawLine(x, rect.top(), x, rect.bottom())
+            painter.drawLine(rect.left(), y, rect.right(), y)
+        color = {
+            "value": QColor("#dddddd"),
+            "red": QColor("#ff6060"),
+            "green": QColor("#60d060"),
+            "blue": QColor("#6090ff"),
+            "alpha": QColor("#c080ff"),
+        }.get(self.channel, QColor("#dddddd"))
+        points = self.curve.normalized_points(self.channel)
+        lut = self.curve.lut(self.channel)
+        painter.setPen(QPen(color, 2))
+        previous: QPoint | None = None
+        for x in range(256):
+            y = lut[x]
+            current = self.point_to_pos((x, y))
+            if previous is not None:
+                painter.drawLine(previous, current)
+            previous = current
+        painter.setBrush(color)
+        painter.setPen(QPen(Qt.black, 1))
+        for point in points:
+            pos = self.point_to_pos(point)
+            painter.drawEllipse(pos, 4, 4)
+        painter.end()
+
+    def nearest_point_index(self, pos: QPoint) -> int | None:
+        points = self.curve.normalized_points(self.channel)
+        best_index: int | None = None
+        best_distance = 999999
+        for index, point in enumerate(points):
+            point_pos = self.point_to_pos(point)
+            distance = (point_pos.x() - pos.x()) ** 2 + (point_pos.y() - pos.y()) ** 2
+            if distance < best_distance:
+                best_index = index
+                best_distance = distance
+        return best_index if best_distance <= 18 ** 2 else None
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            return
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        points = self.curve.normalized_points(self.channel)
+        index = self.nearest_point_index(pos)
+        if index is None:
+            points.append(self.pos_to_point(pos))
+            points = sorted(points, key=lambda item: item[0])
+            self.curve.points[self.channel] = points
+            index = self.nearest_point_index(pos)
+        self.drag_index = index
+        self.update_drag_point(pos)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self.drag_index is None:
+            return
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        self.update_drag_point(pos)
+
+    def mouseReleaseEvent(self, _event) -> None:
+        self.drag_index = None
+
+    def update_drag_point(self, pos: QPoint) -> None:
+        points = self.curve.normalized_points(self.channel)
+        if self.drag_index is None or self.drag_index < 0 or self.drag_index >= len(points):
+            return
+        x, y = self.pos_to_point(pos)
+        if self.drag_index == 0:
+            x = 0
+        elif self.drag_index == len(points) - 1:
+            x = 255
+        else:
+            previous_x = points[self.drag_index - 1][0] + 1
+            next_x = points[self.drag_index + 1][0] - 1
+            x = max(previous_x, min(next_x, x))
+        points[self.drag_index] = (x, y)
+        self.curve.points[self.channel] = points
+        self.curveChanged.emit()
+        self.update()
+
+
 class AppSignals(QObject):
     process_started = Signal(str)
     process_done = Signal(object)
@@ -792,7 +1065,7 @@ class GLImageView(QOpenGLWidget):
         self.dual_page_reversed = False
         self.key_bindings = default_key_bindings()
         self.duplicate_mouse_bindings: set[tuple] = set()
-        self.resample_cache: OrderedDict[tuple[int, int, int, str], QPixmap] = OrderedDict()
+        self.resample_cache: OrderedDict[tuple[int, int, int, int, str], QPixmap] = OrderedDict()
         self.pixmap_cache: OrderedDict[tuple[int, int, bool, bool], QPixmap] = OrderedDict()
         self.pixmap_cache_limit = 128
         self.pixmap_prefetch_queue: deque[tuple[object, QImage]] = deque()
@@ -814,6 +1087,8 @@ class GLImageView(QOpenGLWidget):
         self.compare_line_width = 2
         self.compare_swap_sides = False
         self.compare_shift_drag_moves_boundary = False
+        self.tone_curve_enabled = False
+        self.tone_curve_luts: dict[str, list[int]] | None = None
         self.horizontal_wheel_navigation = False
         self.horizontal_wheel_inverted = False
         self.zoom = 1.0
@@ -887,10 +1162,10 @@ class GLImageView(QOpenGLWidget):
         return image.transformed(transform, Qt.SmoothTransformation)
 
     def rebuild_display_images(self) -> None:
-        self.source_image = self.transformed_image(self.raw_source_image)
-        self.processed_image = self.transformed_image(self.raw_processed_image)
-        self.secondary_source_image = self.transformed_image(self.raw_secondary_source_image)
-        self.secondary_processed_image = self.transformed_image(self.raw_secondary_processed_image)
+        self.source_image = self.transformed_image(self.apply_tone_curve_image(self.raw_source_image))
+        self.processed_image = self.transformed_image(self.apply_tone_curve_image(self.raw_processed_image))
+        self.secondary_source_image = self.transformed_image(self.apply_tone_curve_image(self.raw_secondary_source_image))
+        self.secondary_processed_image = self.transformed_image(self.apply_tone_curve_image(self.raw_secondary_processed_image))
         self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
         self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
         self.secondary_source_pixmap = self.pixmap_for_image(self.raw_secondary_source_image, self.secondary_source_image)
@@ -1004,6 +1279,15 @@ class GLImageView(QOpenGLWidget):
             self.resample_debounce_timer.stop()
             self.clear_resample_cache()
             self.update()
+
+    def set_tone_curve_options(self, enabled: bool, curve: ToneCurve | None) -> None:
+        self.tone_curve_enabled = bool(enabled and curve is not None)
+        self.tone_curve_luts = {channel: curve.lut(channel) for channel in CURVE_CHANNELS} if self.tone_curve_enabled and curve is not None else None
+        self.pixmap_cache.clear()
+        self.clear_pixmap_prefetch_state()
+        self.rebuild_display_images()
+        self.clear_resample_cache()
+        self.update()
 
     def clear_resample_cache(self) -> None:
         self.resample_cache.clear()
@@ -1144,17 +1428,22 @@ class GLImageView(QOpenGLWidget):
             return None
         if self.resample_interaction_active:
             return None
-        if target.width() == image.width() and target.height() == image.height():
+        device_pixel_ratio = max(1.0, float(self.devicePixelRatioF()))
+        physical_width = max(1, round(target.width() * device_pixel_ratio))
+        physical_height = max(1, round(target.height() * device_pixel_ratio))
+        if physical_width == image.width() and physical_height == image.height():
             return None
-        key = (int(image.cacheKey()), target.width(), target.height(), self.cpu_resample_algorithm)
+        ratio_key = max(1, round(device_pixel_ratio * 1000))
+        key = (int(image.cacheKey()), physical_width, physical_height, ratio_key, self.cpu_resample_algorithm)
         cached = self.resample_cache.get(key)
         if cached is not None:
             self.resample_cache.move_to_end(key)
             return cached
-        scaled = self.resample_qimage(image, target.width(), target.height())
+        scaled = self.resample_qimage(image, physical_width, physical_height)
         if scaled.isNull():
             return None
         pixmap = QPixmap.fromImage(scaled)
+        pixmap.setDevicePixelRatio(device_pixel_ratio)
         self.resample_cache[key] = pixmap
         while len(self.resample_cache) > 24:
             self.resample_cache.popitem(last=False)
@@ -1183,6 +1472,27 @@ class GLImageView(QOpenGLWidget):
         output = pil.convert("RGBA")
         output_data = output.tobytes()
         return QImage(output_data, output.width, output.height, QImage.Format_RGBA8888).copy()
+
+    def apply_tone_curve_image(self, image: QImage) -> QImage:
+        if image.isNull() or not self.tone_curve_enabled or not self.tone_curve_luts or np is None:
+            return image
+        source = image.convertToFormat(QImage.Format_RGBA8888)
+        size = source.sizeInBytes()
+        data = bytes(source.bits()[:size])
+        array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
+        luminance = ((array[:, :, 0].astype(np.uint16) * 77 + array[:, :, 1].astype(np.uint16) * 150 + array[:, :, 2].astype(np.uint16) * 29) >> 8).astype(np.uint8)
+        value_lut = np.array(self.tone_curve_luts.get("value", list(range(256))), dtype=np.uint8)
+        red_lut = np.array(self.tone_curve_luts.get("red", list(range(256))), dtype=np.uint8)
+        green_lut = np.array(self.tone_curve_luts.get("green", list(range(256))), dtype=np.uint8)
+        blue_lut = np.array(self.tone_curve_luts.get("blue", list(range(256))), dtype=np.uint8)
+        alpha_lut = np.array(self.tone_curve_luts.get("alpha", list(range(256))), dtype=np.uint8)
+        mapped = value_lut[luminance]
+        array[:, :, 0] = red_lut[mapped]
+        array[:, :, 1] = green_lut[mapped]
+        array[:, :, 2] = blue_lut[mapped]
+        array[:, :, 3] = alpha_lut[array[:, :, 3]]
+        output_data = array.tobytes()
+        return QImage(output_data, source.width(), source.height(), QImage.Format_RGBA8888).copy()
 
     def draw_image(self, painter: QPainter, target: QRect, image: QImage, pixmap: QPixmap) -> None:
         if image.isNull() or pixmap.isNull():
@@ -1395,6 +1705,8 @@ class MainWindow(QMainWindow):
         self.image_path_string_set: set[str] = set()
         self.current_index = -1
         self.dual_page_enabled = bool(self.config_data.dual_page_enabled)
+        self.tone_curves: dict[str, ToneCurve] = {}
+        self.current_tone_curve: ToneCurve | None = None
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -1632,14 +1944,17 @@ class MainWindow(QMainWindow):
         self.tabs = tabs
         realcugan_tab = QScrollArea()
         general_tab = QScrollArea()
+        image_adjust_tab = QScrollArea()
         other_tab = QScrollArea()
         keyconfig_tab = QScrollArea()
         realcugan_tab.setWidgetResizable(True)
         general_tab.setWidgetResizable(True)
+        image_adjust_tab.setWidgetResizable(True)
         other_tab.setWidgetResizable(True)
         keyconfig_tab.setWidgetResizable(True)
         tabs.addTab(realcugan_tab, "エンジン設定")
         tabs.addTab(general_tab, "全般")
+        tabs.addTab(image_adjust_tab, "画像調整")
         tabs.addTab(other_tab, "その他")
         tabs.addTab(keyconfig_tab, "キーコンフィグ")
         tabs.currentChanged.connect(self.on_settings_tab_changed)
@@ -1761,11 +2076,16 @@ class MainWindow(QMainWindow):
         self.compare_check = QCheckBox("比較モード")
         self.compare_check.setChecked(self.config_data.compare_enabled)
         self.compare_check.stateChanged.connect(self.on_compare_changed)
-        self.dual_page_check = QCheckBox("2画面表示")
+        self.dual_page_check = QCheckBox("見開き表示")
         self.dual_page_check.setChecked(self.dual_page_enabled)
         self.dual_page_check.stateChanged.connect(self.on_dual_page_check_changed)
         general_layout.addWidget(self.dual_page_check)
-        general_layout.addWidget(self.help_label("2画面表示時は比較モードは無効です。"))
+        self.dual_page_landscape_check = QCheckBox("横長画像は1枚表示にする")
+        self.dual_page_landscape_check.setChecked(self.config_data.dual_page_landscape_single)
+        self.dual_page_landscape_check.stateChanged.connect(self.on_dual_page_landscape_changed)
+        general_layout.addWidget(self.dual_page_landscape_check)
+        general_layout.addWidget(self.help_label("横長画像を既に見開きのページとして扱い、隣の画像と並べずに表示します。"))
+        general_layout.addWidget(self.help_label("見開き表示時は比較モードは無効です。"))
         general_layout.addWidget(self.compare_check)
         compare_form = QFormLayout()
         self.compare_slider = QSlider(Qt.Horizontal)
@@ -1915,6 +2235,47 @@ class MainWindow(QMainWindow):
         self.apply_log_visibility()
         general_tab.setWidget(general_content)
 
+        image_adjust_content = QWidget()
+        image_adjust_content.setMinimumWidth(0)
+        image_adjust_layout = QVBoxLayout(image_adjust_content)
+        self.tone_curve_check = QCheckBox("トーンカーブ補正を使う")
+        self.tone_curve_check.setChecked(self.config_data.tone_curve_enabled)
+        self.tone_curve_check.stateChanged.connect(self.on_tone_curve_settings_changed)
+        image_adjust_layout.addWidget(self.tone_curve_check)
+        image_adjust_layout.addWidget(self.help_label("GIMP .curファイルを使い、輝度に応じてRGBを割り当てます。モノクロ漫画を疑似4色刷りのように表示できます。"))
+        curve_form = QFormLayout()
+        self.tone_curve_combo = QComboBox()
+        self.tone_curve_combo.setMinimumWidth(0)
+        self.tone_curve_combo.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.tone_curve_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.tone_curve_combo.currentTextChanged.connect(self.on_tone_curve_selected)
+        reload_curve_button = QPushButton("再読み込み")
+        reload_curve_button.clicked.connect(self.reload_tone_curves)
+        open_curve_dir_button = QPushButton("フォルダ")
+        open_curve_dir_button.setToolTip("curフォルダを開く")
+        open_curve_dir_button.clicked.connect(self.open_curve_dir)
+        curve_form.addRow("トーンカーブ", self.tone_curve_combo)
+        curve_buttons = QHBoxLayout()
+        curve_buttons.addWidget(reload_curve_button)
+        curve_buttons.addWidget(open_curve_dir_button)
+        curve_form.addRow("", curve_buttons)
+        self.tone_curve_channel_combo = QComboBox()
+        for channel in CURVE_CHANNELS:
+            self.tone_curve_channel_combo.addItem(CURVE_CHANNEL_LABELS[channel], channel)
+        self.tone_curve_channel_combo.currentIndexChanged.connect(self.on_tone_curve_channel_changed)
+        curve_form.addRow("チャンネル", self.tone_curve_channel_combo)
+        image_adjust_layout.addLayout(curve_form)
+        self.tone_curve_graph = ToneCurveGraph()
+        self.tone_curve_graph.curveChanged.connect(self.on_tone_curve_graph_changed)
+        image_adjust_layout.addWidget(self.tone_curve_graph)
+        save_curve_button = QPushButton("保存")
+        save_curve_button.clicked.connect(self.save_tone_curve_dialog)
+        image_adjust_layout.addWidget(save_curve_button)
+        image_adjust_layout.addWidget(self.help_label("選択中の曲線をドラッグして調整できます。保存するとcurフォルダへGIMP旧形式.curとして出力します。"))
+        image_adjust_layout.addStretch(1)
+        image_adjust_tab.setWidget(image_adjust_content)
+        self.reload_tone_curves(select_configured=True)
+
         other_content = QWidget()
         other_layout = QVBoxLayout(other_content)
         language_form = QFormLayout()
@@ -1957,9 +2318,9 @@ class MainWindow(QMainWindow):
 
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, language_form, resample_form)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, language_form, resample_form)
 
-        tab_index = {"realcugan": 0, "general": 1, "other": 2, "keyconfig": 3}.get(self.config_data.settings_tab, 0)
+        tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "other": 3, "keyconfig": 4}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
         self.apply_engine_ui()
         QTimer.singleShot(0, self.apply_language)
@@ -2040,6 +2401,15 @@ class MainWindow(QMainWindow):
             self.pin_button.setText(self.tr_ui("固定中" if self.pin_button.isChecked() else "自動表示"))
         if hasattr(self, "language_label"):
             self.language_label.setText("Language")
+        if hasattr(self, "tone_curve_channel_combo"):
+            current = self.tone_curve_channel_combo.currentData() or "value"
+            self.tone_curve_channel_combo.blockSignals(True)
+            self.tone_curve_channel_combo.clear()
+            for channel in CURVE_CHANNELS:
+                self.tone_curve_channel_combo.addItem(self.tr_ui(CURVE_CHANNEL_LABELS[channel]), channel)
+            index = self.tone_curve_channel_combo.findData(current)
+            self.tone_curve_channel_combo.setCurrentIndex(max(0, index))
+            self.tone_curve_channel_combo.blockSignals(False)
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
         self.refresh_keyconfig_buttons()
@@ -2148,6 +2518,9 @@ class MainWindow(QMainWindow):
         self.config_data.compare_swap_sides = self.compare_swap_check.isChecked()
         self.config_data.compare_shift_drag_moves_boundary = self.compare_shift_check.isChecked()
         self.config_data.dual_page_enabled = bool(getattr(self, "dual_page_enabled", False))
+        self.config_data.dual_page_landscape_single = self.dual_page_landscape_check.isChecked()
+        self.config_data.tone_curve_enabled = self.tone_curve_check.isChecked()
+        self.config_data.tone_curve_file = self.current_tone_curve.path if self.current_tone_curve is not None else ""
         self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
         self.config_data.wrap_page_navigation = self.wrap_page_check.isChecked()
         self.config_data.preserve_view_on_page_navigation = self.preserve_view_check.isChecked()
@@ -2165,7 +2538,7 @@ class MainWindow(QMainWindow):
         self.config_data.thumbnail_size = self.thumbnail_icon_size()
         self.config_data.single_instance_enabled = self.single_instance_check.isChecked()
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
-        self.config_data.settings_tab = ["realcugan", "general", "other", "keyconfig"][max(0, min(3, self.tabs.currentIndex()))]
+        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "other", "keyconfig"][max(0, min(4, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
             rect = self.normalGeometry() if self.isMaximized() else self.geometry()
             if rect.isValid():
@@ -2200,6 +2573,7 @@ class MainWindow(QMainWindow):
             self.config_data.horizontal_wheel_navigation,
             self.config_data.horizontal_wheel_inverted,
         )
+        self.viewer.set_tone_curve_options(self.config_data.tone_curve_enabled, self.current_tone_curve)
         self.update_thumbnail_metrics()
         self.layout_viewer_host()
         self.on_compare_changed()
@@ -2882,8 +3256,20 @@ class MainWindow(QMainWindow):
     def secondary_page_index(self) -> int | None:
         if not self.dual_page_enabled or self.current_index < 0:
             return None
+        if self.dual_page_landscape_single_enabled(self.current_index):
+            return None
         index = self.current_index + 1
+        if index < len(self.image_paths) and self.dual_page_landscape_single_enabled(index):
+            return None
         return index if index < len(self.image_paths) else None
+
+    def dual_page_landscape_single_enabled(self, index: int) -> bool:
+        if not getattr(self, "dual_page_landscape_check", None) or not self.dual_page_landscape_check.isChecked():
+            return False
+        if index < 0 or index >= len(self.image_paths):
+            return False
+        image = self.load_original(self.image_paths[index])
+        return not image.isNull() and image.width() > image.height()
 
     def current_display_index_entries(self) -> list[tuple[int, Path]]:
         if not self.image_paths or self.current_index < 0:
@@ -2934,13 +3320,18 @@ class MainWindow(QMainWindow):
             self.page_scroll_timer.stop()
             return
         step = 1 if self.pending_page_steps > 0 else -1
-        index_step = step * (2 if self.dual_page_enabled else 1)
+        index_step = step * self.page_navigation_span()
         if self.show_relative_image(index_step):
             self.pending_page_steps -= step
             if self.pending_page_steps:
                 self.page_scroll_timer.start(max(0, self.page_interval_spin.value()))
         else:
             self.pending_page_steps = 0
+
+    def page_navigation_span(self) -> int:
+        if not self.dual_page_enabled:
+            return 1
+        return 2 if self.secondary_page_index() is not None else 1
 
     def show_relative_image(self, step: int) -> bool:
         next_index = self.current_index + step
@@ -2994,6 +3385,7 @@ class MainWindow(QMainWindow):
             "toggle_dual_page": self.toggle_dual_page_mode,
             "dual_page_shift_forward": lambda: self.shift_dual_page_alignment(True),
             "dual_page_shift_backward": lambda: self.shift_dual_page_alignment(False),
+            "toggle_tone_curve": self.toggle_tone_curve_mode,
             "actual_size": self.viewer.zoom_to_actual_size,
             "fit_view": self.viewer.reset_display_state,
             "rotate_right": lambda: self.viewer.rotate_display(90),
@@ -3029,6 +3421,11 @@ class MainWindow(QMainWindow):
     def on_dual_page_check_changed(self) -> None:
         self.set_dual_page_enabled(self.dual_page_check.isChecked())
 
+    def on_dual_page_landscape_changed(self) -> None:
+        if self.image_paths and self.dual_page_enabled:
+            self.display_current_image(preserve_view=False, navigation=True)
+        self.persist_config()
+
     def set_dual_page_enabled(self, enabled: bool) -> None:
         enabled = bool(enabled)
         changed = self.dual_page_enabled != enabled
@@ -3052,6 +3449,85 @@ class MainWindow(QMainWindow):
     def shift_dual_page_alignment(self, forward: bool) -> None:
         direction = 1 if self.dual_page_reversed() else -1
         self.show_relative_image(direction if forward else -direction)
+
+    def toggle_tone_curve_mode(self) -> None:
+        self.tone_curve_check.setChecked(not self.tone_curve_check.isChecked())
+        self.on_tone_curve_settings_changed()
+
+    def reload_tone_curves(self, select_configured: bool = False) -> None:
+        CURVE_DIR.mkdir(exist_ok=True)
+        curves: dict[str, ToneCurve] = {}
+        for path in windows_logical_sorted(list(CURVE_DIR.glob("*.cur")), lambda item: item.name):
+            curve = load_tone_curve(path)
+            if curve is not None:
+                curves[path.name] = curve
+        if not curves:
+            linear = default_tone_curve("linear")
+            linear.path = ""
+            curves["linear"] = linear
+        self.tone_curves = curves
+        combo = getattr(self, "tone_curve_combo", None)
+        if combo is None:
+            return
+        selected_path = self.config_data.tone_curve_file if select_configured else (self.current_tone_curve.path if self.current_tone_curve else "")
+        combo.blockSignals(True)
+        combo.clear()
+        for name, curve in curves.items():
+            combo.addItem(name, curve.path)
+        target_index = 0
+        for index in range(combo.count()):
+            if selected_path and combo.itemData(index) == selected_path:
+                target_index = index
+                break
+        combo.setCurrentIndex(target_index)
+        combo.blockSignals(False)
+        self.on_tone_curve_selected()
+
+    def on_tone_curve_selected(self) -> None:
+        combo = getattr(self, "tone_curve_combo", None)
+        if combo is None:
+            return
+        name = combo.currentText()
+        self.current_tone_curve = self.tone_curves.get(name)
+        if self.current_tone_curve is not None:
+            self.tone_curve_graph.set_curve(self.current_tone_curve)
+        self.on_tone_curve_settings_changed()
+
+    def on_tone_curve_channel_changed(self) -> None:
+        channel = self.tone_curve_channel_combo.currentData() or "value"
+        self.tone_curve_graph.set_channel(channel)
+
+    def on_tone_curve_graph_changed(self) -> None:
+        self.current_tone_curve = self.tone_curve_graph.curve.copy()
+        self.current_tone_curve.name = self.tone_curve_combo.currentText()
+        self.current_tone_curve.path = self.tone_curve_combo.currentData() or ""
+        self.on_tone_curve_settings_changed()
+
+    def on_tone_curve_settings_changed(self) -> None:
+        if getattr(self, "initializing", False) or not hasattr(self, "tone_curve_check"):
+            return
+        self.viewer.set_tone_curve_options(self.tone_curve_check.isChecked(), self.current_tone_curve)
+        self.persist_config()
+
+    def save_tone_curve_dialog(self) -> None:
+        CURVE_DIR.mkdir(exist_ok=True)
+        start = CURVE_DIR / ((self.current_tone_curve.name if self.current_tone_curve else "curve") + ".cur")
+        path, _filter = QFileDialog.getSaveFileName(self, "トーンカーブを保存", str(start), "GIMP Curve (*.cur);;All files (*.*)")
+        if not path:
+            return
+        save_path = Path(path)
+        curve = self.tone_curve_graph.curve.copy()
+        curve.name = save_path.stem
+        curve.path = str(save_path)
+        save_legacy_cur(save_path, curve)
+        self.config_data.tone_curve_file = str(save_path)
+        self.reload_tone_curves(select_configured=True)
+        self.persist_config()
+
+    def open_curve_dir(self) -> None:
+        CURVE_DIR.mkdir(exist_ok=True)
+        if os.name == "nt":
+            subprocess.Popen(["explorer", str(CURVE_DIR)])
 
     def open_image_dialog(self) -> None:
         start = self.config_data.last_dir or str(Path.home())
@@ -3568,7 +4044,7 @@ class MainWindow(QMainWindow):
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
-        self.config_data.settings_tab = ["realcugan", "general", "other", "keyconfig"][max(0, min(3, index))]
+        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "other", "keyconfig"][max(0, min(4, index))]
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:

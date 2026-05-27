@@ -5,6 +5,19 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
+## v0.1.2 - 2026-05-27
+
+### 追加 / Added
+
+- 「2画面表示」を「見開き表示」に改名し、横長画像を既に見開きのページとして1枚表示するオプションを追加
+- 「画像調整」タブを追加し、GIMP `.cur` トーンカーブによる疑似4色刷り風の表示補正に対応
+- トーンカーブ補正のオン/オフをキーコンフィグに追加し、初期ショートカットを `T` に設定
+- トーンカーブを画面上で確認しながら調整し、`.cur` として保存する機能を追加
+
+### 修正 / Fixed
+
+- Windows の高DPIスケーリング環境で、高品質補完表示が実ピクセル数に対して不足し、画像がぼけて見える場合がある問題を修正
+
 ## v0.1.1 - 2026-05-27
 
 ### 追加 / Added
