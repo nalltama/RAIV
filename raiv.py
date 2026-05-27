@@ -14,6 +14,7 @@ import time
 import zipfile
 from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
+from functools import cmp_to_key
 from pathlib import Path, PurePosixPath
 
 try:
@@ -117,6 +118,7 @@ TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
 TEMP_WORK_PREFIX = "realcugan_qt_work_"
 TEMP_OUTPUT_PREFIX = "realcugan_"
 TEMP_LOCK_FILE = "viewer.lock"
+SINGLE_INSTANCE_MUTEX_NAME = "Local\\RealtimeAIImageViewer_RAIV_SingleInstance"
 BORDERLESS_FULLSCREEN_OVERSCAN = 1
 FORM_LABEL_WIDTH = 132
 MAX_DISPLAY_SCALE = 5.0
@@ -138,6 +140,7 @@ RESAMPLE_ALGORITHMS = {
     "bicubic": "Bicubic",
     "area": "Area",
 }
+DEFAULT_RESAMPLE_ALGORITHM = "bicubic"
 MODIFIER_MASK = (
     Qt.ControlModifier.value
     | Qt.ShiftModifier.value
@@ -154,6 +157,9 @@ ACTION_DEFS = [
     ("toggle_thumbnail_panel", "サムネイル固定/自動表示"),
     ("toggle_side_panel", "右ペイン固定/自動表示"),
     ("toggle_compare", "比較モードオン/オフ"),
+    ("toggle_dual_page", "2画面表示オン/オフ"),
+    ("dual_page_shift_forward", "1ページ送り(2画面表示時)"),
+    ("dual_page_shift_backward", "1ページ戻し(2画面表示時)"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
     ("rotate_right", "画像右回転"),
@@ -161,6 +167,34 @@ ACTION_DEFS = [
     ("flip_horizontal", "画像左右反転"),
     ("flip_vertical", "画像上下反転"),
 ]
+
+
+def natural_sort_fallback_key(value: str) -> tuple:
+    parts = re.split(r"(\d+)", value.casefold().replace("/", "\\"))
+    key = []
+    for part in parts:
+        if part.isdigit():
+            key.append((0, int(part), len(part)))
+        else:
+            key.append((1, part))
+    return tuple(key)
+
+
+def windows_logical_compare(left: str, right: str) -> int:
+    left_text = str(left).replace("/", "\\")
+    right_text = str(right).replace("/", "\\")
+    if os.name == "nt":
+        try:
+            return int(ctypes.windll.shlwapi.StrCmpLogicalW(left_text, right_text))
+        except Exception:
+            pass
+    left_key = natural_sort_fallback_key(left_text)
+    right_key = natural_sort_fallback_key(right_text)
+    return (left_key > right_key) - (left_key < right_key)
+
+
+def windows_logical_sorted(items, text_func):
+    return sorted(items, key=cmp_to_key(lambda left, right: windows_logical_compare(text_func(left), text_func(right))))
 
 UI_TEXT_EN = {
     "画像を開く": "Open image",
@@ -173,6 +207,9 @@ UI_TEXT_EN = {
     "サムネイル固定/自動表示": "Thumbnail pinned/auto",
     "右ペイン固定/自動表示": "Right panel pinned/auto",
     "比較モードオン/オフ": "Toggle compare mode",
+    "2画面表示オン/オフ": "Toggle two-page view",
+    "1ページ送り(2画面表示時)": "Shift one page forward (two-page view)",
+    "1ページ戻し(2画面表示時)": "Shift one page backward (two-page view)",
     "等倍表示": "Actual size",
     "画面フィット表示": "Fit to window",
     "画像右回転": "Rotate right",
@@ -185,6 +222,7 @@ UI_TEXT_EN = {
     "自動表示": "Auto",
     "エンジン設定": "Engine",
     "全般": "General",
+    "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
     "倍率": "Scale",
@@ -207,16 +245,19 @@ UI_TEXT_EN = {
     "エンジンexeを選択": "Select engine exe",
     "使用できる置換: {input} {output} {scale} {denoise} {tile} {model}": "Available placeholders: {input} {output} {scale} {denoise} {tile} {model}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
+    "アプリの二重起動を禁止する": "Prevent multiple app instances",
     "表示言語": "Language",
     "ビューアー先読み": "Viewer prefetch",
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
-    "CPUリサンプルキャッシュを使う": "Use CPU resample cache",
+    "拡大縮小を高品質に補完する": "Use high-quality scaling",
     "表示リサンプル方式": "Display resampling method",
     "原寸と異なる表示サイズの画像を、よりきれいに見えるよう作成して保持します。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images when shown at a different size. Turn off for standard fast display.",
     "Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。": "Lanczos3: sharp and standard. Lanczos4: sharper but may introduce ringing. Bicubic: softer and natural. Area: stable for large reductions and helps reduce jaggies.",
     "Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。": "Lanczos4 uses OpenCV when available; otherwise it falls back to Lanczos3-equivalent processing.",
     "選択": "Select",
     "背景色": "Background color",
+    "2画面表示": "Two-page view",
+    "2画面表示時は比較モードは無効です。": "Compare mode is disabled while using two-page view.",
     "比較モード": "Compare mode",
     "比較スライダー": "Compare slider",
     "中央に戻す": "Center",
@@ -229,7 +270,7 @@ UI_TEXT_EN = {
     "ページ送り間隔(ms)": "Page interval (ms)",
     "ホイールやキー操作で連続ページ送りする時の間隔。0 は最短です。": "Interval used for continuous page navigation by wheel or key. 0 is the shortest.",
     "ページ位置": "Page position",
-    "ページ位置スライダーの左右を入れ替える": "Reverse page position slider",
+    "ページ位置スライダーの左右を入れ替える（右綴じにする）": "Reverse page position slider (right-to-left reading)",
     "オンにすると、ページ位置スライダーとサムネイル列の左右方向が連動して入れ替わります。": "When enabled, the page position slider and thumbnail strip directions are reversed together.",
     "画面下部にサムネイルを表示する": "Show thumbnails at bottom",
     "オフにするとサムネイル生成処理も停止します。大量の画像を開く時に、初期表示や先読みを軽くできます。": "Turning this off also stops thumbnail generation, which can make initial display and prefetch lighter for large folders.",
@@ -303,6 +344,9 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
         "toggle_thumbnail_panel": {"keyboard": key_binding(Qt.Key_F3), "mouse": None},
         "toggle_side_panel": {"keyboard": key_binding(Qt.Key_F4), "mouse": None},
         "toggle_compare": {"keyboard": None, "mouse": None},
+        "toggle_dual_page": {"keyboard": key_binding(Qt.Key_W), "mouse": None},
+        "dual_page_shift_forward": {"keyboard": key_binding(Qt.Key_Q), "mouse": None},
+        "dual_page_shift_backward": {"keyboard": key_binding(Qt.Key_E), "mouse": None},
         "actual_size": {"keyboard": None, "mouse": mouse_binding(Qt.RightButton, double=True)},
         "fit_view": {"keyboard": None, "mouse": mouse_binding(Qt.LeftButton, double=True)},
         "rotate_right": {"keyboard": key_binding(Qt.Key_R), "mouse": None},
@@ -330,13 +374,14 @@ class AppConfig:
     skip_realcugan_height_threshold: int = 2160
     background_color: str = "#000000"
     cpu_resample_cache_enabled: bool = True
-    cpu_resample_algorithm: str = "lanczos3"
+    cpu_resample_algorithm: str = DEFAULT_RESAMPLE_ALGORITHM
     compare_enabled: bool = False
     compare_split: int = 500
     compare_line_color: str = "#ffffff"
     compare_line_width: int = 2
     compare_swap_sides: bool = False
     compare_shift_drag_moves_boundary: bool = False
+    dual_page_enabled: bool = False
     hide_cursor_in_fullscreen: bool = False
     show_log_panel: bool = False
     show_profile_panel: bool = False
@@ -354,6 +399,7 @@ class AppConfig:
     arrow_right_next: bool = True
     key_bindings: dict[str, dict[str, dict | None]] = field(default_factory=default_key_bindings)
     cleanup_temp_on_start: bool = False
+    single_instance_enabled: bool = False
     settings_tab: str = "realcugan"
     window_rect: list[int] | None = None
     window_maximized: bool = False
@@ -462,7 +508,7 @@ def load_config() -> AppConfig:
         if config.realesrgan_model not in REALESRGAN_MODELS:
             config.realesrgan_model = REALESRGAN_MODELS[0]
         if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
-            config.cpu_resample_algorithm = "lanczos3"
+            config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
         if config.ui_language not in {"ja", "en"}:
             config.ui_language = "ja"
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
@@ -479,6 +525,29 @@ def load_config() -> AppConfig:
 
 def save_config(config: AppConfig) -> None:
     CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def acquire_single_instance_mutex_if_needed() -> object | None:
+    config = load_config()
+    if not config.single_instance_enabled or os.name != "nt":
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetLastError(0)
+    handle = kernel32.CreateMutexW(None, False, SINGLE_INSTANCE_MUTEX_NAME)
+    if not handle:
+        return None
+    if ctypes.get_last_error() == 183:
+        kernel32.CloseHandle(handle)
+        raise SystemExit(0)
+    return handle
+
+
+def release_single_instance_mutex(handle: object | None) -> None:
+    if handle and os.name == "nt":
+        try:
+            ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass
 
 
 def modifier_value(modifiers) -> int:
@@ -706,13 +775,21 @@ class GLImageView(QOpenGLWidget):
         self.background = QColor("#000000")
         self.raw_source_image = QImage()
         self.raw_processed_image = QImage()
+        self.raw_secondary_source_image = QImage()
+        self.raw_secondary_processed_image = QImage()
         self.source_image = QImage()
         self.processed_image = QImage()
+        self.secondary_source_image = QImage()
+        self.secondary_processed_image = QImage()
         self.source_pixmap = QPixmap()
         self.processed_pixmap = QPixmap()
+        self.secondary_source_pixmap = QPixmap()
+        self.secondary_processed_pixmap = QPixmap()
         self.display_rotation = 0
         self.display_flip_horizontal = False
         self.display_flip_vertical = False
+        self.dual_page_enabled = False
+        self.dual_page_reversed = False
         self.key_bindings = default_key_bindings()
         self.duplicate_mouse_bindings: set[tuple] = set()
         self.resample_cache: OrderedDict[tuple[int, int, int, str], QPixmap] = OrderedDict()
@@ -725,7 +802,7 @@ class GLImageView(QOpenGLWidget):
         self.pixmap_prefetch_timer.setSingleShot(True)
         self.pixmap_prefetch_timer.timeout.connect(self.process_pixmap_prefetch)
         self.cpu_resample_cache_enabled = True
-        self.cpu_resample_algorithm = "lanczos3"
+        self.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
         self.resample_debounce_timer = QTimer(self)
         self.resample_debounce_timer.setSingleShot(True)
         self.resample_debounce_timer.timeout.connect(self.finish_interactive_resample_delay)
@@ -746,24 +823,37 @@ class GLImageView(QOpenGLWidget):
         self.fit_scale_anchor: float | None = None
         self.fit_image_size: tuple[int, int] | None = None
 
-    def set_images(self, source: QImage, processed: QImage | None, preserve_view: bool = False) -> None:
-        preserved_scale = self.current_scale() if preserve_view and not self.current_display_image().isNull() else None
+    def set_images(
+        self,
+        source: QImage,
+        processed: QImage | None,
+        preserve_view: bool = False,
+        secondary_source: QImage | None = None,
+        secondary_processed: QImage | None = None,
+        dual_page: bool = False,
+        dual_page_reversed: bool = False,
+    ) -> None:
+        preserved_scale = self.current_scale() if preserve_view and not self.current_content_size().isEmpty() else None
         preserved_offset = QPoint(self.offset) if preserve_view else QPoint(0, 0)
         preserved_rotation = self.display_rotation if preserve_view else 0
         preserved_flip_horizontal = self.display_flip_horizontal if preserve_view else False
         preserved_flip_vertical = self.display_flip_vertical if preserve_view else False
         self.raw_source_image = source
         self.raw_processed_image = processed or QImage()
+        self.raw_secondary_source_image = secondary_source or QImage()
+        self.raw_secondary_processed_image = secondary_processed or QImage()
+        self.dual_page_enabled = bool(dual_page)
+        self.dual_page_reversed = bool(dual_page_reversed)
         self.display_rotation = preserved_rotation
         self.display_flip_horizontal = preserved_flip_horizontal
         self.display_flip_vertical = preserved_flip_vertical
         self.rebuild_display_images()
         self.clear_resample_cache()
         if preserve_view and preserved_scale is not None:
-            image = self.current_display_image()
-            if not image.isNull() and self.width() > 0 and self.height() > 0:
-                self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-                self.fit_image_size = (image.width(), image.height())
+            content_size = self.current_content_size()
+            if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
+                self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
+                self.fit_image_size = (content_size.width(), content_size.height())
                 self.zoom = self.clamp_zoom_factor(preserved_scale / max(self.fit_scale_anchor, 0.000001))
                 self.offset = preserved_offset
                 self.zoomChanged.emit(self.current_scale())
@@ -773,8 +863,11 @@ class GLImageView(QOpenGLWidget):
             self.reset_view(update=False)
         self.update()
 
-    def set_processed(self, processed: QImage | None) -> None:
-        self.raw_processed_image = processed or QImage()
+    def set_processed(self, processed: QImage | None, page_slot: int = 0) -> None:
+        if page_slot == 1:
+            self.raw_secondary_processed_image = processed or QImage()
+        else:
+            self.raw_processed_image = processed or QImage()
         self.rebuild_display_images()
         self.clear_resample_cache()
         self.update()
@@ -796,8 +889,12 @@ class GLImageView(QOpenGLWidget):
     def rebuild_display_images(self) -> None:
         self.source_image = self.transformed_image(self.raw_source_image)
         self.processed_image = self.transformed_image(self.raw_processed_image)
+        self.secondary_source_image = self.transformed_image(self.raw_secondary_source_image)
+        self.secondary_processed_image = self.transformed_image(self.raw_secondary_processed_image)
         self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
         self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
+        self.secondary_source_pixmap = self.pixmap_for_image(self.raw_secondary_source_image, self.secondary_source_image)
+        self.secondary_processed_pixmap = self.pixmap_for_image(self.raw_secondary_processed_image, self.secondary_processed_image)
 
     def pixmap_for_image(self, raw_image: QImage, display_image: QImage) -> QPixmap:
         if raw_image.isNull() or display_image.isNull():
@@ -899,7 +996,7 @@ class GLImageView(QOpenGLWidget):
         self.horizontal_wheel_inverted = bool(inverted)
 
     def set_resample_options(self, enabled: bool, algorithm: str) -> None:
-        algorithm = algorithm if algorithm in RESAMPLE_ALGORITHMS else "lanczos3"
+        algorithm = algorithm if algorithm in RESAMPLE_ALGORITHMS else DEFAULT_RESAMPLE_ALGORITHM
         if self.cpu_resample_cache_enabled != enabled or self.cpu_resample_algorithm != algorithm:
             self.cpu_resample_cache_enabled = enabled
             self.cpu_resample_algorithm = algorithm
@@ -928,34 +1025,63 @@ class GLImageView(QOpenGLWidget):
             return self.processed_image
         return self.source_image
 
+    def display_page_entries(self) -> list[tuple[QImage, QImage, QPixmap, QPixmap]]:
+        entries: list[tuple[QImage, QImage, QPixmap, QPixmap]] = []
+        if not self.source_image.isNull():
+            entries.append((self.source_image, self.processed_image, self.source_pixmap, self.processed_pixmap))
+        if self.dual_page_enabled and not self.secondary_source_image.isNull():
+            entries.append((
+                self.secondary_source_image,
+                self.secondary_processed_image,
+                self.secondary_source_pixmap,
+                self.secondary_processed_pixmap,
+            ))
+        if self.dual_page_reversed and len(entries) > 1:
+            entries.reverse()
+        return entries
+
+    def current_content_size(self) -> QSize:
+        entries = self.display_page_entries()
+        if not entries:
+            return QSize()
+        width = 0
+        height = 0
+        for source, processed, _source_pixmap, _processed_pixmap in entries:
+            image = processed if not processed.isNull() else source
+            if image.isNull():
+                continue
+            width += image.width()
+            height = max(height, image.height())
+        return QSize(width, height) if width > 0 and height > 0 else QSize()
+
     def image_rect(self) -> QRect:
-        image = self.current_display_image()
-        if image.isNull():
+        content_size = self.current_content_size()
+        if content_size.isEmpty():
             return QRect()
         scale = self.current_scale()
-        width = max(1, round(image.width() * scale))
-        height = max(1, round(image.height() * scale))
+        width = max(1, round(content_size.width() * scale))
+        height = max(1, round(content_size.height() * scale))
         x = (self.width() - width) // 2 + self.offset.x()
         y = (self.height() - height) // 2 + self.offset.y()
         return QRect(x, y, width, height)
 
     def current_scale(self) -> float:
-        image = self.current_display_image()
-        if image.isNull():
+        content_size = self.current_content_size()
+        if content_size.isEmpty():
             return 1.0
-        size_key = (image.width(), image.height())
+        size_key = (content_size.width(), content_size.height())
         if self.fit_scale_anchor is None or self.fit_image_size != size_key:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
+            self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
             self.fit_image_size = size_key
         return max(0.01, min(MAX_DISPLAY_SCALE, self.fit_scale_anchor * self.zoom))
 
     def clamp_zoom_factor(self, zoom: float) -> float:
-        image = self.current_display_image()
-        if image.isNull():
+        content_size = self.current_content_size()
+        if content_size.isEmpty():
             return max(0.05, min(1.0, zoom))
         if self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
+            self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
+            self.fit_image_size = (content_size.width(), content_size.height())
         max_zoom = MAX_DISPLAY_SCALE / max(self.fit_scale_anchor, 0.000001)
         return max(0.05, min(max_zoom, zoom))
 
@@ -964,10 +1090,10 @@ class GLImageView(QOpenGLWidget):
         self.fit_scale_anchor = None
         self.fit_image_size = None
         self.clear_resample_cache()
-        image = self.current_display_image()
-        if not image.isNull() and self.width() > 0 and self.height() > 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
+        content_size = self.current_content_size()
+        if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
+            self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
+            self.fit_image_size = (content_size.width(), content_size.height())
         self.zoom = 1.0
         self.zoomChanged.emit(self.current_scale())
         if update:
@@ -982,12 +1108,12 @@ class GLImageView(QOpenGLWidget):
         self.reset_view()
 
     def set_actual_zoom_percent(self, percent: int) -> None:
-        image = self.current_display_image()
-        if image.isNull():
+        content_size = self.current_content_size()
+        if content_size.isEmpty():
             return
         if self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
-            self.fit_scale_anchor = min(self.width() / image.width(), self.height() / image.height())
-            self.fit_image_size = (image.width(), image.height())
+            self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
+            self.fit_image_size = (content_size.width(), content_size.height())
         actual_scale = max(0.01, min(MAX_DISPLAY_SCALE, percent / 100.0))
         self.zoom = self.clamp_zoom_factor(actual_scale / self.fit_scale_anchor)
         self.zoomChanged.emit(self.current_scale())
@@ -997,16 +1123,16 @@ class GLImageView(QOpenGLWidget):
     def resizeGL(self, width: int, height: int) -> None:
         if abs(self.zoom - 1.0) > 0.0001:
             return
-        image = self.current_display_image()
-        if image.isNull() or width <= 0 or height <= 0:
+        content_size = self.current_content_size()
+        if content_size.isEmpty() or width <= 0 or height <= 0:
             return
-        self.fit_scale_anchor = min(width / image.width(), height / image.height())
-        self.fit_image_size = (image.width(), image.height())
+        self.fit_scale_anchor = min(width / content_size.width(), height / content_size.height())
+        self.fit_image_size = (content_size.width(), content_size.height())
         self.zoomChanged.emit(self.current_scale())
 
     def zoom_to_actual_size(self) -> None:
-        image = self.current_display_image()
-        if image.isNull() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
+        content_size = self.current_content_size()
+        if content_size.isEmpty() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
             return
         self.zoom = self.clamp_zoom_factor(1.0 / self.fit_scale_anchor)
         self.zoomChanged.emit(self.current_scale())
@@ -1074,6 +1200,23 @@ class GLImageView(QOpenGLWidget):
         painter.fillRect(self.rect(), self.background)
         target = self.image_rect()
         if target.isNull():
+            painter.end()
+            return
+
+        entries = self.display_page_entries()
+        if self.dual_page_enabled and len(entries) > 1:
+            scale = self.current_scale()
+            x = target.x()
+            for source, processed, source_pixmap, processed_pixmap in entries:
+                image = processed if not processed.isNull() else source
+                pixmap = processed_pixmap if not processed_pixmap.isNull() else source_pixmap
+                if image.isNull() or pixmap.isNull():
+                    continue
+                width = max(1, round(image.width() * scale))
+                height = max(1, round(image.height() * scale))
+                page_target = QRect(x, target.y() + (target.height() - height) // 2, width, height)
+                self.draw_image(painter, page_target, image, pixmap)
+                x += width
             painter.end()
             return
 
@@ -1251,6 +1394,7 @@ class MainWindow(QMainWindow):
         self.image_path_set: set[Path] = set()
         self.image_path_string_set: set[str] = set()
         self.current_index = -1
+        self.dual_page_enabled = bool(self.config_data.dual_page_enabled)
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -1488,12 +1632,15 @@ class MainWindow(QMainWindow):
         self.tabs = tabs
         realcugan_tab = QScrollArea()
         general_tab = QScrollArea()
+        other_tab = QScrollArea()
         keyconfig_tab = QScrollArea()
         realcugan_tab.setWidgetResizable(True)
         general_tab.setWidgetResizable(True)
+        other_tab.setWidgetResizable(True)
         keyconfig_tab.setWidgetResizable(True)
         tabs.addTab(realcugan_tab, "エンジン設定")
         tabs.addTab(general_tab, "全般")
+        tabs.addTab(other_tab, "その他")
         tabs.addTab(keyconfig_tab, "キーコンフィグ")
         tabs.currentChanged.connect(self.on_settings_tab_changed)
         layout.addWidget(tabs)
@@ -1589,22 +1736,6 @@ class MainWindow(QMainWindow):
 
         general_content = QWidget()
         general_layout = QVBoxLayout(general_content)
-        self.cleanup_check = QCheckBox("次回起動時に古い一時ファイルを削除")
-        self.cleanup_check.setChecked(self.config_data.cleanup_temp_on_start)
-        self.cleanup_check.stateChanged.connect(self.on_cleanup_changed)
-        general_layout.addWidget(self.cleanup_check)
-        general_layout.addWidget(self.separator())
-
-        language_form = QFormLayout()
-        self.language_combo = QComboBox()
-        self.language_combo.addItem("日本語", "ja")
-        self.language_combo.addItem("English", "en")
-        self.language_combo.setCurrentIndex(0 if self.config_data.ui_language == "ja" else 1)
-        self.language_combo.currentIndexChanged.connect(self.on_language_changed)
-        self.language_label = QLabel("Language")
-        self.language_label.setObjectName("languageLabel")
-        language_form.addRow(self.language_label, self.language_combo)
-        general_layout.addLayout(language_form)
 
         viewer_form = QFormLayout()
         self.viewer_prefetch_spin = QSpinBox()
@@ -1614,23 +1745,6 @@ class MainWindow(QMainWindow):
         viewer_form.addRow("ビューアー先読み", self.viewer_prefetch_spin)
         general_layout.addLayout(viewer_form)
         general_layout.addWidget(self.help_label("表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。"))
-
-        self.cpu_resample_check = QCheckBox("CPUリサンプルキャッシュを使う")
-        self.cpu_resample_check.setChecked(self.config_data.cpu_resample_cache_enabled)
-        self.cpu_resample_check.stateChanged.connect(self.on_resample_settings_changed)
-        general_layout.addWidget(self.cpu_resample_check)
-
-        resample_form = QFormLayout()
-        self.cpu_resample_combo = QComboBox()
-        self.cpu_resample_combo.addItems(RESAMPLE_ALGORITHMS.values())
-        self.cpu_resample_combo.setCurrentText(RESAMPLE_ALGORITHMS.get(self.config_data.cpu_resample_algorithm, RESAMPLE_ALGORITHMS["lanczos3"]))
-        self.cpu_resample_combo.currentTextChanged.connect(self.on_resample_settings_changed)
-        self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
-        resample_form.addRow("表示リサンプル方式", self.cpu_resample_combo)
-        general_layout.addLayout(resample_form)
-        general_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像を、よりきれいに見えるよう作成して保持します。オフにすると標準の高速表示になります。"))
-        general_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
-        general_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
 
         background_form = QFormLayout()
         bg_row = QHBoxLayout()
@@ -1647,6 +1761,11 @@ class MainWindow(QMainWindow):
         self.compare_check = QCheckBox("比較モード")
         self.compare_check.setChecked(self.config_data.compare_enabled)
         self.compare_check.stateChanged.connect(self.on_compare_changed)
+        self.dual_page_check = QCheckBox("2画面表示")
+        self.dual_page_check.setChecked(self.dual_page_enabled)
+        self.dual_page_check.stateChanged.connect(self.on_dual_page_check_changed)
+        general_layout.addWidget(self.dual_page_check)
+        general_layout.addWidget(self.help_label("2画面表示時は比較モードは無効です。"))
         general_layout.addWidget(self.compare_check)
         compare_form = QFormLayout()
         self.compare_slider = QSlider(Qt.Horizontal)
@@ -1654,14 +1773,14 @@ class MainWindow(QMainWindow):
         self.compare_slider.setValue(self.config_data.compare_split)
         self.compare_slider.valueChanged.connect(self.on_compare_changed)
         compare_form.addRow("比較スライダー", self.compare_slider)
-        compare_center_button = QPushButton("中央に戻す")
-        compare_center_button.clicked.connect(self.reset_compare_split)
-        compare_form.addRow("", compare_center_button)
+        self.compare_center_button = QPushButton("中央に戻す")
+        self.compare_center_button.clicked.connect(self.reset_compare_split)
+        compare_form.addRow("", self.compare_center_button)
         compare_color_row = QHBoxLayout()
         self.compare_line_edit = QLineEdit(self.config_data.compare_line_color)
-        compare_color_button = QPushButton("選択")
-        compare_color_button.clicked.connect(self.choose_compare_line_color)
-        compare_color_row.addWidget(compare_color_button)
+        self.compare_color_button = QPushButton("選択")
+        self.compare_color_button.clicked.connect(self.choose_compare_line_color)
+        compare_color_row.addWidget(self.compare_color_button)
         compare_color_row.addWidget(self.compare_line_edit)
         compare_form.addRow("境界線色", compare_color_row)
         self.compare_line_edit.editingFinished.connect(self.on_compare_changed)
@@ -1712,7 +1831,7 @@ class MainWindow(QMainWindow):
         page_position_row.addWidget(self.page_position_count_label)
         page_position_form.addRow("ページ位置", page_position_row)
         general_layout.addLayout(page_position_form)
-        self.invert_page_position_check = QCheckBox("ページ位置スライダーの左右を入れ替える")
+        self.invert_page_position_check = QCheckBox("ページ位置スライダーの左右を入れ替える（右綴じにする）")
         self.invert_page_position_check.setChecked(self.config_data.invert_page_position_slider)
         self.invert_page_position_check.stateChanged.connect(self.on_page_position_slider_direction_changed)
         general_layout.addWidget(self.invert_page_position_check)
@@ -1756,7 +1875,6 @@ class MainWindow(QMainWindow):
         self.show_log_check.setChecked(self.config_data.show_log_panel)
         self.show_log_check.stateChanged.connect(self.on_log_visibility_changed)
         general_layout.addWidget(self.show_log_check)
-        self.normalize_form_labels(form, form3, language_form, viewer_form, resample_form, background_form, compare_form, view_form, page_position_form)
         self.log_container = QWidget()
         log_layout = QVBoxLayout(self.log_container)
         log_layout.setContentsMargins(0, 0, 0, 0)
@@ -1797,9 +1915,51 @@ class MainWindow(QMainWindow):
         self.apply_log_visibility()
         general_tab.setWidget(general_content)
 
+        other_content = QWidget()
+        other_layout = QVBoxLayout(other_content)
+        language_form = QFormLayout()
+        self.language_combo = QComboBox()
+        self.language_combo.addItem("日本語", "ja")
+        self.language_combo.addItem("English", "en")
+        self.language_combo.setCurrentIndex(0 if self.config_data.ui_language == "ja" else 1)
+        self.language_combo.currentIndexChanged.connect(self.on_language_changed)
+        self.language_label = QLabel("Language")
+        self.language_label.setObjectName("languageLabel")
+        language_form.addRow(self.language_label, self.language_combo)
+        other_layout.addLayout(language_form)
+        other_layout.addWidget(self.separator())
+        self.cpu_resample_check = QCheckBox("拡大縮小を高品質に補完する")
+        self.cpu_resample_check.setChecked(self.config_data.cpu_resample_cache_enabled)
+        self.cpu_resample_check.stateChanged.connect(self.on_resample_settings_changed)
+        other_layout.addWidget(self.cpu_resample_check)
+        resample_form = QFormLayout()
+        self.cpu_resample_combo = QComboBox()
+        self.cpu_resample_combo.addItems(RESAMPLE_ALGORITHMS.values())
+        self.cpu_resample_combo.setCurrentText(RESAMPLE_ALGORITHMS.get(self.config_data.cpu_resample_algorithm, RESAMPLE_ALGORITHMS[DEFAULT_RESAMPLE_ALGORITHM]))
+        self.cpu_resample_combo.currentTextChanged.connect(self.on_resample_settings_changed)
+        self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
+        resample_form.addRow("表示リサンプル方式", self.cpu_resample_combo)
+        other_layout.addLayout(resample_form)
+        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像を、よりきれいに見えるよう作成して保持します。オフにすると標準の高速表示になります。"))
+        other_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
+        other_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
+        other_layout.addWidget(self.separator())
+        self.single_instance_check = QCheckBox("アプリの二重起動を禁止する")
+        self.single_instance_check.setChecked(self.config_data.single_instance_enabled)
+        self.single_instance_check.stateChanged.connect(self.on_general_settings_changed)
+        other_layout.addWidget(self.single_instance_check)
+        self.cleanup_check = QCheckBox("次回起動時に古い一時ファイルを削除")
+        self.cleanup_check.setChecked(self.config_data.cleanup_temp_on_start)
+        self.cleanup_check.stateChanged.connect(self.on_cleanup_changed)
+        other_layout.addWidget(self.cleanup_check)
+        other_layout.addStretch(1)
+        other_tab.setWidget(other_content)
+
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        tab_index = {"realcugan": 0, "general": 1, "keyconfig": 2}.get(self.config_data.settings_tab, 0)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, language_form, resample_form)
+
+        tab_index = {"realcugan": 0, "general": 1, "other": 2, "keyconfig": 3}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
         self.apply_engine_ui()
         QTimer.singleShot(0, self.apply_language)
@@ -1987,6 +2147,7 @@ class MainWindow(QMainWindow):
         self.config_data.compare_line_width = self.compare_line_width_spin.value()
         self.config_data.compare_swap_sides = self.compare_swap_check.isChecked()
         self.config_data.compare_shift_drag_moves_boundary = self.compare_shift_check.isChecked()
+        self.config_data.dual_page_enabled = bool(getattr(self, "dual_page_enabled", False))
         self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
         self.config_data.wrap_page_navigation = self.wrap_page_check.isChecked()
         self.config_data.preserve_view_on_page_navigation = self.preserve_view_check.isChecked()
@@ -2002,8 +2163,9 @@ class MainWindow(QMainWindow):
         self.config_data.thumbnail_pinned = self.thumbnail_pinned_check.isChecked()
         self.config_data.thumbnail_height = self.clamped_thumbnail_height()
         self.config_data.thumbnail_size = self.thumbnail_icon_size()
+        self.config_data.single_instance_enabled = self.single_instance_check.isChecked()
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
-        self.config_data.settings_tab = ["realcugan", "general", "keyconfig"][max(0, min(2, self.tabs.currentIndex()))]
+        self.config_data.settings_tab = ["realcugan", "general", "other", "keyconfig"][max(0, min(3, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
             rect = self.normalGeometry() if self.isMaximized() else self.geometry()
             if rect.isValid():
@@ -2043,11 +2205,11 @@ class MainWindow(QMainWindow):
         self.on_compare_changed()
 
     def current_resample_algorithm(self) -> str:
-        label = self.cpu_resample_combo.currentText() if hasattr(self, "cpu_resample_combo") else RESAMPLE_ALGORITHMS["lanczos3"]
+        label = self.cpu_resample_combo.currentText() if hasattr(self, "cpu_resample_combo") else RESAMPLE_ALGORITHMS[DEFAULT_RESAMPLE_ALGORITHM]
         for key, value in RESAMPLE_ALGORITHMS.items():
             if label == value:
                 return key
-        return "lanczos3"
+        return DEFAULT_RESAMPLE_ALGORITHM
 
     def refresh_keyconfig_buttons(self) -> None:
         buttons = getattr(self, "key_binding_buttons", {})
@@ -2303,6 +2465,8 @@ class MainWindow(QMainWindow):
     def on_page_position_slider_direction_changed(self) -> None:
         self.page_position_slider.setInvertedAppearance(self.invert_page_position_check.isChecked())
         self.update_thumbnail_metrics()
+        if self.dual_page_enabled and self.image_paths:
+            self.display_current_image(preserve_view=True)
         self.persist_config()
 
     def current_engine(self) -> str:
@@ -2574,6 +2738,8 @@ class MainWindow(QMainWindow):
         self.update_page_position_slider()
         self.update_window_title()
         self.rebuild_thumbnail_items()
+        if self.dual_page_enabled:
+            self.display_current_image(preserve_view=False, navigation=True)
         self.schedule_prefetch()
         if self.deferred_page_steps:
             steps = self.deferred_page_steps
@@ -2603,33 +2769,40 @@ class MainWindow(QMainWindow):
             return
         profile_start = time.perf_counter()
         path = self.image_paths[self.current_index]
-        source = self.load_original(path)
-        cache_key = self.processing_key(path)
-        processed = self.processed_cache.get(cache_key)
-        if processed is None:
-            existing = self.existing_processed_path(path)
-            if existing is not None:
-                processed = QImage(str(existing))
-                if not processed.isNull():
-                    self.processed_cache[cache_key] = processed
-            skipped = False
-        if processed is None or processed.isNull():
-            if self.should_skip_realcugan(path):
-                skipped = True
-                state = "対象外"
-            else:
-                self.enqueue_realcugan(path, front=True)
-                state = f"{self.engine_label()}待ち"
-            processed = None
-        else:
-            state = "処理済み"
+        source, processed, state, skipped = self.image_state_for_display(path, front=True)
+        secondary_source = QImage()
+        secondary_processed = None
+        secondary_index = self.secondary_page_index()
+        if secondary_index is not None:
+            secondary_path = self.image_paths[secondary_index]
+            secondary_source, secondary_processed, _secondary_state, _secondary_skipped = self.image_state_for_display(secondary_path)
         if navigation:
             self.viewer.begin_interactive_resample_delay()
-        self.viewer.set_images(source, processed, preserve_view=preserve_view)
+        self.viewer.set_images(
+            source,
+            processed,
+            preserve_view=preserve_view,
+            secondary_source=secondary_source,
+            secondary_processed=secondary_processed,
+            dual_page=self.dual_page_enabled,
+            dual_page_reversed=self.dual_page_reversed(),
+        )
         self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", path))
         if processed is not None and not processed.isNull():
             self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
-        self.status_label.setText(f"{self.current_index + 1}/{len(self.image_paths)} {self.state_text(state)}: {self.display_name(path)}")
+        if secondary_index is not None:
+            secondary_path = self.image_paths[secondary_index]
+            self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", secondary_path))
+            if secondary_processed is not None and not secondary_processed.isNull():
+                self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", secondary_path))
+        display_entries = self.current_display_index_entries()
+        if len(display_entries) > 1:
+            page_text = f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)}"
+            name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
+        else:
+            page_text = f"{self.current_index + 1}/{len(self.image_paths)}"
+            name_text = self.display_name(path)
+        self.status_label.setText(f"{page_text} {self.state_text(state)}: {name_text}")
         self.update_page_position_slider()
         self.update_window_title(source=source, processed=processed, skipped=skipped)
         self.update_thumbnail_selection(scroll=scroll_thumbnail)
@@ -2642,6 +2815,33 @@ class MainWindow(QMainWindow):
             self.setWindowTitle(APP_NAME)
             return
         path = self.image_paths[self.current_index]
+        display_entries = self.current_display_index_entries()
+        if len(display_entries) > 1:
+            names: list[str] = []
+            before_parts: list[str] = []
+            after_parts: list[str] = []
+            for _index, entry_path in display_entries:
+                entry_source = source if entry_path == path and source is not None else self.load_original(entry_path)
+                entry_processed = (
+                    processed
+                    if entry_path == path and processed is not None
+                    else self.processed_cache.get(self.processing_key(entry_path))
+                )
+                names.append(self.display_name(entry_path))
+                before_parts.append(f"{entry_source.width()}x{entry_source.height()}")
+                if entry_processed and not entry_processed.isNull():
+                    after_parts.append(f"{entry_processed.width()}x{entry_processed.height()}")
+                elif self.should_skip_realcugan(entry_path):
+                    after_parts.append("Skipped" if self.ui_language() == "en" else "拡大処理対象外")
+                else:
+                    after_parts.append("Processing" if self.ui_language() == "en" else "処理中")
+            secondary_index = self.secondary_page_index()
+            page_text = f"{self.current_index + 1}-{secondary_index + 1} / {len(self.image_paths)}" if secondary_index is not None else f"{self.current_index + 1} / {len(self.image_paths)}"
+            self.setWindowTitle(
+                f"{' / '.join(names)} ({page_text}) "
+                f"[{' + '.join(before_parts)}] -> [{' + '.join(after_parts)}] - {APP_NAME}"
+            )
+            return
         if source is None:
             source = self.load_original(path)
         if processed is None:
@@ -2675,6 +2875,50 @@ class MainWindow(QMainWindow):
     def should_skip_realcugan(self, path: Path) -> bool:
         return self.skip_tall_check.isChecked() and self.load_original(path).height() >= self.skip_height_spin.value()
 
+    def dual_page_reversed(self) -> bool:
+        check = getattr(self, "invert_page_position_check", None)
+        return bool(check.isChecked() if check is not None else self.config_data.invert_page_position_slider)
+
+    def secondary_page_index(self) -> int | None:
+        if not self.dual_page_enabled or self.current_index < 0:
+            return None
+        index = self.current_index + 1
+        return index if index < len(self.image_paths) else None
+
+    def current_display_index_entries(self) -> list[tuple[int, Path]]:
+        if not self.image_paths or self.current_index < 0:
+            return []
+        entries = [(self.current_index, self.image_paths[self.current_index])]
+        secondary_index = self.secondary_page_index()
+        if secondary_index is not None:
+            entries.append((secondary_index, self.image_paths[secondary_index]))
+        if self.dual_page_reversed() and len(entries) > 1:
+            entries.reverse()
+        return entries
+
+    def image_state_for_display(self, path: Path, front: bool = False) -> tuple[QImage, QImage | None, str, bool]:
+        source = self.load_original(path)
+        cache_key = self.processing_key(path)
+        processed = self.processed_cache.get(cache_key)
+        skipped = False
+        if processed is None:
+            existing = self.existing_processed_path(path)
+            if existing is not None:
+                processed = QImage(str(existing))
+                if not processed.isNull():
+                    self.processed_cache[cache_key] = processed
+        if processed is None or processed.isNull():
+            if self.should_skip_realcugan(path):
+                skipped = True
+                state = "対象外"
+            else:
+                self.enqueue_realcugan(path, front=front)
+                state = f"{self.engine_label()}待ち"
+            processed = None
+        else:
+            state = "処理済み"
+        return source, processed, state, skipped
+
     def queue_page_steps(self, steps: int) -> None:
         if not self.image_paths or steps == 0:
             return
@@ -2690,7 +2934,8 @@ class MainWindow(QMainWindow):
             self.page_scroll_timer.stop()
             return
         step = 1 if self.pending_page_steps > 0 else -1
-        if self.show_relative_image(step):
+        index_step = step * (2 if self.dual_page_enabled else 1)
+        if self.show_relative_image(index_step):
             self.pending_page_steps -= step
             if self.pending_page_steps:
                 self.page_scroll_timer.start(max(0, self.page_interval_spin.value()))
@@ -2746,6 +2991,9 @@ class MainWindow(QMainWindow):
             "toggle_thumbnail_panel": self.toggle_thumbnail_panel,
             "toggle_side_panel": self.toggle_side_panel,
             "toggle_compare": self.toggle_compare_mode,
+            "toggle_dual_page": self.toggle_dual_page_mode,
+            "dual_page_shift_forward": lambda: self.shift_dual_page_alignment(True),
+            "dual_page_shift_backward": lambda: self.shift_dual_page_alignment(False),
             "actual_size": self.viewer.zoom_to_actual_size,
             "fit_view": self.viewer.reset_display_state,
             "rotate_right": lambda: self.viewer.rotate_display(90),
@@ -2770,8 +3018,40 @@ class MainWindow(QMainWindow):
                 super().keyPressEvent(event)
 
     def toggle_compare_mode(self) -> None:
+        if self.dual_page_enabled:
+            return
         self.compare_check.setChecked(not self.compare_check.isChecked())
         self.on_compare_changed()
+
+    def toggle_dual_page_mode(self) -> None:
+        self.set_dual_page_enabled(not self.dual_page_enabled)
+
+    def on_dual_page_check_changed(self) -> None:
+        self.set_dual_page_enabled(self.dual_page_check.isChecked())
+
+    def set_dual_page_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        changed = self.dual_page_enabled != enabled
+        self.dual_page_enabled = enabled
+        if hasattr(self, "dual_page_check") and self.dual_page_check.isChecked() != enabled:
+            self.dual_page_check.blockSignals(True)
+            self.dual_page_check.setChecked(enabled)
+            self.dual_page_check.blockSignals(False)
+        if not changed:
+            return
+        if enabled and self.compare_check.isChecked():
+            self.compare_check.blockSignals(True)
+            self.compare_check.setChecked(False)
+            self.compare_check.blockSignals(False)
+        self.update_compare_controls_enabled()
+        self.on_compare_changed()
+        if self.image_paths:
+            self.display_current_image(preserve_view=False, navigation=True)
+        self.persist_config()
+
+    def shift_dual_page_alignment(self, forward: bool) -> None:
+        direction = 1 if self.dual_page_reversed() else -1
+        self.show_relative_image(direction if forward else -direction)
 
     def open_image_dialog(self) -> None:
         start = self.config_data.last_dir or str(Path.home())
@@ -3148,18 +3428,38 @@ class MainWindow(QMainWindow):
         self.compare_slider.setValue(500)
         self.on_compare_changed()
 
+    def update_compare_controls_enabled(self) -> None:
+        enabled = not bool(getattr(self, "dual_page_enabled", False))
+        for widget in (
+            getattr(self, "compare_check", None),
+            getattr(self, "compare_slider", None),
+            getattr(self, "compare_center_button", None),
+            getattr(self, "compare_color_button", None),
+            getattr(self, "compare_line_edit", None),
+            getattr(self, "compare_line_width_spin", None),
+            getattr(self, "compare_swap_check", None),
+            getattr(self, "compare_shift_check", None),
+        ):
+            if widget is not None:
+                widget.setEnabled(enabled)
+
     def on_compare_changed(self) -> None:
+        if getattr(self, "dual_page_enabled", False) and self.compare_check.isChecked():
+            self.compare_check.blockSignals(True)
+            self.compare_check.setChecked(False)
+            self.compare_check.blockSignals(False)
         line_color = self.compare_line_edit.text().strip()
         if not re.fullmatch(r"#[0-9a-fA-F]{6}", line_color):
             return
         self.viewer.set_compare(
-            self.compare_check.isChecked(),
+            self.compare_check.isChecked() and not getattr(self, "dual_page_enabled", False),
             self.compare_slider.value(),
             line_color,
             self.compare_line_width_spin.value(),
             self.compare_swap_check.isChecked(),
             self.compare_shift_check.isChecked(),
         )
+        self.update_compare_controls_enabled()
         self.persist_config()
 
     def on_background_changed(self) -> None:
@@ -3268,7 +3568,7 @@ class MainWindow(QMainWindow):
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
-        self.config_data.settings_tab = ["realcugan", "general", "keyconfig"][max(0, min(2, index))]
+        self.config_data.settings_tab = ["realcugan", "general", "other", "keyconfig"][max(0, min(3, index))]
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:
@@ -3661,11 +3961,32 @@ class MainWindow(QMainWindow):
             self.processed_cache[key] = result["image"]
             self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
-            if self.current_index >= 0 and self.normalized_path(path) == self.normalized_path(self.image_paths[self.current_index]):
-                self.viewer.set_processed(result["image"])
-                self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
-                self.status_label.setText(f"{self.current_index + 1}/{len(self.image_paths)} 処理済み: {self.display_name(path)}")
-                self.update_window_title()
+            if self.current_index >= 0:
+                normalized = self.normalized_path(path)
+                current_normalized = self.normalized_path(self.image_paths[self.current_index])
+                secondary_index = self.secondary_page_index()
+                secondary_normalized = (
+                    self.normalized_path(self.image_paths[secondary_index])
+                    if secondary_index is not None
+                    else None
+                )
+                if normalized == current_normalized:
+                    self.viewer.set_processed(result["image"], page_slot=0)
+                    self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+                    if secondary_index is not None:
+                        display_entries = self.current_display_index_entries()
+                        name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
+                        self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
+                    else:
+                        self.status_label.setText(f"{self.current_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {self.display_name(path)}")
+                    self.update_window_title()
+                elif secondary_normalized is not None and normalized == secondary_normalized:
+                    self.viewer.set_processed(result["image"], page_slot=1)
+                    self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+                    display_entries = self.current_display_index_entries()
+                    name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
+                    self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
+                    self.update_window_title()
         else:
             self.append_log(f"Process exited with code {result['code']}: {self.display_name(path)}")
             self.update_prefetch_progress_bars()
@@ -3735,7 +4056,7 @@ class MainWindow(QMainWindow):
                         images.append(folder / entry.name)
         except OSError:
             return []
-        return sorted(images, key=lambda path: path.name.casefold())
+        return windows_logical_sorted(images, lambda path: path.name)
 
     def is_image(self, path: Path) -> bool:
         return path.suffix.lower() in IMAGE_EXTENSIONS
@@ -3783,7 +4104,10 @@ class MainWindow(QMainWindow):
         images: list[Path] = []
         names: dict[Path, str] = {}
         with zipfile.ZipFile(archive_path) as archive:
-            members = sorted([info for info in archive.infolist() if not info.is_dir() and self.is_image(Path(info.filename))], key=lambda item: item.filename.lower())
+            members = windows_logical_sorted(
+                [info for info in archive.infolist() if not info.is_dir() and self.is_image(Path(info.filename))],
+                lambda item: self.archive_display_name(item.filename),
+            )
             for info in members:
                 output = self.archive_member_output_path(temp_dir, info.filename)
                 if output is None:
@@ -3799,7 +4123,10 @@ class MainWindow(QMainWindow):
         images: list[Path] = []
         names: dict[Path, str] = {}
         with rarfile.RarFile(archive_path) as archive:
-            members = sorted([info for info in archive.infolist() if not info.isdir() and self.is_image(Path(info.filename))], key=lambda item: item.filename.lower())
+            members = windows_logical_sorted(
+                [info for info in archive.infolist() if not info.isdir() and self.is_image(Path(info.filename))],
+                lambda item: self.archive_display_name(item.filename),
+            )
             for info in members:
                 output = self.archive_member_output_path(temp_dir, info.filename)
                 if output is None:
@@ -3821,7 +4148,10 @@ class MainWindow(QMainWindow):
         return self.collect_archive_outputs(temp_dir)
 
     def collect_archive_outputs(self, temp_dir: Path) -> tuple[list[Path], dict[Path, str]]:
-        images = sorted([path.resolve() for path in temp_dir.rglob("*") if path.is_file() and self.is_image(path)], key=lambda path: str(path.relative_to(temp_dir)).lower())
+        images = windows_logical_sorted(
+            [path.resolve() for path in temp_dir.rglob("*") if path.is_file() and self.is_image(path)],
+            lambda path: str(path.relative_to(temp_dir)),
+        )
         names = {path: self.archive_display_name(str(path.relative_to(temp_dir))) for path in images}
         return images, names
 
@@ -3919,13 +4249,17 @@ class MainWindow(QMainWindow):
 def main() -> None:
     enable_high_dpi_awareness()
     set_process_app_user_model_id()
+    single_instance_mutex = acquire_single_instance_mutex_if_needed()
     app = QApplication([])
     app.setApplicationName(APP_NAME)
     if APP_ICON_ICO.exists():
         app.setWindowIcon(QIcon(str(APP_ICON_ICO)))
     window = MainWindow()
     window.show()
-    app.exec()
+    try:
+        app.exec()
+    finally:
+        release_single_instance_mutex(single_instance_mutex)
 
 
 if __name__ == "__main__":
