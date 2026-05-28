@@ -110,6 +110,8 @@ Real-ESRGAN モデル:
 - 拡大縮小時の高品質補完
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area
 - アプリの二重起動禁止
+- 最後に開いていた画像を次回起動時に開く
+- フォルダごとに最後に開いていた画像を記録
 - 次回起動時の古い一時ファイル削除
 
 サムネイル列は下端に表示されます。固定表示では画像表示領域を少し使い、自動表示ではビューアー下端へマウスを近づけた時だけ重ねて表示します。サムネイルの大きさは列の高さ変更に合わせて自動調整されます。
@@ -144,6 +146,9 @@ Real-ESRGAN モデル:
 
 - `O`: 画像を開く（キーコンフィグで変更可能）
 - `F`: フォルダを開く（キーコンフィグで変更可能）
+- 上カーソル: 親フォルダへ移動（キーコンフィグで変更可能）
+- 下カーソル: 次フォルダへ移動（キーコンフィグで変更可能）
+- `Ctrl` + 下カーソル: 子フォルダへ移動（キーコンフィグで変更可能）
 - 左カーソル: 次ページへ移動（キーコンフィグで変更可能）
 - 右カーソル: 前ページへ移動（キーコンフィグで変更可能）
 - `F3`: サムネイル列の固定/自動表示を切り替え（キーコンフィグで変更可能）
@@ -159,6 +164,8 @@ Real-ESRGAN モデル:
 - `Space`: 次ページへ移動
 - `Backspace`: 前ページへ移動
 
+フォルダ移動では、RAIVが作成した倍率フォルダは移動先候補から除外されます。
+
 ## 保存フォルダ
 
 拡大結果の保存を有効にすると、元画像と同じフォルダ配下にエンジン/倍率に応じたサブフォルダを作成します。
@@ -172,7 +179,7 @@ Real-ESRGAN モデル:
 
 ## 設定と一時ファイル
 
-設定はアプリと同じフォルダの `setting.json` に保存されます。設定ファイルがない場合は初期設定で起動します。
+設定はアプリと同じフォルダの `setting.json` に保存されます。設定ファイルがない場合は初期設定で起動します。フォルダごとの最後に開いていた画像の履歴は、設定ファイルが大きくなりすぎないよう `folder_history.json` に分けて保存されます。保存件数はその他タブで変更でき、`0` にすると無制限です。
 
 一時ファイルは OS の一時フォルダに RAIV 用の接頭辞付きで作成され、通常終了時に削除されます。クラッシュなどで残った場合に備えて、その他タブから次回起動時の古い一時ファイル削除を予約できます。
 
@@ -305,6 +312,8 @@ Other:
 - High-quality scaling for zoomed/resized display
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area
 - Prevent multiple app instances
+- Open the last viewed image on startup
+- Remember the last viewed image for each folder
 - Cleanup old temporary files on next startup
 
 The thumbnail strip appears at the bottom. In pinned mode it uses part of the image area; in auto mode it overlays the viewer only when the mouse approaches the bottom edge. Thumbnail size is adjusted automatically from the strip height.
@@ -339,6 +348,9 @@ Keyboard:
 
 - `O`: open image, configurable
 - `F`: open folder, configurable
+- Up arrow: move to parent folder, configurable
+- Down arrow: move to next folder, configurable
+- `Ctrl` + Down arrow: move to child folder, configurable
 - Left arrow: next page, configurable
 - Right arrow: previous page, configurable
 - `F3`: toggle thumbnail strip pinned/auto mode, configurable
@@ -354,6 +366,8 @@ Keyboard:
 - `Space`: next page
 - `Backspace`: previous page
 
+Folder navigation ignores scale folders created by RAIV.
+
 ## Save Folders
 
 When saving processed results is enabled, RAIV creates an engine/scale-specific subfolder next to the original image.
@@ -367,7 +381,7 @@ While viewing archives, scale-folder saving and scale-folder cache loading are d
 
 ## Settings and Temporary Files
 
-Settings are saved as `setting.json` in the application folder. If the file does not exist, RAIV starts with default settings.
+Settings are saved as `setting.json` in the application folder. If the file does not exist, RAIV starts with default settings. Per-folder last-viewed image history is saved separately as `folder_history.json` so the main settings file does not grow too large. The maximum number of history entries can be changed in the Other tab; set it to `0` for unlimited history.
 
 Temporary files are created under the OS temporary folder with RAIV-specific prefixes and are removed on normal exit. If files remain after a crash, you can reserve cleanup of old temporary files from the Other tab for the next startup.
 

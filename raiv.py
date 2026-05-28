@@ -19,7 +19,7 @@ from pathlib import Path, PurePosixPath
 
 try:
     from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
@@ -88,6 +88,7 @@ APP_SHORT_NAME = "RAIV"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
+FOLDER_HISTORY_PATH = APP_DIR / "folder_history.json"
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
 CURVE_DIR = APP_DIR / "cur"
@@ -150,6 +151,9 @@ MODIFIER_MASK = (
 ACTION_DEFS = [
     ("open_image", "画像を開く"),
     ("open_folder", "フォルダを開く"),
+    ("parent_folder", "親フォルダへ移動"),
+    ("next_folder", "次フォルダへ移動"),
+    ("child_folder", "子フォルダへ移動"),
     ("next_page", "次ページ送り"),
     ("previous_page", "前ページ送り"),
     ("last_page", "最終ページ飛ばし"),
@@ -201,6 +205,9 @@ def windows_logical_sorted(items, text_func):
 UI_TEXT_EN = {
     "画像を開く": "Open image",
     "フォルダを開く": "Open folder",
+    "親フォルダへ移動": "Move to parent folder",
+    "次フォルダへ移動": "Move to next folder",
+    "子フォルダへ移動": "Move to child folder",
     "次ページ送り": "Next page",
     "前ページ送り": "Previous page",
     "最終ページ飛ばし": "Jump to last page",
@@ -250,6 +257,10 @@ UI_TEXT_EN = {
     "使用できる置換: {input} {output} {scale} {denoise} {tile} {model}": "Available placeholders: {input} {output} {scale} {denoise} {tile} {model}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "アプリの二重起動を禁止する": "Prevent multiple app instances",
+    "最後に開いていた画像を次回起動時に開く": "Open the last viewed image on startup",
+    "フォルダごとに最後に開いていた画像を記録する": "Remember last viewed image for each folder",
+    "フォルダ履歴保存件数": "Folder history limit",
+    "0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。": "0 means unlimited. History is saved to folder_history.json, not setting.json.",
     "表示言語": "Language",
     "ビューアー先読み": "Viewer prefetch",
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
@@ -356,6 +367,9 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
     return {
         "open_image": {"keyboard": key_binding(Qt.Key_O), "mouse": None},
         "open_folder": {"keyboard": key_binding(Qt.Key_F), "mouse": None},
+        "parent_folder": {"keyboard": key_binding(Qt.Key_Up), "mouse": None},
+        "next_folder": {"keyboard": key_binding(Qt.Key_Down), "mouse": None},
+        "child_folder": {"keyboard": key_binding(Qt.Key_Down, Qt.ControlModifier.value), "mouse": None},
         "next_page": {"keyboard": key_binding(Qt.Key_Left), "mouse": None},
         "previous_page": {"keyboard": key_binding(Qt.Key_Right), "mouse": None},
         "last_page": {"keyboard": None, "mouse": mouse_binding(Qt.ForwardButton)},
@@ -424,6 +438,10 @@ class AppConfig:
     key_bindings: dict[str, dict[str, dict | None]] = field(default_factory=default_key_bindings)
     cleanup_temp_on_start: bool = False
     single_instance_enabled: bool = False
+    restore_last_image_on_start: bool = False
+    last_image_path: str = ""
+    remember_last_image_per_folder: bool = False
+    folder_history_limit: int = 1000
     settings_tab: str = "realcugan"
     window_rect: list[int] | None = None
     window_maximized: bool = False
@@ -549,6 +567,33 @@ def load_config() -> AppConfig:
 
 def save_config(config: AppConfig) -> None:
     CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_folder_history() -> dict[str, dict[str, object]]:
+    if not FOLDER_HISTORY_PATH.exists():
+        return {}
+    try:
+        data = json.loads(FOLDER_HISTORY_PATH.read_text(encoding="utf-8-sig"))
+        entries = data.get("entries", data) if isinstance(data, dict) else {}
+        if not isinstance(entries, dict):
+            return {}
+        normalized: dict[str, dict[str, object]] = {}
+        for folder, entry in entries.items():
+            if isinstance(folder, str) and isinstance(entry, dict) and isinstance(entry.get("image"), str):
+                normalized[folder] = {
+                    "image": entry["image"],
+                    "updated": float(entry.get("updated", 0)),
+                }
+        return normalized
+    except Exception:
+        return {}
+
+
+def save_folder_history(entries: dict[str, dict[str, object]]) -> None:
+    FOLDER_HISTORY_PATH.write_text(
+        json.dumps({"entries": entries}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def acquire_single_instance_mutex_if_needed() -> object | None:
@@ -1097,6 +1142,8 @@ class GLImageView(QOpenGLWidget):
         self.zoom_drag_start: QPoint | None = None
         self.fit_scale_anchor: float | None = None
         self.fit_image_size: tuple[int, int] | None = None
+        self.empty_message_title = ""
+        self.empty_message_detail = ""
 
     def set_images(
         self,
@@ -1117,6 +1164,8 @@ class GLImageView(QOpenGLWidget):
         self.raw_processed_image = processed or QImage()
         self.raw_secondary_source_image = secondary_source or QImage()
         self.raw_secondary_processed_image = secondary_processed or QImage()
+        self.empty_message_title = ""
+        self.empty_message_detail = ""
         self.dual_page_enabled = bool(dual_page)
         self.dual_page_reversed = bool(dual_page_reversed)
         self.display_rotation = preserved_rotation
@@ -1136,6 +1185,24 @@ class GLImageView(QOpenGLWidget):
                 self.reset_view(update=False)
         else:
             self.reset_view(update=False)
+        self.update()
+
+    def set_empty_message(self, title: str, detail: str) -> None:
+        self.raw_source_image = QImage()
+        self.raw_processed_image = QImage()
+        self.raw_secondary_source_image = QImage()
+        self.raw_secondary_processed_image = QImage()
+        self.source_image = QImage()
+        self.processed_image = QImage()
+        self.secondary_source_image = QImage()
+        self.secondary_processed_image = QImage()
+        self.source_pixmap = QPixmap()
+        self.processed_pixmap = QPixmap()
+        self.secondary_source_pixmap = QPixmap()
+        self.secondary_processed_pixmap = QPixmap()
+        self.empty_message_title = title
+        self.empty_message_detail = detail
+        self.reset_view(update=False)
         self.update()
 
     def set_processed(self, processed: QImage | None, page_slot: int = 0) -> None:
@@ -1503,6 +1570,37 @@ class GLImageView(QOpenGLWidget):
         else:
             painter.drawPixmap(target, pixmap)
 
+    def draw_empty_message(self, painter: QPainter) -> None:
+        if not self.empty_message_title and not self.empty_message_detail:
+            return
+        rect = self.rect().adjusted(32, 32, -32, -32)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+        color = QColor("#ffffff" if self.background.lightness() < 128 else "#111111")
+        painter.setPen(color)
+        title_font = QFont(painter.font())
+        title_font.setBold(True)
+        title_font.setPointSize(max(12, title_font.pointSize() + 2))
+        painter.setFont(title_font)
+        title_bounds = painter.boundingRect(rect, Qt.AlignCenter | Qt.TextWordWrap, self.empty_message_title)
+        detail_font = QFont(painter.font())
+        detail_font.setBold(False)
+        detail_font.setPointSize(max(9, title_font.pointSize() - 2))
+        painter.setFont(detail_font)
+        detail_bounds = painter.boundingRect(rect, Qt.AlignCenter | Qt.TextWordWrap, self.empty_message_detail)
+        spacing = 12 if self.empty_message_title and self.empty_message_detail else 0
+        total_height = title_bounds.height() + spacing + detail_bounds.height()
+        top = rect.top() + max(0, (rect.height() - total_height) // 2)
+        if self.empty_message_title:
+            title_rect = QRect(rect.left(), top, rect.width(), title_bounds.height())
+            painter.setFont(title_font)
+            painter.drawText(title_rect, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self.empty_message_title)
+            top += title_bounds.height() + spacing
+        if self.empty_message_detail:
+            detail_rect = QRect(rect.left(), top, rect.width(), detail_bounds.height())
+            painter.setFont(detail_font)
+            painter.drawText(detail_rect, Qt.AlignHCenter | Qt.AlignTop | Qt.TextWordWrap, self.empty_message_detail)
+
     def paintGL(self) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -1510,6 +1608,7 @@ class GLImageView(QOpenGLWidget):
         painter.fillRect(self.rect(), self.background)
         target = self.image_rect()
         if target.isNull():
+            self.draw_empty_message(painter)
             painter.end()
             return
 
@@ -1704,9 +1803,15 @@ class MainWindow(QMainWindow):
         self.image_path_set: set[Path] = set()
         self.image_path_string_set: set[str] = set()
         self.current_index = -1
+        self.current_folder_path: Path | None = None
         self.dual_page_enabled = bool(self.config_data.dual_page_enabled)
         self.tone_curves: dict[str, ToneCurve] = {}
         self.current_tone_curve: ToneCurve | None = None
+        self.folder_history: dict[str, dict[str, object]] = load_folder_history()
+        self.folder_history_dirty = False
+        self.folder_history_save_timer = QTimer(self)
+        self.folder_history_save_timer.setSingleShot(True)
+        self.folder_history_save_timer.timeout.connect(self.save_folder_history_now)
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -1819,6 +1924,7 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._apply_settings_to_viewer()
         self.initializing = False
+        self.restore_last_image_if_needed()
 
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
@@ -2309,6 +2415,22 @@ class MainWindow(QMainWindow):
         self.single_instance_check.setChecked(self.config_data.single_instance_enabled)
         self.single_instance_check.stateChanged.connect(self.on_general_settings_changed)
         other_layout.addWidget(self.single_instance_check)
+        self.restore_last_image_check = QCheckBox("最後に開いていた画像を次回起動時に開く")
+        self.restore_last_image_check.setChecked(self.config_data.restore_last_image_on_start)
+        self.restore_last_image_check.stateChanged.connect(self.on_general_settings_changed)
+        other_layout.addWidget(self.restore_last_image_check)
+        self.folder_history_check = QCheckBox("フォルダごとに最後に開いていた画像を記録する")
+        self.folder_history_check.setChecked(self.config_data.remember_last_image_per_folder)
+        self.folder_history_check.stateChanged.connect(self.on_general_settings_changed)
+        other_layout.addWidget(self.folder_history_check)
+        folder_history_form = QFormLayout()
+        self.folder_history_limit_spin = QSpinBox()
+        self.folder_history_limit_spin.setRange(0, 999999)
+        self.folder_history_limit_spin.setValue(max(0, int(self.config_data.folder_history_limit)))
+        self.folder_history_limit_spin.valueChanged.connect(self.on_general_settings_changed)
+        folder_history_form.addRow("フォルダ履歴保存件数", self.folder_history_limit_spin)
+        other_layout.addLayout(folder_history_form)
+        other_layout.addWidget(self.help_label("0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。"))
         self.cleanup_check = QCheckBox("次回起動時に古い一時ファイルを削除")
         self.cleanup_check.setChecked(self.config_data.cleanup_temp_on_start)
         self.cleanup_check.stateChanged.connect(self.on_cleanup_changed)
@@ -2318,7 +2440,7 @@ class MainWindow(QMainWindow):
 
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, language_form, resample_form)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, language_form, resample_form, folder_history_form)
 
         tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "other": 3, "keyconfig": 4}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
@@ -2537,6 +2659,9 @@ class MainWindow(QMainWindow):
         self.config_data.thumbnail_height = self.clamped_thumbnail_height()
         self.config_data.thumbnail_size = self.thumbnail_icon_size()
         self.config_data.single_instance_enabled = self.single_instance_check.isChecked()
+        self.config_data.restore_last_image_on_start = self.restore_last_image_check.isChecked()
+        self.config_data.remember_last_image_per_folder = self.folder_history_check.isChecked()
+        self.config_data.folder_history_limit = self.folder_history_limit_spin.value()
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
         self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "other", "keyconfig"][max(0, min(4, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
@@ -2577,6 +2702,16 @@ class MainWindow(QMainWindow):
         self.update_thumbnail_metrics()
         self.layout_viewer_host()
         self.on_compare_changed()
+
+    def restore_last_image_if_needed(self) -> None:
+        if not self.config_data.restore_last_image_on_start:
+            return
+        path_text = self.config_data.last_image_path.strip()
+        if not path_text:
+            return
+        path = Path(path_text)
+        if path.is_file() and self.is_image(path):
+            QTimer.singleShot(0, lambda p=path: self.open_path_deferred(p))
 
     def current_resample_algorithm(self) -> str:
         label = self.cpu_resample_combo.currentText() if hasattr(self, "cpu_resample_combo") else RESAMPLE_ALGORITHMS[DEFAULT_RESAMPLE_ALGORITHM]
@@ -2758,6 +2893,8 @@ class MainWindow(QMainWindow):
         scroll_value = scroll_bar.value()
         self.last_navigation_step = 1 if index > self.current_index else -1
         self.current_index = index
+        self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+        self.record_folder_history(self.image_paths[self.current_index])
         self.display_current_image(preserve_view=self.preserve_view_check.isChecked(), navigation=True, scroll_thumbnail=False)
         scroll_bar.setValue(scroll_value)
 
@@ -2834,6 +2971,8 @@ class MainWindow(QMainWindow):
             return
         self.last_navigation_step = 1 if index > self.current_index else -1
         self.current_index = index
+        self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+        self.record_folder_history(self.image_paths[self.current_index])
         self.display_current_image(preserve_view=self.preserve_view_check.isChecked(), navigation=True)
 
     def on_page_position_slider_direction_changed(self) -> None:
@@ -3027,7 +3166,7 @@ class MainWindow(QMainWindow):
         self.leave_archive_mode()
         if path.is_dir():
             images = self.collect_images(path)
-            index = 0
+            index = self.folder_history_index(path, images)
         elif path.is_file() and self.is_image(path):
             images = [path]
             index = 0
@@ -3035,10 +3174,16 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, APP_NAME, self.tr_ui("画像ファイル、画像フォルダ、またはアーカイブを指定してください。"))
             return
         if not images:
-            QMessageBox.information(self, APP_NAME, self.tr_ui("対応画像がありません。"))
+            if path.is_dir():
+                self.set_empty_folder(path)
+                self.config_data.last_dir = str(path)
+                self.persist_config()
+            else:
+                QMessageBox.information(self, APP_NAME, self.tr_ui("対応画像がありません。"))
             return
         self.set_image_list(images, index)
         self.config_data.last_dir = str(images[index].parent)
+        self.config_data.last_image_path = str(images[index])
         self.persist_config()
         if path.is_file() and self.is_image(path):
             self.folder_list_loading = True
@@ -3053,6 +3198,7 @@ class MainWindow(QMainWindow):
             self.folder_list_loading = True
             self.deferred_page_steps = 0
             self.config_data.last_dir = str(path.parent)
+            self.config_data.last_image_path = str(path)
             QTimer.singleShot(0, lambda p=path: self.collect_folder_images_async(p.parent, p))
             QTimer.singleShot(0, self.persist_config)
             return
@@ -3062,6 +3208,10 @@ class MainWindow(QMainWindow):
         self.image_paths = images
         self.refresh_image_path_sets()
         self.current_index = index
+        self.current_folder_path = images[index].resolve().parent if images and 0 <= index < len(images) else None
+        if images and 0 <= index < len(images):
+            self.config_data.last_image_path = str(images[index].resolve())
+            self.record_folder_history(images[index])
         self.pending_page_steps = 0
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -3081,6 +3231,101 @@ class MainWindow(QMainWindow):
             self.display_current_image(defer_work=True)
         else:
             self.display_current_image()
+
+    def set_empty_folder(self, folder: Path) -> None:
+        folder = folder.resolve()
+        self.image_paths = []
+        self.refresh_image_path_sets()
+        self.current_index = -1
+        self.current_folder_path = folder
+        self.config_data.last_image_path = ""
+        self.pending_page_steps = 0
+        self.folder_list_loading = False
+        self.deferred_page_steps = 0
+        self.original_cache.clear()
+        self.processed_cache.clear()
+        self.viewer.pixmap_cache.clear()
+        self.viewer.clear_pixmap_prefetch_state()
+        self.prefetching_original_paths.clear()
+        self.prefetching_processed_keys.clear()
+        self.prefetch_viewer_plan = []
+        self.prefetch_engine_plan = []
+        self.prefetch_engine_done_paths.clear()
+        self.prefetch_generation += 1
+        self.update_prefetch_progress_bars()
+        self.rebuild_thumbnail_items()
+        english = self.ui_language() == "en"
+        empty_state = "No images" if english else "対応画像なし"
+        title = "No supported images in this folder" if english else "このフォルダには対応画像がありません"
+        self.viewer.set_empty_message(title, str(folder))
+        self.status_label.setText(f"0/0 {empty_state}: {folder.name}")
+        self.update_page_position_slider()
+        self.setWindowTitle(f"{folder.name} (0 / 0) - {APP_NAME}")
+
+    def folder_history_enabled(self) -> bool:
+        check = getattr(self, "folder_history_check", None)
+        return bool(check.isChecked() if check is not None else self.config_data.remember_last_image_per_folder)
+
+    def folder_history_key(self, folder: Path) -> str:
+        try:
+            return str(folder.resolve())
+        except OSError:
+            return str(folder)
+
+    def folder_history_index(self, folder: Path, images: list[Path]) -> int:
+        if not self.folder_history_enabled() or not images:
+            return 0
+        entry = self.folder_history.get(self.folder_history_key(folder))
+        if not isinstance(entry, dict):
+            return 0
+        remembered = entry.get("image")
+        if not isinstance(remembered, str):
+            return 0
+        remembered_path = Path(remembered)
+        try:
+            remembered_resolved = remembered_path.resolve()
+        except OSError:
+            remembered_resolved = remembered_path
+        for index, image in enumerate(images):
+            if image.resolve() == remembered_resolved:
+                return index
+        return 0
+
+    def record_folder_history(self, image_path: Path) -> None:
+        if self.archive_mode_active() or not self.folder_history_enabled():
+            return
+        try:
+            image = image_path.resolve()
+            folder = image.parent
+        except OSError:
+            return
+        self.folder_history[self.folder_history_key(folder)] = {
+            "image": str(image),
+            "updated": time.time(),
+        }
+        self.folder_history_dirty = True
+        self.prune_folder_history()
+        self.folder_history_save_timer.start(700)
+
+    def prune_folder_history(self) -> bool:
+        limit = int(getattr(self, "folder_history_limit_spin", None).value() if hasattr(self, "folder_history_limit_spin") else self.config_data.folder_history_limit)
+        if limit <= 0 or len(self.folder_history) <= limit:
+            return False
+        ordered = sorted(
+            self.folder_history.items(),
+            key=lambda item: float(item[1].get("updated", 0)) if isinstance(item[1], dict) else 0,
+            reverse=True,
+        )
+        self.folder_history = dict(ordered[:limit])
+        self.folder_history_dirty = True
+        return True
+
+    def save_folder_history_now(self) -> None:
+        if not self.folder_history_dirty:
+            return
+        self.prune_folder_history()
+        save_folder_history(self.folder_history)
+        self.folder_history_dirty = False
 
     def collect_folder_images_async(self, folder: Path, selected_path: Path) -> None:
         def worker() -> None:
@@ -3106,6 +3351,9 @@ class MainWindow(QMainWindow):
         self.image_paths = images
         self.refresh_image_path_sets()
         self.current_index = selected_index
+        self.current_folder_path = images[selected_index].resolve().parent
+        self.config_data.last_image_path = str(images[selected_index].resolve())
+        self.record_folder_history(images[selected_index])
         self.folder_list_loading = False
         state = "Displaying" if self.ui_language() == "en" else "表示中"
         self.status_label.setText(f"{self.current_index + 1}/{len(self.image_paths)} {state}: {self.display_name(selected_path)}")
@@ -3341,6 +3589,8 @@ class MainWindow(QMainWindow):
             next_index %= len(self.image_paths)
         self.last_navigation_step = 1 if step > 0 else -1
         self.current_index = next_index
+        self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+        self.record_folder_history(self.image_paths[self.current_index])
         self.display_current_image(preserve_view=self.preserve_view_check.isChecked(), navigation=True)
         return True
 
@@ -3348,12 +3598,16 @@ class MainWindow(QMainWindow):
         if self.image_paths:
             self.current_index = 0
             self.last_navigation_step = -1
+            self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+            self.record_folder_history(self.image_paths[self.current_index])
             self.display_current_image(preserve_view=self.preserve_view_check.isChecked(), navigation=True)
 
     def show_last_image(self) -> None:
         if self.image_paths:
             self.current_index = len(self.image_paths) - 1
             self.last_navigation_step = 1
+            self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+            self.record_folder_history(self.image_paths[self.current_index])
             self.display_current_image(preserve_view=self.preserve_view_check.isChecked(), navigation=True)
 
     def matching_key_action(self, event) -> str | None:
@@ -3374,6 +3628,9 @@ class MainWindow(QMainWindow):
         actions = {
             "open_image": self.open_image_dialog,
             "open_folder": self.open_folder_dialog,
+            "parent_folder": self.open_parent_folder,
+            "next_folder": self.open_next_folder,
+            "child_folder": self.open_child_folder,
             "next_page": lambda: self.queue_page_steps(1),
             "previous_page": lambda: self.queue_page_steps(-1),
             "last_page": self.show_last_image,
@@ -3546,6 +3803,112 @@ class MainWindow(QMainWindow):
         if path:
             self.open_path(Path(path))
 
+    def current_real_folder(self) -> Path | None:
+        if self.archive_mode_active():
+            return None
+        if self.current_folder_path is not None:
+            return self.current_folder_path
+        if not self.image_paths or self.current_index < 0:
+            return None
+        try:
+            return self.image_paths[self.current_index].resolve().parent
+        except OSError:
+            return None
+
+    def is_raiv_scale_folder(self, path: Path) -> bool:
+        name = path.name.casefold()
+        if re.fullmatch(r"x\d+", name):
+            return True
+        if re.fullmatch(r"realcugan(?:_[a-z0-9_.-]+)?_x\d+", name):
+            return True
+        if re.fullmatch(r"realesrgan_[a-z0-9_.-]+_x\d+", name):
+            return True
+        return False
+
+    def collect_child_folders(self, folder: Path) -> list[Path]:
+        folders: list[Path] = []
+        try:
+            with os.scandir(folder) as entries:
+                for entry in entries:
+                    if not entry.is_dir():
+                        continue
+                    path = folder / entry.name
+                    if self.is_raiv_scale_folder(path):
+                        continue
+                    folders.append(path)
+        except OSError:
+            return []
+        return windows_logical_sorted(folders, lambda path: path.name)
+
+    def first_descendant_folder(self, folder: Path, depth: int) -> Path | None:
+        target = folder
+        for _index in range(depth):
+            children = self.collect_child_folders(target)
+            if not children:
+                return None
+            target = children[0]
+        return target
+
+    def open_folder_from_navigation(self, folder: Path) -> bool:
+        folder = folder.resolve()
+        if not folder.is_dir():
+            self.append_log_if_visible(f"Folder navigation skipped: folder does not exist: {folder}.")
+            return False
+        images = self.collect_images(folder)
+        self.leave_archive_mode()
+        if images:
+            self.set_image_list(images, self.folder_history_index(folder, images))
+        else:
+            self.set_empty_folder(folder)
+            self.append_log_if_visible(f"Folder navigation opened empty folder: {folder}.")
+        self.config_data.last_dir = str(folder)
+        self.persist_config()
+        return True
+
+    def open_parent_folder(self) -> None:
+        current = self.current_real_folder()
+        if current is None:
+            self.append_log_if_visible("Folder navigation skipped: no normal folder is open.")
+            return
+        if current.parent == current:
+            self.append_log_if_visible("Folder navigation skipped: parent folder does not exist.")
+            return
+        self.open_folder_from_navigation(current.parent)
+
+    def open_child_folder(self) -> None:
+        current = self.current_real_folder()
+        if current is None:
+            self.append_log_if_visible("Folder navigation skipped: no normal folder is open.")
+            return
+        children = self.collect_child_folders(current)
+        if children:
+            self.open_folder_from_navigation(children[0])
+        else:
+            self.append_log_if_visible(f"Folder navigation skipped: no child folder in {current}.")
+
+    def open_next_folder(self) -> None:
+        current = self.current_real_folder()
+        if current is None:
+            self.append_log_if_visible("Folder navigation skipped: no normal folder is open.")
+            return
+        child = current
+        parent = current.parent
+        depth_to_restore = 0
+        while parent != child:
+            siblings = self.collect_child_folders(parent)
+            try:
+                sibling_index = [folder.resolve() for folder in siblings].index(child.resolve())
+            except ValueError:
+                sibling_index = -1
+            for sibling in siblings[sibling_index + 1:]:
+                target = self.first_descendant_folder(sibling, depth_to_restore)
+                if target is not None and self.open_folder_from_navigation(target):
+                    return
+            depth_to_restore += 1
+            child = parent
+            parent = parent.parent
+        self.append_log_if_visible(f"Folder navigation skipped: no next folder after {current}.")
+
     def dragEnterEvent(self, event) -> None:
         if event.mimeData().hasUrls():
             event.acceptProposedAction()
@@ -3565,6 +3928,7 @@ class MainWindow(QMainWindow):
     def show_side_panel(self) -> None:
         if self.pin_button.isChecked():
             return
+        self._show_fullscreen_cursor()
         if not self.side_panel.isVisible():
             self.overlay_hide_suppressed_until = time.monotonic() + SIDE_PANEL_HIDE_GRACE_SEC
             self.detach_side_panel_for_overlay(visible=True)
@@ -3802,6 +4166,8 @@ class MainWindow(QMainWindow):
             elif event.type() == QEvent.MouseMove and not self.thumbnails_pinned():
                 self.show_thumbnail_overlay()
         if watched is getattr(self, "side_panel", None):
+            if event.type() in {QEvent.Enter, QEvent.MouseButtonPress, QEvent.MouseMove}:
+                self._show_fullscreen_cursor()
             if self.side_panel_overlay and not self.pin_button.isChecked():
                 if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and event.position().x() <= 18:
                     self.overlay_resizing = True
@@ -3871,6 +4237,9 @@ class MainWindow(QMainWindow):
 
     def _apply_fullscreen_cursor(self) -> None:
         if self.is_app_fullscreen() and self.hide_cursor_fullscreen_check.isChecked() and not self.fullscreen_cursor_hidden:
+            if self.is_cursor_over_cursor_visible_area():
+                QTimer.singleShot(1200, self._apply_fullscreen_cursor)
+                return
             QApplication.setOverrideCursor(QCursor(Qt.BlankCursor))
             self.fullscreen_cursor_hidden = True
 
@@ -3878,6 +4247,24 @@ class MainWindow(QMainWindow):
         if self.fullscreen_cursor_hidden:
             QApplication.restoreOverrideCursor()
             self.fullscreen_cursor_hidden = False
+
+    def is_cursor_over_cursor_visible_area(self) -> bool:
+        if QApplication.activePopupWidget() is not None:
+            return True
+        global_pos = QCursor.pos()
+        widget = QApplication.widgetAt(global_pos)
+        for area in (getattr(self, "side_panel", None), getattr(self, "thumbnail_panel", None)):
+            if area is None or not area.isVisible():
+                continue
+            local = area.mapFromGlobal(global_pos)
+            if area.rect().contains(local):
+                return True
+            current = widget
+            while current is not None:
+                if current is area:
+                    return True
+                current = current.parentWidget()
+        return False
 
     def is_app_fullscreen(self) -> bool:
         return self.borderless_fullscreen
@@ -4031,7 +4418,13 @@ class MainWindow(QMainWindow):
             self.horizontal_wheel_check.isChecked(),
             self.horizontal_wheel_invert_check.isChecked(),
         )
+        if self.restore_last_image_check.isChecked() and self.image_paths and self.current_index >= 0:
+            self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
         self.persist_config()
+        if self.folder_history_check.isChecked() and self.image_paths and self.current_index >= 0:
+            self.record_folder_history(self.image_paths[self.current_index])
+        elif self.prune_folder_history():
+            self.folder_history_save_timer.start(700)
         if self.is_app_fullscreen():
             if self.hide_cursor_fullscreen_check.isChecked():
                 self._apply_fullscreen_cursor()
@@ -4711,6 +5104,8 @@ class MainWindow(QMainWindow):
         self.closing = True
         self._show_fullscreen_cursor()
         self.persist_config()
+        self.folder_history_save_timer.stop()
+        self.save_folder_history_now()
         self.work_queue.put(None)
         paths = list(self.retired_archive_temp_dirs)
         if self.archive_temp_dir:

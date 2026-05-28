@@ -1,5 +1,6 @@
 ﻿# User-local settings
 setting.json
+folder_history.json
 
 # Python cache/runtime output
 __pycache__/

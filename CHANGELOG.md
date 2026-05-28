@@ -5,6 +5,19 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
+## Unreleased
+
+### 追加 / Added
+
+- 親フォルダ、次フォルダ、子フォルダへ移動するキーコンフィグ対応のフォルダ移動機能を追加
+- 最後に開いていた画像を次回起動時に開くオプションを追加
+- フォルダごとに最後に開いていた画像を記録し、次回そのフォルダを開いた時に復元するオプションを追加
+
+### 修正 / Fixed
+
+- 全画面表示時のマウスカーソル自動非表示が、右ペイン操作中にも働く場合がある問題を修正
+- 空フォルダを開いた時に、ポップアップではなくビューアー内へ画像なし状態を表示するように変更
+
 ## v0.1.2 - 2026-05-27
 
 ### 追加 / Added
