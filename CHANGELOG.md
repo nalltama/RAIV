@@ -7,6 +7,12 @@ This file summarizes notable changes for each release. It focuses on user-visibl
 
 ## Unreleased
 
+現在未リリースの変更はありません。
+
+No unreleased changes.
+
+## v0.1.3 - 2026-05-28
+
 ### 追加 / Added
 
 - 親フォルダ、次フォルダ、子フォルダへ移動するキーコンフィグ対応のフォルダ移動機能を追加
