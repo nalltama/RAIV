@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import ctypes
+import io
 import json
 import locale
 import os
@@ -11,6 +12,10 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
 import zipfile
 from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
@@ -28,6 +33,7 @@ try:
         QComboBox,
         QDialog,
         QDialogButtonBox,
+        QDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QFrame,
@@ -68,9 +74,10 @@ except ImportError:
     py7zr = None
 
 try:
-    from PIL import Image as PILImage
+    from PIL import Image as PILImage, ImageFilter
 except ImportError:
     PILImage = None
+    ImageFilter = None
 
 try:
     import cv2
@@ -85,10 +92,30 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
+APP_VERSION = "0.1.4"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
 FOLDER_HISTORY_PATH = APP_DIR / "folder_history.json"
+LATEST_RELEASE_API_URL = "https://api.github.com/repos/nalltama/RAIV/releases/latest"
+DEFAULT_COMFYUI_API_URL = "http://127.0.0.1:8000"
+COMFYUI_RECOMMENDED_MODEL_NAME = "animagine-xl-4.0-opt.safetensors"
+COMFYUI_RECOMMENDED_MODEL_URL = "https://huggingface.co/cagliostrolab/animagine-xl-4.0/resolve/main/animagine-xl-4.0-opt.safetensors"
+COMFYUI_RECOMMENDED_CONTROLNET_NAME = "shermang_controlnet_standard_lineart_sdxl.safetensors"
+COMFYUI_RECOMMENDED_CONTROLNET_URL = "https://huggingface.co/ShermanG/ControlNet-Standard-Lineart-for-SDXL/resolve/main/diffusion_pytorch_model.safetensors"
+COMFYUI_WORKFLOW_DIR = APP_DIR / "comfyui_workflows"
+COMFYUI_DEFAULT_WORKFLOW_NAME = "raiv_sdxl_img2img_colorize_api.json"
+COMFYUI_INPUT_NODE_ID = "4"
+COMFYUI_OUTPUT_NODE_ID = "8"
+DEFAULT_COLORIZE_POSITIVE_PROMPT = (
+    "high quality manga colorization, tasteful anime coloring, natural skin tone, "
+    "soft ambient colors, coherent hair and clothing colors, subtle gradients, "
+    "clean black lineart, preserve screentones, readable Japanese text"
+)
+DEFAULT_COLORIZE_NEGATIVE_PROMPT = (
+    "monochrome, grayscale, muddy colors, oversaturated, neon colors, "
+    "low quality, blurry, broken lineart, warped text, unreadable text, watermark, logo"
+)
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
 CURVE_DIR = APP_DIR / "cur"
@@ -202,6 +229,268 @@ def windows_logical_compare(left: str, right: str) -> int:
 def windows_logical_sorted(items, text_func):
     return sorted(items, key=cmp_to_key(lambda left, right: windows_logical_compare(text_func(left), text_func(right))))
 
+
+def version_tuple(text: str) -> tuple[int, ...]:
+    match = re.search(r"(\d+(?:\.\d+)*)", text)
+    if not match:
+        return ()
+    return tuple(int(part) for part in match.group(1).split("."))
+
+
+def compare_versions(left: str, right: str) -> int:
+    left_parts = list(version_tuple(left))
+    right_parts = list(version_tuple(right))
+    length = max(len(left_parts), len(right_parts))
+    left_parts.extend([0] * (length - len(left_parts)))
+    right_parts.extend([0] * (length - len(right_parts)))
+    return (left_parts > right_parts) - (left_parts < right_parts)
+
+
+def latest_release_info() -> dict[str, str]:
+    request = urllib.request.Request(
+        LATEST_RELEASE_API_URL,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": f"{APP_SHORT_NAME}/{APP_VERSION}",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=12) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    tag_name = str(data.get("tag_name") or "").strip()
+    html_url = str(data.get("html_url") or "").strip()
+    assets = data.get("assets") if isinstance(data, dict) else []
+    zip_url = ""
+    if isinstance(assets, list):
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            name = str(asset.get("name") or "")
+            if name.lower().endswith(".zip"):
+                zip_url = str(asset.get("browser_download_url") or "").strip()
+                if name == f"RAIV-{tag_name}.zip":
+                    break
+    return {"tag_name": tag_name, "html_url": html_url, "download_url": zip_url}
+
+
+def comfyui_api_url(base_url: str, path: str) -> str:
+    return f"{(base_url or DEFAULT_COMFYUI_API_URL).rstrip('/')}/{path.lstrip('/')}"
+
+
+def comfyui_get_json(base_url: str, path: str, timeout: float = 12) -> dict:
+    with urllib.request.urlopen(comfyui_api_url(base_url, path), timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def comfyui_post_json(base_url: str, path: str, payload: dict, timeout: float = 30) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        comfyui_api_url(base_url, path),
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def comfyui_upload_image(base_url: str, image_path: Path, timeout: float = 60) -> dict:
+    boundary = f"----RAIVComfyUI{uuid.uuid4().hex}"
+    filename = image_path.name
+    image_bytes = image_path.read_bytes()
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode("ascii"),
+            f'Content-Disposition: form-data; name="image"; filename="{filename}"\r\n'.encode("utf-8"),
+            b"Content-Type: image/png\r\n\r\n",
+            image_bytes,
+            b"\r\n",
+            f"--{boundary}\r\n".encode("ascii"),
+            b'Content-Disposition: form-data; name="overwrite"\r\n\r\ntrue\r\n',
+            f"--{boundary}--\r\n".encode("ascii"),
+        ]
+    )
+    request = urllib.request.Request(
+        comfyui_api_url(base_url, "/upload/image"),
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def load_comfyui_api_workflow(path: Path) -> dict[str, dict]:
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict) and isinstance(data.get("prompt"), dict):
+        data = data["prompt"]
+    if not isinstance(data, dict):
+        raise ValueError("workflow JSON is not an API-format workflow")
+    nodes = {str(key): value for key, value in data.items() if isinstance(value, dict)}
+    if not nodes or not all(isinstance(value.get("class_type"), str) for value in nodes.values()):
+        raise ValueError("workflow JSON must be saved in ComfyUI API format")
+    return nodes
+
+
+def comfyui_node_choices(workflow: dict[str, dict], class_names: set[str]) -> list[tuple[str, str]]:
+    choices: list[tuple[str, str]] = []
+    for node_id, node in workflow.items():
+        class_type = str(node.get("class_type") or "")
+        if class_type in class_names:
+            title = str(node.get("_meta", {}).get("title") or class_type)
+            choices.append((node_id, f"{node_id}: {title} ({class_type})"))
+    return choices
+
+
+def comfyui_base_dir_from_system_stats(stats: dict) -> Path | None:
+    system = stats.get("system") if isinstance(stats, dict) else None
+    argv = system.get("argv") if isinstance(system, dict) else None
+    if not isinstance(argv, list):
+        return None
+    for index, arg in enumerate(argv):
+        if str(arg) == "--base-directory" and index + 1 < len(argv):
+            return Path(str(argv[index + 1]))
+    return None
+
+
+def comfyui_checkpoint_names(base_url: str, timeout: float = 12) -> list[str]:
+    data = comfyui_get_json(base_url, "/object_info/CheckpointLoaderSimple", timeout=timeout)
+    node_info = data.get("CheckpointLoaderSimple") if isinstance(data, dict) else None
+    required = node_info.get("input", {}).get("required", {}) if isinstance(node_info, dict) else {}
+    ckpt = required.get("ckpt_name") if isinstance(required, dict) else None
+    if isinstance(ckpt, list) and ckpt and isinstance(ckpt[0], list):
+        return [str(name) for name in ckpt[0]]
+    return []
+
+
+def comfyui_controlnet_names(base_url: str, timeout: float = 12) -> list[str]:
+    data = comfyui_get_json(base_url, "/object_info/ControlNetLoader", timeout=timeout)
+    node_info = data.get("ControlNetLoader") if isinstance(data, dict) else None
+    required = node_info.get("input", {}).get("required", {}) if isinstance(node_info, dict) else {}
+    control_net = required.get("control_net_name") if isinstance(required, dict) else None
+    if isinstance(control_net, list) and control_net and isinstance(control_net[0], list):
+        return [str(name) for name in control_net[0]]
+    return []
+
+
+def default_comfyui_workflow(model_name: str, controlnet_name: str) -> dict[str, dict]:
+    return {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": model_name},
+            "_meta": {"title": "Checkpoint"},
+        },
+        "2": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "clip": ["1", 1],
+                "text": DEFAULT_COLORIZE_POSITIVE_PROMPT,
+            },
+            "_meta": {"title": "Positive Prompt"},
+        },
+        "3": {
+            "class_type": "CLIPTextEncode",
+            "inputs": {
+                "clip": ["1", 1],
+                "text": DEFAULT_COLORIZE_NEGATIVE_PROMPT,
+            },
+            "_meta": {"title": "Negative Prompt"},
+        },
+        "4": {
+            "class_type": "LoadImage",
+            "inputs": {"image": ""},
+            "_meta": {"title": "RAIV Input Image"},
+        },
+        "5": {
+            "class_type": "VAEEncode",
+            "inputs": {"pixels": ["4", 0], "vae": ["1", 2]},
+            "_meta": {"title": "Encode Input"},
+        },
+        "9": {
+            "class_type": "ControlNetLoader",
+            "inputs": {"control_net_name": controlnet_name},
+            "_meta": {"title": "Lineart ControlNet"},
+        },
+        "10": {
+            "class_type": "ControlNetApplyAdvanced",
+            "inputs": {
+                "positive": ["2", 0],
+                "negative": ["3", 0],
+                "control_net": ["9", 0],
+                "image": ["4", 0],
+                "strength": 0.65,
+                "start_percent": 0.0,
+                "end_percent": 0.65,
+                "vae": ["1", 2],
+            },
+            "_meta": {"title": "Apply Lineart ControlNet"},
+        },
+        "6": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["10", 0],
+                "negative": ["10", 1],
+                "latent_image": ["5", 0],
+                "seed": 0,
+                "steps": 28,
+                "cfg": 5.2,
+                "sampler_name": "dpmpp_2m_sde",
+                "scheduler": "karras",
+                "denoise": 0.62,
+            },
+            "_meta": {"title": "Colorize"},
+        },
+        "7": {
+            "class_type": "VAEDecode",
+            "inputs": {"samples": ["6", 0], "vae": ["1", 2]},
+            "_meta": {"title": "Decode"},
+        },
+        "8": {
+            "class_type": "SaveImage",
+            "inputs": {"images": ["7", 0], "filename_prefix": "RAIV_colorized"},
+            "_meta": {"title": "RAIV Output"},
+        },
+}
+
+
+def save_default_comfyui_workflow(path: Path, model_name: str, controlnet_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(default_comfyui_workflow(model_name, controlnet_name), ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def preserve_original_luminance(
+    source_path: Path,
+    generated_bytes: bytes,
+    saturation_boost: float = 1.35,
+    luminance_preserve: float = 0.72,
+) -> bytes:
+    if PILImage is None or ImageFilter is None or np is None:
+        return generated_bytes
+    with PILImage.open(source_path) as source_image:
+        source = source_image.convert("L")
+    with PILImage.open(io.BytesIO(generated_bytes)) as generated_image:
+        generated = generated_image.convert("RGB")
+    if source.size != generated.size:
+        source = source.resize(generated.size, PILImage.Resampling.LANCZOS)
+    color_source = generated.filter(ImageFilter.GaussianBlur(radius=1.4))
+    generated_hsv = color_source.convert("HSV")
+    hue, saturation, generated_value = generated_hsv.split()
+    source_array = np.asarray(source, dtype=np.float32)
+    generated_value_array = np.asarray(generated_value, dtype=np.float32)
+    saturation_array = np.asarray(saturation, dtype=np.float32)
+    saturation_array *= max(0.0, float(saturation_boost))
+    saturation_array[source_array < 40] *= 0.12
+    saturation_array[(source_array > 238) & (saturation_array < 135)] = 0
+    saturation_image = PILImage.fromarray(np.clip(saturation_array, 0, 255).astype(np.uint8), "L")
+    preserve = max(0.0, min(1.0, float(luminance_preserve)))
+    value_array = generated_value_array * (1.0 - preserve) + source_array * preserve
+    value_image = PILImage.fromarray(np.clip(value_array, 0, 255).astype(np.uint8), "L")
+    merged = PILImage.merge("HSV", (hue, saturation_image, value_image)).convert("RGB")
+    buffer = io.BytesIO()
+    merged.save(buffer, format="PNG")
+    return buffer.getvalue()
+
 UI_TEXT_EN = {
     "画像を開く": "Open image",
     "フォルダを開く": "Open folder",
@@ -233,6 +522,7 @@ UI_TEXT_EN = {
     "エンジン設定": "Engine",
     "全般": "General",
     "画像調整": "Image Adjustment",
+    "AI彩色(β)": "AI Colorize (beta)",
     "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
@@ -245,6 +535,11 @@ UI_TEXT_EN = {
     "tile: 0 は自動。小さめの値はGPUメモリ使用量を抑えますが、遅くなることがあります。": "tile: 0 is automatic. Smaller values can reduce GPU memory usage but may be slower.",
     "エンジン先読み": "Engine prefetch",
     "選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Number of images to process ahead with the selected engine. Higher values reduce waiting but increase GPU load and temporary files.",
+    "AI彩色を先行処理する": "Prefetch AI colorization",
+    "彩色結果をフォルダに保存": "Save colorized results to folder",
+    "彩色フォルダがあれば表示に使う": "Use colorized folder when available",
+    "AI彩色先読み": "AI colorize prefetch",
+    "彩色済み画像がないページだけComfyUIへ送ります。既存の彩色結果は上書きせず、手動の「現在画像を彩色」だけ上書きします。": "Sends only pages without colorized images to ComfyUI. Existing colorized results are not overwritten; only the manual Colorize current image action overwrites them.",
     "縦サイズが閾値以上なら拡大処理しない": "Skip processing when height is at or above threshold",
     "縦サイズ閾値(px)": "Height threshold (px)",
     "モニタ解像度以上の画像をさらに拡大しても表示上の効果は小さく、処理時間とメモリ使用量が増えます。普段使うモニタの縦解像度に合わせる設定が目安です。": "Upscaling images already above monitor resolution often has little visible benefit and increases processing time and memory usage. Set this near your usual monitor height.",
@@ -261,6 +556,8 @@ UI_TEXT_EN = {
     "フォルダごとに最後に開いていた画像を記録する": "Remember last viewed image for each folder",
     "フォルダ履歴保存件数": "Folder history limit",
     "0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。": "0 means unlimited. History is saved to folder_history.json, not setting.json.",
+    "バージョン": "Version",
+    "アップデートを確認": "Check for updates",
     "表示言語": "Language",
     "ビューアー先読み": "Viewer prefetch",
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
@@ -307,6 +604,20 @@ UI_TEXT_EN = {
     "チャンネル": "Channel",
     "保存": "Save",
     "選択中の曲線をドラッグして調整できます。保存するとcurフォルダへGIMP旧形式.curとして出力します。": "Drag the selected curve to adjust it. Save writes a GIMP legacy-format .cur file into the cur folder.",
+    "ComfyUI API URL": "ComfyUI API URL",
+    "ComfyUIを使用し、表示画像を加工する開発中機能です。主にモノクロ画像のAI彩色を想定しています。IN/OUT制御は実装済みのため、モデルやプロンプトを調整すればユーザー側で目的に近づけられますが、開発者側では画質調整はまだ十分ではありません。": "This is an in-development feature that processes the displayed image using ComfyUI. It is mainly intended for AI colorization of monochrome images. IN/OUT control is implemented, so users can approach their target result by adjusting models and prompts, but image-quality tuning is not yet complete on the developer side.",
+    "ComfyUI base directory": "ComfyUI base directory",
+    "接続確認": "Check connection",
+    "初期設定": "Initial setup",
+    "推奨モデルをダウンロード": "Download recommended model",
+    "推奨モデル/ControlNetをダウンロード": "Download recommended model / ControlNet",
+    "workflow JSON": "Workflow JSON",
+    "参照": "Browse",
+    "ノード検出": "Detect nodes",
+    "入力画像ノード": "Input image node",
+    "出力画像ノード": "Output image node",
+    "現在画像を彩色": "Colorize current image",
+    "ComfyUIを起動しておき、初期設定を実行してください。推奨モデルがある場合はRAIV用workflowを自動生成します。": "Start ComfyUI first, then run initial setup. If the recommended model exists, RAIV generates its workflow automatically.",
     "値": "Value",
     "赤": "Red",
     "緑": "Green",
@@ -315,6 +626,7 @@ UI_TEXT_EN = {
     "状態": "Status",
     "ログを表示": "Show log",
     "拡大前メモリ読込": "Original memory load",
+    "AI彩色画像生成": "AI color image generation",
     "拡大画像生成": "Processed image generation",
     "拡大後メモリ読込": "Processed memory load",
     "表示用QPixmap": "Display QPixmap",
@@ -402,6 +714,17 @@ class AppConfig:
     tile: int = 0
     realesrgan_model: str = "realesr-animevideov3"
     realcugan_prefetch_count: int = 10
+    save_colorized_to_folder: bool = True
+    use_colorized_folder_cache: bool = True
+    colorize_prefetch_enabled: bool = False
+    colorize_prefetch_count: int = 0
+    colorize_denoise: float = 0.62
+    colorize_controlnet_strength: float = 0.65
+    colorize_controlnet_end: float = 0.65
+    colorize_saturation_boost: float = 1.35
+    colorize_luminance_preserve: float = 0.72
+    colorize_positive_prompt: str = DEFAULT_COLORIZE_POSITIVE_PROMPT
+    colorize_negative_prompt: str = DEFAULT_COLORIZE_NEGATIVE_PROMPT
     viewer_prefetch_count: int = 20
     save_upscaled_to_scale_folder: bool = False
     use_scale_folder_cache: bool = True
@@ -442,6 +765,11 @@ class AppConfig:
     last_image_path: str = ""
     remember_last_image_per_folder: bool = False
     folder_history_limit: int = 1000
+    comfyui_api_url: str = DEFAULT_COMFYUI_API_URL
+    comfyui_base_dir: str = ""
+    comfyui_workflow_path: str = ""
+    comfyui_input_node_id: str = ""
+    comfyui_output_node_id: str = ""
     settings_tab: str = "realcugan"
     window_rect: list[int] | None = None
     window_maximized: bool = False
@@ -1071,6 +1399,13 @@ class AppSignals(QObject):
     prefetch_done = Signal(int, object, object, object, object)
     thumbnail_done = Signal(int, int, object)
     profile_event = Signal(str, float)
+    update_check_done = Signal(object)
+    comfyui_connection_done = Signal(object)
+    comfyui_colorize_done = Signal(object)
+    comfyui_setup_done = Signal(object)
+    comfyui_download_progress = Signal(object)
+    comfyui_download_done = Signal(object)
+    comfyui_colorize_started = Signal(str)
 
 
 class GLImageView(QOpenGLWidget):
@@ -1798,6 +2133,13 @@ class MainWindow(QMainWindow):
         self.signals.prefetch_done.connect(self.on_prefetch_done)
         self.signals.thumbnail_done.connect(self.on_thumbnail_done)
         self.signals.profile_event.connect(self.record_profile)
+        self.signals.update_check_done.connect(self.on_update_check_done)
+        self.signals.comfyui_connection_done.connect(self.on_comfyui_connection_done)
+        self.signals.comfyui_colorize_done.connect(self.on_comfyui_colorize_done)
+        self.signals.comfyui_colorize_started.connect(self.on_comfyui_colorize_started)
+        self.signals.comfyui_setup_done.connect(self.on_comfyui_setup_done)
+        self.signals.comfyui_download_progress.connect(self.on_comfyui_download_progress)
+        self.signals.comfyui_download_done.connect(self.on_comfyui_download_done)
 
         self.image_paths: list[Path] = []
         self.image_path_set: set[Path] = set()
@@ -1846,6 +2188,18 @@ class MainWindow(QMainWindow):
         self.profile_update_timer = QTimer(self)
         self.profile_update_timer.setSingleShot(True)
         self.profile_update_timer.timeout.connect(self.update_profile_panel)
+        self.update_check_running = False
+        self.update_check_result: dict[str, str] | None = None
+        self.comfyui_connection_running = False
+        self.comfyui_colorize_running = False
+        self.comfyui_setup_running = False
+        self.comfyui_download_running = False
+        self.colorize_processing_paths: set[Path] = set()
+        self.colorize_queued_paths: set[Path] = set()
+        self.colorize_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
+        self.colorize_plan: list[Path] = []
+        self.colorize_done_paths: set[Path] = set()
+        self.colorized_session_paths: dict[Path, Path] = {}
         self.archive_temp_dir: Path | None = None
         self.retired_archive_temp_dirs: list[Path] = []
         self.archive_display_names: dict[Path, str] = {}
@@ -1934,6 +2288,8 @@ class MainWindow(QMainWindow):
         ]
         for worker in self.prefetch_io_workers:
             worker.start()
+        self.colorize_worker = threading.Thread(target=self._colorize_worker_loop, daemon=True)
+        self.colorize_worker.start()
         self.thumbnail_worker = threading.Thread(target=self._thumbnail_worker_loop, daemon=True)
         self.thumbnail_worker.start()
 
@@ -2051,16 +2407,19 @@ class MainWindow(QMainWindow):
         realcugan_tab = QScrollArea()
         general_tab = QScrollArea()
         image_adjust_tab = QScrollArea()
+        colorize_tab = QScrollArea()
         other_tab = QScrollArea()
         keyconfig_tab = QScrollArea()
         realcugan_tab.setWidgetResizable(True)
         general_tab.setWidgetResizable(True)
         image_adjust_tab.setWidgetResizable(True)
+        colorize_tab.setWidgetResizable(True)
         other_tab.setWidgetResizable(True)
         keyconfig_tab.setWidgetResizable(True)
         tabs.addTab(realcugan_tab, "エンジン設定")
         tabs.addTab(general_tab, "全般")
         tabs.addTab(image_adjust_tab, "画像調整")
+        tabs.addTab(colorize_tab, "AI彩色(β)")
         tabs.addTab(other_tab, "その他")
         tabs.addTab(keyconfig_tab, "キーコンフィグ")
         tabs.currentChanged.connect(self.on_settings_tab_changed)
@@ -2308,14 +2667,16 @@ class MainWindow(QMainWindow):
         progress_layout = QFormLayout(self.prefetch_progress_panel)
         progress_layout.setContentsMargins(0, 0, 0, 0)
         self.original_prefetch_bar = QProgressBar()
+        self.colorize_progress_bar = QProgressBar()
         self.upscale_progress_bar = QProgressBar()
         self.processed_prefetch_bar = QProgressBar()
         self.pixmap_prefetch_bar = QProgressBar()
-        for bar in (self.original_prefetch_bar, self.upscale_progress_bar, self.processed_prefetch_bar, self.pixmap_prefetch_bar):
+        for bar in (self.original_prefetch_bar, self.colorize_progress_bar, self.upscale_progress_bar, self.processed_prefetch_bar, self.pixmap_prefetch_bar):
             bar.setRange(0, 1)
             bar.setValue(0)
             bar.setTextVisible(True)
         progress_layout.addRow("拡大前メモリ読込", self.original_prefetch_bar)
+        progress_layout.addRow("AI彩色画像生成", self.colorize_progress_bar)
         progress_layout.addRow("拡大画像生成", self.upscale_progress_bar)
         progress_layout.addRow("拡大後メモリ読込", self.processed_prefetch_bar)
         progress_layout.addRow("表示用QPixmap", self.pixmap_prefetch_bar)
@@ -2382,6 +2743,130 @@ class MainWindow(QMainWindow):
         image_adjust_tab.setWidget(image_adjust_content)
         self.reload_tone_curves(select_configured=True)
 
+        colorize_content = QWidget()
+        colorize_layout = QVBoxLayout(colorize_content)
+        colorize_layout.addWidget(self.help_label("ComfyUIを使用し、表示画像を加工する開発中機能です。主にモノクロ画像のAI彩色を想定しています。IN/OUT制御は実装済みのため、モデルやプロンプトを調整すればユーザー側で目的に近づけられますが、開発者側では画質調整はまだ十分ではありません。"))
+        comfy_form = QFormLayout()
+        self.comfyui_api_edit = QLineEdit(self.config_data.comfyui_api_url or DEFAULT_COMFYUI_API_URL)
+        self.comfyui_api_edit.editingFinished.connect(self.on_comfyui_settings_changed)
+        comfy_form.addRow("ComfyUI API URL", self.comfyui_api_edit)
+        self.comfyui_base_dir_edit = QLineEdit(self.config_data.comfyui_base_dir)
+        self.comfyui_base_dir_edit.editingFinished.connect(self.on_comfyui_settings_changed)
+        comfy_form.addRow("ComfyUI base directory", self.comfyui_base_dir_edit)
+        self.comfyui_workflow_edit = QLineEdit(self.config_data.comfyui_workflow_path)
+        self.comfyui_workflow_edit.editingFinished.connect(self.on_comfyui_workflow_changed)
+        workflow_buttons = QHBoxLayout()
+        browse_workflow_button = QPushButton("参照")
+        browse_workflow_button.clicked.connect(self.choose_comfyui_workflow)
+        detect_nodes_button = QPushButton("ノード検出")
+        detect_nodes_button.clicked.connect(self.detect_comfyui_nodes)
+        workflow_buttons.addWidget(browse_workflow_button)
+        workflow_buttons.addWidget(detect_nodes_button)
+        workflow_row = QVBoxLayout()
+        workflow_row.addWidget(self.comfyui_workflow_edit)
+        workflow_row.addLayout(workflow_buttons)
+        comfy_form.addRow("workflow JSON", workflow_row)
+        self.comfyui_input_combo = QComboBox()
+        self.comfyui_input_combo.currentIndexChanged.connect(self.on_comfyui_settings_changed)
+        comfy_form.addRow("入力画像ノード", self.comfyui_input_combo)
+        self.comfyui_output_combo = QComboBox()
+        self.comfyui_output_combo.currentIndexChanged.connect(self.on_comfyui_settings_changed)
+        comfy_form.addRow("出力画像ノード", self.comfyui_output_combo)
+        colorize_layout.addLayout(comfy_form)
+        colorize_layout.addWidget(self.help_label("ComfyUIを起動しておき、初期設定を実行してください。推奨モデルがある場合はRAIV用workflowを自動生成します。"))
+        colorize_setup_buttons = QHBoxLayout()
+        self.comfyui_check_button = QPushButton("接続確認")
+        self.comfyui_check_button.clicked.connect(self.check_comfyui_connection)
+        self.comfyui_download_button = QPushButton("推奨モデル/ControlNetをダウンロード")
+        self.comfyui_download_button.clicked.connect(self.download_comfyui_recommended_model)
+        self.comfyui_setup_button = QPushButton("初期設定")
+        self.comfyui_setup_button.clicked.connect(self.setup_comfyui_defaults)
+        colorize_setup_buttons.addWidget(self.comfyui_check_button)
+        colorize_setup_buttons.addWidget(self.comfyui_download_button)
+        colorize_setup_buttons.addWidget(self.comfyui_setup_button)
+        colorize_setup_buttons.addStretch(1)
+        colorize_layout.addLayout(colorize_setup_buttons)
+        colorize_prefetch_form = QFormLayout()
+        self.colorize_prefetch_check = QCheckBox("AI彩色を先行処理する")
+        self.colorize_prefetch_check.setChecked(self.config_data.colorize_prefetch_enabled)
+        self.colorize_prefetch_check.stateChanged.connect(self.on_colorize_prefetch_settings_changed)
+        self.save_colorized_check = QCheckBox("彩色結果をフォルダに保存")
+        self.save_colorized_check.setChecked(self.config_data.save_colorized_to_folder)
+        self.save_colorized_check.stateChanged.connect(self.on_comfyui_settings_changed)
+        self.use_colorized_cache_check = QCheckBox("彩色フォルダがあれば表示に使う")
+        self.use_colorized_cache_check.setChecked(self.config_data.use_colorized_folder_cache)
+        self.use_colorized_cache_check.stateChanged.connect(self.on_colorized_cache_settings_changed)
+        self.colorize_prefetch_spin = QSpinBox()
+        self.colorize_prefetch_spin.setRange(0, 99999)
+        self.colorize_prefetch_spin.setValue(self.config_data.colorize_prefetch_count)
+        self.colorize_prefetch_spin.valueChanged.connect(self.on_colorize_prefetch_settings_changed)
+        colorize_prefetch_form.addRow(self.colorize_prefetch_check)
+        colorize_prefetch_form.addRow(self.save_colorized_check)
+        colorize_prefetch_form.addRow(self.use_colorized_cache_check)
+        colorize_prefetch_form.addRow("AI彩色先読み", self.colorize_prefetch_spin)
+        colorize_layout.addLayout(colorize_prefetch_form)
+        colorize_layout.addWidget(self.help_label("彩色済み画像がないページだけComfyUIへ送ります。既存の彩色結果は上書きせず、手動の「現在画像を彩色」だけ上書きします。"))
+        colorize_adjust_form = QFormLayout()
+        self.colorize_denoise_spin = QDoubleSpinBox()
+        self.colorize_denoise_spin.setRange(0.0, 1.0)
+        self.colorize_denoise_spin.setSingleStep(0.01)
+        self.colorize_denoise_spin.setDecimals(2)
+        self.colorize_denoise_spin.setValue(float(self.config_data.colorize_denoise))
+        self.colorize_denoise_spin.valueChanged.connect(self.on_comfyui_settings_changed)
+        colorize_adjust_form.addRow("彩色強度", self.colorize_denoise_spin)
+        self.colorize_controlnet_strength_spin = QDoubleSpinBox()
+        self.colorize_controlnet_strength_spin.setRange(0.0, 2.0)
+        self.colorize_controlnet_strength_spin.setSingleStep(0.05)
+        self.colorize_controlnet_strength_spin.setDecimals(2)
+        self.colorize_controlnet_strength_spin.setValue(float(self.config_data.colorize_controlnet_strength))
+        self.colorize_controlnet_strength_spin.valueChanged.connect(self.on_comfyui_settings_changed)
+        colorize_adjust_form.addRow("線画保持", self.colorize_controlnet_strength_spin)
+        self.colorize_controlnet_end_spin = QDoubleSpinBox()
+        self.colorize_controlnet_end_spin.setRange(0.0, 1.0)
+        self.colorize_controlnet_end_spin.setSingleStep(0.05)
+        self.colorize_controlnet_end_spin.setDecimals(2)
+        self.colorize_controlnet_end_spin.setValue(float(self.config_data.colorize_controlnet_end))
+        self.colorize_controlnet_end_spin.valueChanged.connect(self.on_comfyui_settings_changed)
+        colorize_adjust_form.addRow("線画保持終了", self.colorize_controlnet_end_spin)
+        self.colorize_saturation_spin = QDoubleSpinBox()
+        self.colorize_saturation_spin.setRange(0.0, 3.0)
+        self.colorize_saturation_spin.setSingleStep(0.05)
+        self.colorize_saturation_spin.setDecimals(2)
+        self.colorize_saturation_spin.setValue(float(self.config_data.colorize_saturation_boost))
+        self.colorize_saturation_spin.valueChanged.connect(self.on_comfyui_settings_changed)
+        colorize_adjust_form.addRow("彩度補正", self.colorize_saturation_spin)
+        self.colorize_luminance_spin = QDoubleSpinBox()
+        self.colorize_luminance_spin.setRange(0.0, 1.0)
+        self.colorize_luminance_spin.setSingleStep(0.05)
+        self.colorize_luminance_spin.setDecimals(2)
+        self.colorize_luminance_spin.setValue(float(self.config_data.colorize_luminance_preserve))
+        self.colorize_luminance_spin.valueChanged.connect(self.on_comfyui_settings_changed)
+        colorize_adjust_form.addRow("輝度保持", self.colorize_luminance_spin)
+        colorize_layout.addLayout(colorize_adjust_form)
+        colorize_layout.addWidget(self.help_label("彩色強度を上げると色は乗りやすくなりますが形が変わりやすくなります。線画保持を上げると崩れにくくなりますが色が弱くなることがあります。輝度保持を下げるとAI生成側の雰囲気が残り、上げると元画像の明暗と文字が残りやすくなります。"))
+        colorize_layout.addWidget(QLabel("Positive prompt"))
+        self.colorize_positive_edit = QTextEdit(self.config_data.colorize_positive_prompt or DEFAULT_COLORIZE_POSITIVE_PROMPT)
+        self.colorize_positive_edit.setFixedHeight(70)
+        self.colorize_positive_edit.textChanged.connect(self.on_comfyui_settings_changed)
+        colorize_layout.addWidget(self.colorize_positive_edit)
+        colorize_layout.addWidget(QLabel("Negative prompt"))
+        self.colorize_negative_edit = QTextEdit(self.config_data.colorize_negative_prompt or DEFAULT_COLORIZE_NEGATIVE_PROMPT)
+        self.colorize_negative_edit.setFixedHeight(70)
+        self.colorize_negative_edit.textChanged.connect(self.on_comfyui_settings_changed)
+        colorize_layout.addWidget(self.colorize_negative_edit)
+        colorize_run_buttons = QHBoxLayout()
+        self.comfyui_colorize_button = QPushButton("現在画像を彩色")
+        self.comfyui_colorize_button.clicked.connect(self.colorize_current_image_with_comfyui)
+        colorize_run_buttons.addWidget(self.comfyui_colorize_button)
+        colorize_run_buttons.addStretch(1)
+        colorize_layout.addLayout(colorize_run_buttons)
+        self.comfyui_status_label = self.help_label("")
+        self.comfyui_status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        colorize_layout.addWidget(self.comfyui_status_label)
+        colorize_layout.addStretch(1)
+        colorize_tab.setWidget(colorize_content)
+        self.detect_comfyui_nodes(update_status=False)
+
         other_content = QWidget()
         other_layout = QVBoxLayout(other_content)
         language_form = QFormLayout()
@@ -2435,14 +2920,29 @@ class MainWindow(QMainWindow):
         self.cleanup_check.setChecked(self.config_data.cleanup_temp_on_start)
         self.cleanup_check.stateChanged.connect(self.on_cleanup_changed)
         other_layout.addWidget(self.cleanup_check)
+        other_layout.addWidget(self.separator())
+        version_form = QFormLayout()
+        self.version_label = QLabel()
+        self.version_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        version_form.addRow("バージョン", self.version_label)
+        other_layout.addLayout(version_form)
+        self.update_check_button = QPushButton("アップデートを確認")
+        self.update_check_button.clicked.connect(self.check_for_updates)
+        other_layout.addWidget(self.update_check_button)
+        self.update_status_label = self.help_label("")
+        self.update_status_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+        self.update_status_label.setOpenExternalLinks(True)
+        other_layout.addWidget(self.update_status_label)
+        self.update_version_label()
+        self.render_update_check_result()
         other_layout.addStretch(1)
         other_tab.setWidget(other_content)
 
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, language_form, resample_form, folder_history_form)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
 
-        tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "other": 3, "keyconfig": 4}.get(self.config_data.settings_tab, 0)
+        tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "colorize": 3, "other": 4, "keyconfig": 5}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
         self.apply_engine_ui()
         QTimer.singleShot(0, self.apply_language)
@@ -2523,6 +3023,9 @@ class MainWindow(QMainWindow):
             self.pin_button.setText(self.tr_ui("固定中" if self.pin_button.isChecked() else "自動表示"))
         if hasattr(self, "language_label"):
             self.language_label.setText("Language")
+        if hasattr(self, "version_label"):
+            self.update_version_label()
+            self.render_update_check_result()
         if hasattr(self, "tone_curve_channel_combo"):
             current = self.tone_curve_channel_combo.currentData() or "value"
             self.tone_curve_channel_combo.blockSignals(True)
@@ -2546,6 +3049,685 @@ class MainWindow(QMainWindow):
                 child.setText(self.tr_ui(child.text()))
             elif isinstance(child, QPushButton):
                 child.setText(self.tr_ui(child.text()))
+
+    def update_version_label(self) -> None:
+        if hasattr(self, "version_label"):
+            self.version_label.setText(f"{APP_SHORT_NAME} v{APP_VERSION}")
+
+    def render_update_check_result(self) -> None:
+        if not hasattr(self, "update_status_label"):
+            return
+        result = self.update_check_result or {}
+        status = result.get("status", "")
+        english = self.ui_language() == "en"
+        if not status:
+            self.update_status_label.setText("")
+        elif status == "checking":
+            self.update_status_label.setText("Checking for updates..." if english else "アップデートを確認中...")
+        elif status == "latest":
+            self.update_status_label.setText(
+                f"You are using the latest version. Current: v{APP_VERSION}"
+                if english
+                else f"最新版です。現在のバージョン: v{APP_VERSION}"
+            )
+        elif status == "available":
+            tag = result.get("tag_name", "")
+            url = result.get("download_url") or result.get("html_url") or ""
+            if english:
+                self.update_status_label.setText(f"A new version is available: {tag}\nDownload URL: {url}")
+            else:
+                self.update_status_label.setText(f"新しいバージョンがあります: {tag}\nダウンロード先URL: {url}")
+        elif status == "error":
+            message = result.get("message", "")
+            self.update_status_label.setText(
+                f"Update check failed: {message}"
+                if english
+                else f"アップデート確認に失敗しました: {message}"
+            )
+        else:
+            self.update_status_label.setText(str(result))
+
+    def check_for_updates(self) -> None:
+        if self.update_check_running:
+            return
+        self.update_check_running = True
+        self.update_check_result = {"status": "checking"}
+        self.update_check_button.setEnabled(False)
+        self.render_update_check_result()
+
+        def worker() -> None:
+            try:
+                info = latest_release_info()
+                tag = info.get("tag_name", "")
+                if not tag:
+                    raise ValueError("latest release tag was empty")
+                if compare_versions(tag, APP_VERSION) > 0:
+                    result = {"status": "available", **info}
+                else:
+                    result = {"status": "latest", **info}
+            except urllib.error.HTTPError as exc:
+                result = {"status": "error", "message": f"HTTP {exc.code}"}
+            except urllib.error.URLError as exc:
+                result = {"status": "error", "message": str(exc.reason)}
+            except Exception as exc:
+                result = {"status": "error", "message": str(exc)}
+            self.signals.update_check_done.emit(result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_update_check_done(self, result: object) -> None:
+        self.update_check_running = False
+        if hasattr(self, "update_check_button"):
+            self.update_check_button.setEnabled(True)
+        self.update_check_result = result if isinstance(result, dict) else {"status": "error", "message": str(result)}
+        self.render_update_check_result()
+
+    def comfyui_api_base(self) -> str:
+        return self.comfyui_api_edit.text().strip() or DEFAULT_COMFYUI_API_URL
+
+    def on_comfyui_settings_changed(self, *_args) -> None:
+        self.persist_config()
+
+    def on_comfyui_workflow_changed(self) -> None:
+        self.persist_config()
+        self.detect_comfyui_nodes(update_status=False)
+
+    def choose_comfyui_workflow(self) -> None:
+        start_dir = str(Path(self.comfyui_workflow_edit.text()).parent) if self.comfyui_workflow_edit.text().strip() else self.config_data.last_dir or str(APP_DIR)
+        path, _filter = QFileDialog.getOpenFileName(self, self.tr_ui("workflow JSON"), start_dir, "JSON (*.json);;All files (*.*)")
+        if not path:
+            return
+        self.comfyui_workflow_edit.setText(path)
+        self.on_comfyui_workflow_changed()
+
+    def set_combo_by_data(self, combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        combo.setCurrentIndex(max(0, index))
+
+    def detect_comfyui_nodes(self, update_status: bool = True) -> None:
+        if not hasattr(self, "comfyui_input_combo"):
+            return
+        previous_input = str(self.comfyui_input_combo.currentData() or self.config_data.comfyui_input_node_id or "")
+        previous_output = str(self.comfyui_output_combo.currentData() or self.config_data.comfyui_output_node_id or "")
+        self.comfyui_input_combo.blockSignals(True)
+        self.comfyui_output_combo.blockSignals(True)
+        self.comfyui_input_combo.clear()
+        self.comfyui_output_combo.clear()
+        path_text = self.comfyui_workflow_edit.text().strip() if hasattr(self, "comfyui_workflow_edit") else ""
+        try:
+            if not path_text:
+                return
+            workflow = load_comfyui_api_workflow(Path(path_text))
+            input_choices = comfyui_node_choices(workflow, {"LoadImage"})
+            output_choices = comfyui_node_choices(workflow, {"SaveImage", "PreviewImage"})
+            for node_id, label in input_choices:
+                self.comfyui_input_combo.addItem(label, node_id)
+            for node_id, label in output_choices:
+                self.comfyui_output_combo.addItem(label, node_id)
+            self.set_combo_by_data(self.comfyui_input_combo, previous_input)
+            self.set_combo_by_data(self.comfyui_output_combo, previous_output)
+            if update_status and hasattr(self, "comfyui_status_label"):
+                self.comfyui_status_label.setText(f"LoadImage: {len(input_choices)} / Output: {len(output_choices)}")
+        except Exception as exc:
+            if update_status and hasattr(self, "comfyui_status_label"):
+                self.comfyui_status_label.setText(f"workflow JSONを読み込めません: {exc}")
+        finally:
+            self.comfyui_input_combo.blockSignals(False)
+            self.comfyui_output_combo.blockSignals(False)
+            self.persist_config()
+
+    def check_comfyui_connection(self) -> None:
+        if self.comfyui_connection_running:
+            return
+        api_url = self.comfyui_api_base()
+        self.comfyui_connection_running = True
+        self.comfyui_check_button.setEnabled(False)
+        self.comfyui_status_label.setText(f"ComfyUIへ接続確認中: {api_url}")
+
+        def worker() -> None:
+            try:
+                stats = comfyui_get_json(api_url, "/system_stats", timeout=8)
+                result = {"status": "ok", "system": stats.get("system", {})}
+            except urllib.error.HTTPError as exc:
+                result = {"status": "error", "message": f"HTTP {exc.code}"}
+            except urllib.error.URLError as exc:
+                result = {"status": "error", "message": str(exc.reason)}
+            except Exception as exc:
+                result = {"status": "error", "message": str(exc)}
+            self.signals.comfyui_connection_done.emit(result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_comfyui_connection_done(self, result: object) -> None:
+        self.comfyui_connection_running = False
+        if hasattr(self, "comfyui_check_button"):
+            self.comfyui_check_button.setEnabled(True)
+        if not isinstance(result, dict):
+            self.comfyui_status_label.setText(str(result))
+            return
+        if result.get("status") == "ok":
+            self.comfyui_status_label.setText(f"ComfyUIに接続できました: {self.comfyui_api_base()}")
+        else:
+            self.comfyui_status_label.setText(f"ComfyUIに接続できません: {result.get('message', '')}")
+
+    def comfyui_base_dir(self) -> Path | None:
+        text = self.comfyui_base_dir_edit.text().strip()
+        return Path(text) if text else None
+
+    def comfyui_recommended_model_path(self) -> Path | None:
+        base_dir = self.comfyui_base_dir()
+        if base_dir is None:
+            return None
+        return base_dir / "models" / "checkpoints" / COMFYUI_RECOMMENDED_MODEL_NAME
+
+    def comfyui_recommended_controlnet_path(self) -> Path | None:
+        base_dir = self.comfyui_base_dir()
+        if base_dir is None:
+            return None
+        return base_dir / "models" / "controlnet" / COMFYUI_RECOMMENDED_CONTROLNET_NAME
+
+    def setup_comfyui_defaults(self) -> None:
+        if self.comfyui_setup_running:
+            return
+        api_url = self.comfyui_api_base()
+        self.comfyui_setup_running = True
+        self.comfyui_setup_button.setEnabled(False)
+        self.comfyui_status_label.setText("ComfyUI初期設定を確認中...")
+
+        def worker() -> None:
+            try:
+                stats = comfyui_get_json(api_url, "/system_stats", timeout=12)
+                base_dir = comfyui_base_dir_from_system_stats(stats)
+                checkpoints = comfyui_checkpoint_names(api_url)
+                controlnets = comfyui_controlnet_names(api_url)
+                has_model = COMFYUI_RECOMMENDED_MODEL_NAME in checkpoints
+                has_controlnet = COMFYUI_RECOMMENDED_CONTROLNET_NAME in controlnets
+                workflow_path = COMFYUI_WORKFLOW_DIR / COMFYUI_DEFAULT_WORKFLOW_NAME
+                if has_model and has_controlnet:
+                    save_default_comfyui_workflow(
+                        workflow_path,
+                        COMFYUI_RECOMMENDED_MODEL_NAME,
+                        COMFYUI_RECOMMENDED_CONTROLNET_NAME,
+                    )
+                result = {
+                    "status": "ok",
+                    "api_url": api_url,
+                    "base_dir": str(base_dir) if base_dir is not None else "",
+                    "checkpoints": checkpoints,
+                    "controlnets": controlnets,
+                    "has_model": has_model,
+                    "has_controlnet": has_controlnet,
+                    "workflow_path": str(workflow_path) if has_model and has_controlnet else "",
+                }
+            except urllib.error.HTTPError as exc:
+                result = {"status": "error", "message": f"HTTP {exc.code}"}
+            except urllib.error.URLError as exc:
+                result = {"status": "error", "message": str(exc.reason)}
+            except Exception as exc:
+                result = {"status": "error", "message": str(exc)}
+            self.signals.comfyui_setup_done.emit(result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_comfyui_setup_done(self, result: object) -> None:
+        self.comfyui_setup_running = False
+        if hasattr(self, "comfyui_setup_button"):
+            self.comfyui_setup_button.setEnabled(True)
+        if not isinstance(result, dict):
+            self.comfyui_status_label.setText(str(result))
+            return
+        if result.get("status") != "ok":
+            self.comfyui_status_label.setText(f"ComfyUI初期設定に失敗しました: {result.get('message', '')}")
+            return
+        base_dir = str(result.get("base_dir") or "")
+        if base_dir:
+            self.comfyui_base_dir_edit.setText(base_dir)
+        if result.get("has_model") and result.get("has_controlnet"):
+            workflow_path = str(result.get("workflow_path") or "")
+            self.comfyui_workflow_edit.setText(workflow_path)
+            self.detect_comfyui_nodes(update_status=False)
+            self.set_combo_by_data(self.comfyui_input_combo, COMFYUI_INPUT_NODE_ID)
+            self.set_combo_by_data(self.comfyui_output_combo, COMFYUI_OUTPUT_NODE_ID)
+            self.persist_config()
+            self.comfyui_status_label.setText(
+                f"ComfyUI初期設定が完了しました。\n"
+                f"モデル: {COMFYUI_RECOMMENDED_MODEL_NAME}\n"
+                f"ControlNet: {COMFYUI_RECOMMENDED_CONTROLNET_NAME}\n"
+                f"workflow: {workflow_path}"
+            )
+        else:
+            model_target = self.comfyui_recommended_model_path()
+            controlnet_target = self.comfyui_recommended_controlnet_path()
+            missing = []
+            if not result.get("has_model"):
+                missing.append(f"checkpoint: {COMFYUI_RECOMMENDED_MODEL_NAME}\n保存先: {model_target if model_target is not None else 'ComfyUI base directory未検出'}")
+            if not result.get("has_controlnet"):
+                missing.append(f"ControlNet: {COMFYUI_RECOMMENDED_CONTROLNET_NAME}\n保存先: {controlnet_target if controlnet_target is not None else 'ComfyUI base directory未検出'}")
+            self.persist_config()
+            self.comfyui_status_label.setText(
+                "ComfyUIには接続できましたが、推奨ファイルが不足しています。\n"
+                + "\n".join(missing)
+                + "\n必要なら「推奨モデル/ControlNetをダウンロード」を押してください。"
+            )
+
+    def download_comfyui_recommended_model(self) -> None:
+        if self.comfyui_download_running:
+            return
+        downloads = [
+            ("checkpoint", COMFYUI_RECOMMENDED_MODEL_NAME, COMFYUI_RECOMMENDED_MODEL_URL, self.comfyui_recommended_model_path()),
+            ("ControlNet", COMFYUI_RECOMMENDED_CONTROLNET_NAME, COMFYUI_RECOMMENDED_CONTROLNET_URL, self.comfyui_recommended_controlnet_path()),
+        ]
+        pending = [(label, name, url, target) for label, name, url, target in downloads if target is not None and not target.exists()]
+        missing_base = any(target is None for _label, _name, _url, target in downloads)
+        if missing_base:
+            target = None
+        else:
+            target = pending[0][3] if pending else None
+        if target is None:
+            if missing_base:
+                self.comfyui_status_label.setText("先にComfyUI初期設定を実行し、base directoryを検出してください。")
+            else:
+                self.comfyui_status_label.setText("推奨モデルとControlNetは既に存在します。")
+            return
+        label, name, url, target = pending[0]
+        self.persist_config()
+        self.comfyui_download_running = True
+        self.comfyui_download_button.setEnabled(False)
+        self.comfyui_status_label.setText(f"推奨{label}をダウンロード中...\n{name}\n保存先: {target}")
+
+        def worker() -> None:
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temp_path = target.with_suffix(target.suffix + ".part")
+                request = urllib.request.Request(url, headers={"User-Agent": f"{APP_SHORT_NAME}/{APP_VERSION}"})
+                with urllib.request.urlopen(request, timeout=60) as response, temp_path.open("wb") as output:
+                    total = int(response.headers.get("Content-Length") or 0)
+                    downloaded = 0
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        downloaded += len(chunk)
+                        self.signals.comfyui_download_progress.emit({"label": label, "downloaded": downloaded, "total": total})
+                temp_path.replace(target)
+                self.signals.comfyui_download_done.emit({"status": "ok", "label": label, "name": name, "path": str(target)})
+            except Exception as exc:
+                self.signals.comfyui_download_done.emit({"status": "error", "message": str(exc)})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_comfyui_download_progress(self, result: object) -> None:
+        if not isinstance(result, dict):
+            return
+        label = str(result.get("label") or "モデル")
+        downloaded = int(result.get("downloaded") or 0)
+        total = int(result.get("total") or 0)
+        if total > 0:
+            percent = downloaded * 100 / total
+            self.comfyui_status_label.setText(f"推奨{label}をダウンロード中... {percent:.1f}% ({downloaded / 1024**3:.2f} / {total / 1024**3:.2f} GiB)")
+        else:
+            self.comfyui_status_label.setText(f"推奨{label}をダウンロード中... {downloaded / 1024**3:.2f} GiB")
+
+    def on_comfyui_download_done(self, result: object) -> None:
+        self.comfyui_download_running = False
+        if hasattr(self, "comfyui_download_button"):
+            self.comfyui_download_button.setEnabled(True)
+        if not isinstance(result, dict):
+            self.comfyui_status_label.setText(str(result))
+            return
+        if result.get("status") == "ok":
+            self.comfyui_status_label.setText(f"推奨{result.get('label', 'モデル')}を保存しました: {result.get('path')}\n不足が残っている場合は、続けてダウンロードを押してください。\n最後にComfyUI初期設定をもう一度実行してください。")
+        else:
+            self.comfyui_status_label.setText(f"推奨ファイルのダウンロードに失敗しました: {result.get('message', '')}")
+
+    def current_colorize_input_path(self) -> Path | None:
+        if not self.image_paths or self.current_index < 0 or self.current_index >= len(self.image_paths):
+            return None
+        path = self.image_paths[self.current_index]
+        return path if path.is_file() else None
+
+    def colorized_output_dir(self, source: Path) -> Path:
+        if self.archive_mode_active():
+            return APP_DIR / "RAIV_colorized"
+        return source.parent / "RAIV_colorized"
+
+    def colorized_output_path(self, source: Path) -> Path:
+        return self.colorized_output_dir(source) / f"{source.stem}_comfyui.png"
+
+    def has_colorized_result(self, source: Path) -> bool:
+        if not source.is_file():
+            return False
+        session_path = self.colorized_session_paths.get(self.normalized_path(source))
+        if session_path is not None and session_path.exists():
+            return True
+        path = self.colorized_output_path(source)
+        return path.exists()
+
+    def existing_colorized_path(self, source: Path) -> Path | None:
+        if not self.use_colorized_cache_check.isChecked() or not self.has_colorized_result(source):
+            return None
+        path = self.colorized_output_path(source)
+        return path if path.exists() else None
+
+    def display_source_path(self, source: Path) -> Path:
+        session_path = self.colorized_session_paths.get(self.normalized_path(source))
+        if session_path is not None and session_path.exists():
+            return session_path
+        return self.existing_colorized_path(source) or source
+
+    def colorize_ready(self) -> tuple[bool, str]:
+        workflow_path = Path(self.comfyui_workflow_edit.text().strip())
+        if not workflow_path.is_file():
+            return False, "workflow JSONを指定してください。"
+        input_node = str(self.comfyui_input_combo.currentData() or "")
+        output_node = str(self.comfyui_output_combo.currentData() or "")
+        if not input_node or not output_node:
+            return False, "入力画像ノードと出力画像ノードを指定してください。"
+        return True, ""
+
+    def colorize_current_image_with_comfyui(self) -> None:
+        source = self.current_colorize_input_path()
+        if source is None:
+            self.comfyui_status_label.setText("彩色する画像がありません。")
+            return
+        ready, message = self.colorize_ready()
+        if not ready:
+            self.comfyui_status_label.setText(message)
+            return
+        self.persist_config()
+        self.enqueue_colorize(source, front=True, force=True, show_result=True)
+        self.comfyui_status_label.setText(f"ComfyUI彩色キューへ追加: {source.name}")
+
+    def enqueue_colorize(self, path: Path, front: bool = False, force: bool = False, show_result: bool = False) -> None:
+        path = self.normalized_path(path)
+        if not force and self.has_colorized_result(path):
+            self.colorize_done_paths.add(path)
+            return
+        ready, message = self.colorize_ready()
+        if not ready:
+            if front:
+                self.comfyui_status_label.setText(message)
+            return
+        if path in self.colorize_processing_paths:
+            return
+        if path in self.colorize_queued_paths:
+            if front:
+                self.promote_colorize_item(path)
+            return
+        task = {
+            "source": path,
+            "force": force,
+            "api_url": self.comfyui_api_base(),
+            "workflow_path": Path(self.comfyui_workflow_edit.text().strip()),
+            "input_node": str(self.comfyui_input_combo.currentData() or ""),
+            "output_node": str(self.comfyui_output_combo.currentData() or ""),
+            "output_dir": self.colorized_output_dir(path),
+            "save_to_folder": self.save_colorized_check.isChecked(),
+            "positive_prompt": self.colorize_positive_edit.toPlainText().strip() or DEFAULT_COLORIZE_POSITIVE_PROMPT,
+            "negative_prompt": self.colorize_negative_edit.toPlainText().strip() or DEFAULT_COLORIZE_NEGATIVE_PROMPT,
+            "denoise": self.colorize_denoise_spin.value(),
+            "controlnet_strength": self.colorize_controlnet_strength_spin.value(),
+            "controlnet_end": self.colorize_controlnet_end_spin.value(),
+            "saturation_boost": self.colorize_saturation_spin.value(),
+            "luminance_preserve": self.colorize_luminance_spin.value(),
+            "show_result": show_result,
+        }
+        self.colorize_queued_paths.add(path)
+        if front:
+            with self.colorize_queue.mutex:
+                self.colorize_queue.queue.appendleft(task)
+                self.colorize_queue.unfinished_tasks += 1
+                self.colorize_queue.not_empty.notify()
+        else:
+            self.colorize_queue.put(task)
+        self.update_prefetch_progress_bars()
+
+    def promote_colorize_item(self, path: Path) -> None:
+        path = self.normalized_path(path)
+        with self.colorize_queue.mutex:
+            items = [item for item in self.colorize_queue.queue if item is not None and item.get("source") != path]
+            current = [item for item in self.colorize_queue.queue if item is not None and item.get("source") == path]
+            self.colorize_queue.queue.clear()
+            self.colorize_queue.queue.extend(items)
+            if current:
+                self.colorize_queue.queue.appendleft(current[0])
+            self.colorize_queue.not_empty.notify()
+
+    def reorder_colorize_queue(self, priority_paths: list[Path]) -> None:
+        priority = [self.normalized_path(path) for path in priority_paths]
+        priority_rank = {path: index for index, path in enumerate(priority)}
+        with self.colorize_queue.mutex:
+            items = [item for item in self.colorize_queue.queue if item is not None]
+            if not items:
+                return
+            items.sort(key=lambda item: priority_rank.get(self.normalized_path(Path(item["source"])), len(priority_rank) + 1))
+            self.colorize_queue.queue.clear()
+            self.colorize_queue.queue.extend(items)
+            self.colorize_queue.not_empty.notify()
+
+    def _colorize_worker_loop(self) -> None:
+        while True:
+            task = self.colorize_queue.get()
+            if task is None or getattr(self, "closing", False):
+                return
+            source = self.normalized_path(Path(task["source"]))
+            force = bool(task.get("force"))
+            self.colorize_queued_paths.discard(source)
+            if not force and self.has_colorized_result(source):
+                self.colorize_done_paths.add(source)
+                continue
+            self.colorize_processing_paths.add(source)
+            self.signals.comfyui_colorize_started.emit(str(source))
+            try:
+                result = self.run_comfyui_colorize(
+                    str(task["api_url"]),
+                    source,
+                    Path(task["workflow_path"]),
+                    str(task["input_node"]),
+                    str(task["output_node"]),
+                    Path(task["output_dir"]),
+                    bool(task.get("save_to_folder", True)),
+                    str(task.get("positive_prompt") or DEFAULT_COLORIZE_POSITIVE_PROMPT),
+                    str(task.get("negative_prompt") or DEFAULT_COLORIZE_NEGATIVE_PROMPT),
+                    float(task.get("denoise") or 0.62),
+                    float(task.get("controlnet_strength") or 0.65),
+                    float(task.get("controlnet_end") or 0.65),
+                    float(task.get("saturation_boost") or 1.35),
+                    float(task.get("luminance_preserve") or 0.72),
+                )
+                result["show_result"] = bool(task.get("show_result"))
+            except urllib.error.HTTPError as exc:
+                result = {"status": "error", "source": str(source), "message": f"HTTP {exc.code}"}
+            except urllib.error.URLError as exc:
+                result = {"status": "error", "source": str(source), "message": str(exc.reason)}
+            except Exception as exc:
+                result = {"status": "error", "source": str(source), "message": str(exc)}
+            self.colorize_processing_paths.discard(source)
+            self.signals.comfyui_colorize_done.emit(result)
+
+    def run_comfyui_colorize(
+        self,
+        api_url: str,
+        source: Path,
+        workflow_path: Path,
+        input_node: str,
+        output_node: str,
+        output_dir: Path,
+        save_to_folder: bool,
+        positive_prompt: str,
+        negative_prompt: str,
+        denoise: float,
+        controlnet_strength: float,
+        controlnet_end: float,
+        saturation_boost: float,
+        luminance_preserve: float,
+    ) -> dict[str, object]:
+        workflow = load_comfyui_api_workflow(workflow_path)
+        if input_node not in workflow:
+            raise ValueError("input node was not found in workflow")
+        if output_node not in workflow:
+            raise ValueError("output node was not found in workflow")
+        uploaded = comfyui_upload_image(api_url, source)
+        image_name = str(uploaded.get("name") or source.name)
+        workflow[input_node].setdefault("inputs", {})["image"] = image_name
+        self.apply_colorize_settings_to_workflow(
+            workflow,
+            positive_prompt,
+            negative_prompt,
+            denoise,
+            controlnet_strength,
+            controlnet_end,
+        )
+        output_inputs = workflow[output_node].setdefault("inputs", {})
+        if str(workflow[output_node].get("class_type") or "") == "SaveImage":
+            workflow[output_node]["class_type"] = "PreviewImage"
+            output_inputs.pop("filename_prefix", None)
+        prompt_response = comfyui_post_json(api_url, "/prompt", {"prompt": workflow, "client_id": uuid.uuid4().hex}, timeout=30)
+        prompt_id = str(prompt_response.get("prompt_id") or "")
+        if not prompt_id:
+            raise ValueError("ComfyUI did not return prompt_id")
+        deadline = time.time() + 900
+        history_entry = None
+        while time.time() < deadline:
+            history = comfyui_get_json(api_url, f"/history/{prompt_id}", timeout=30)
+            history_entry = history.get(prompt_id) if isinstance(history, dict) else None
+            if history_entry:
+                status = history_entry.get("status", {}) if isinstance(history_entry, dict) else {}
+                if isinstance(status, dict) and status.get("status_str") == "error":
+                    raise RuntimeError(self.comfyui_history_error_message(status))
+                if isinstance(status, dict) and status.get("completed") and not history_entry.get("outputs"):
+                    raise RuntimeError(self.comfyui_history_error_message(status))
+            if history_entry and history_entry.get("outputs"):
+                break
+            time.sleep(0.7)
+        if not history_entry or not history_entry.get("outputs"):
+            raise TimeoutError("ComfyUI generation did not finish")
+        outputs = history_entry.get("outputs", {})
+        images = []
+        if isinstance(outputs, dict):
+            selected = outputs.get(output_node)
+            if isinstance(selected, dict) and isinstance(selected.get("images"), list):
+                images = selected["images"]
+            if not images:
+                for output in outputs.values():
+                    if isinstance(output, dict) and isinstance(output.get("images"), list):
+                        images = output["images"]
+                        break
+        if not images:
+            raise ValueError("ComfyUI did not return an output image")
+        image_info = images[0]
+        filename = str(image_info.get("filename") or "")
+        subfolder = str(image_info.get("subfolder") or "")
+        file_type = str(image_info.get("type") or "output")
+        query = urllib.parse.urlencode({"filename": filename, "subfolder": subfolder, "type": file_type})
+        with urllib.request.urlopen(comfyui_api_url(api_url, f"/view?{query}"), timeout=60) as response:
+            image_bytes = response.read()
+        image_bytes = preserve_original_luminance(
+            source,
+            image_bytes,
+            saturation_boost=saturation_boost,
+            luminance_preserve=luminance_preserve,
+        )
+        if save_to_folder:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            output_path = self.colorized_output_path(source)
+        else:
+            fd, text_path = tempfile.mkstemp(prefix=f"{source.stem}_comfyui_", suffix=".png", dir=self.process_temp_dir)
+            os.close(fd)
+            output_path = Path(text_path)
+        output_path.write_bytes(image_bytes)
+        return {"status": "ok", "source": str(source), "path": str(output_path), "saved": save_to_folder}
+
+    def apply_colorize_settings_to_workflow(
+        self,
+        workflow: dict[str, dict],
+        positive_prompt: str,
+        negative_prompt: str,
+        denoise: float,
+        controlnet_strength: float,
+        controlnet_end: float,
+    ) -> None:
+        for node_id, node in workflow.items():
+            class_type = str(node.get("class_type") or "")
+            inputs = node.setdefault("inputs", {})
+            title = str(node.get("_meta", {}).get("title") or "")
+            if class_type == "CLIPTextEncode":
+                if "Negative" in title or node_id == "3":
+                    inputs["text"] = negative_prompt
+                elif "Positive" in title or node_id == "2":
+                    inputs["text"] = positive_prompt
+            elif class_type == "KSampler":
+                inputs["denoise"] = max(0.0, min(1.0, float(denoise)))
+                inputs["steps"] = 28
+                inputs["cfg"] = 5.2
+                inputs["sampler_name"] = "dpmpp_2m_sde"
+                inputs["scheduler"] = "karras"
+            elif class_type == "ControlNetApplyAdvanced":
+                inputs["strength"] = max(0.0, min(2.0, float(controlnet_strength)))
+                inputs["end_percent"] = max(0.0, min(1.0, float(controlnet_end)))
+
+    def comfyui_history_error_message(self, status: dict) -> str:
+        for message in status.get("messages", []):
+            if not isinstance(message, list) or len(message) < 2 or message[0] != "execution_error":
+                continue
+            detail = message[1] if isinstance(message[1], dict) else {}
+            node_type = str(detail.get("node_type") or "")
+            exception = str(detail.get("exception_message") or detail.get("exception_type") or "")
+            if node_type or exception:
+                return f"ComfyUI error at {node_type}: {exception}".strip()
+        return "ComfyUI generation failed"
+
+    def on_comfyui_colorize_started(self, path_text: str) -> None:
+        self.comfyui_colorize_running = True
+        if hasattr(self, "comfyui_colorize_button"):
+            self.comfyui_colorize_button.setEnabled(False)
+        path = Path(path_text)
+        self.append_log_if_visible(f"ComfyUI colorize started: {self.display_name(path)}")
+        self.comfyui_status_label.setText(f"ComfyUIで彩色中: {path.name}")
+        self.update_prefetch_progress_bars()
+
+    def on_comfyui_colorize_done(self, result: object) -> None:
+        self.comfyui_colorize_running = bool(self.colorize_processing_paths or self.colorize_queued_paths)
+        if hasattr(self, "comfyui_colorize_button"):
+            self.comfyui_colorize_button.setEnabled(not self.comfyui_colorize_running)
+        if not isinstance(result, dict):
+            self.comfyui_status_label.setText(str(result))
+            return
+        if result.get("status") == "ok":
+            source_text = str(result.get("source") or "")
+            source = Path(source_text) if source_text else None
+            path = Path(str(result.get("path") or ""))
+            if source is not None:
+                normalized_source = self.normalized_path(source)
+                self.colorized_session_paths[normalized_source] = path
+                self.colorize_done_paths.add(normalized_source)
+                self.processed_cache.pop(self.processing_key(normalized_source), None)
+                self.original_cache.pop(normalized_source, None)
+                self.original_cache.pop(self.normalized_path(path), None)
+                self.viewer.pixmap_cache.clear()
+                self.viewer.clear_pixmap_prefetch_state()
+                colorized = QImage(str(path))
+                if not colorized.isNull():
+                    self.original_cache[self.normalized_path(path)] = colorized
+                if self.current_index >= 0 and normalized_source in {
+                    self.normalized_path(self.image_paths[self.current_index]),
+                    self.normalized_path(self.image_paths[self.secondary_page_index()]) if self.secondary_page_index() is not None else Path(),
+                }:
+                    self.display_current_image(preserve_view=False)
+            self.append_log_if_visible(f"ComfyUI colorize done: {self.display_name(source) if source is not None else path.name}")
+            if result.get("saved"):
+                self.comfyui_status_label.setText(f"彩色結果を保存しました: {path}")
+            else:
+                self.comfyui_status_label.setText(f"彩色結果を一時表示しています: {path}")
+        else:
+            source_text = str(result.get("source") or "")
+            source = Path(source_text) if source_text else None
+            if source is not None:
+                self.colorize_done_paths.discard(self.normalized_path(source))
+            self.append_log_if_visible(f"ComfyUI colorize failed: {self.display_name(source) if source is not None else ''} {result.get('message', '')}")
+            self.comfyui_status_label.setText(f"ComfyUI彩色に失敗しました: {result.get('message', '')}")
+        self.update_prefetch_progress_bars()
 
     def binding_text(self, kind: str, binding: dict | None) -> str:
         text = key_binding_text(binding) if kind == "keyboard" else mouse_binding_text(binding)
@@ -2624,6 +3806,10 @@ class MainWindow(QMainWindow):
         self.config_data.tile = self.tile_spin.value()
         self.config_data.realesrgan_model = self.realesrgan_model_combo.currentText()
         self.config_data.realcugan_prefetch_count = self.realcugan_prefetch_spin.value()
+        self.config_data.save_colorized_to_folder = self.save_colorized_check.isChecked()
+        self.config_data.use_colorized_folder_cache = self.use_colorized_cache_check.isChecked()
+        self.config_data.colorize_prefetch_enabled = self.colorize_prefetch_check.isChecked()
+        self.config_data.colorize_prefetch_count = self.colorize_prefetch_spin.value()
         self.config_data.viewer_prefetch_count = self.viewer_prefetch_spin.value()
         if not self.archive_mode_active():
             self.config_data.save_upscaled_to_scale_folder = self.save_scale_check.isChecked()
@@ -2662,8 +3848,21 @@ class MainWindow(QMainWindow):
         self.config_data.restore_last_image_on_start = self.restore_last_image_check.isChecked()
         self.config_data.remember_last_image_per_folder = self.folder_history_check.isChecked()
         self.config_data.folder_history_limit = self.folder_history_limit_spin.value()
+        if hasattr(self, "comfyui_api_edit"):
+            self.config_data.comfyui_api_url = self.comfyui_api_edit.text().strip() or DEFAULT_COMFYUI_API_URL
+            self.config_data.comfyui_base_dir = self.comfyui_base_dir_edit.text().strip()
+            self.config_data.comfyui_workflow_path = self.comfyui_workflow_edit.text().strip()
+            self.config_data.comfyui_input_node_id = str(self.comfyui_input_combo.currentData() or "")
+            self.config_data.comfyui_output_node_id = str(self.comfyui_output_combo.currentData() or "")
+            self.config_data.colorize_denoise = self.colorize_denoise_spin.value()
+            self.config_data.colorize_controlnet_strength = self.colorize_controlnet_strength_spin.value()
+            self.config_data.colorize_controlnet_end = self.colorize_controlnet_end_spin.value()
+            self.config_data.colorize_saturation_boost = self.colorize_saturation_spin.value()
+            self.config_data.colorize_luminance_preserve = self.colorize_luminance_spin.value()
+            self.config_data.colorize_positive_prompt = self.colorize_positive_edit.toPlainText().strip() or DEFAULT_COLORIZE_POSITIVE_PROMPT
+            self.config_data.colorize_negative_prompt = self.colorize_negative_edit.toPlainText().strip() or DEFAULT_COLORIZE_NEGATIVE_PROMPT
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
-        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "other", "keyconfig"][max(0, min(4, self.tabs.currentIndex()))]
+        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "colorize", "other", "keyconfig"][max(0, min(5, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
             rect = self.normalGeometry() if self.isMaximized() else self.geometry()
             if rect.isValid():
@@ -3088,6 +4287,10 @@ class MainWindow(QMainWindow):
         original_total = original_done + original_pending
         self.set_progress_bar(self.original_prefetch_bar, original_done, original_total, "拡大前メモリ読込")
 
+        colorize_total = len(self.colorize_plan)
+        colorize_done = sum(1 for path in self.colorize_plan if self.normalized_path(path) in self.colorize_done_paths)
+        self.set_progress_bar(self.colorize_progress_bar, colorize_done, colorize_total, "AI彩色画像生成")
+
         engine_total = len(engine_plan)
         engine_done = sum(1 for path in engine_plan if self.normalized_path(path) in self.prefetch_engine_done_paths)
         self.set_progress_bar(self.upscale_progress_bar, engine_done, engine_total, "拡大画像生成")
@@ -3217,6 +4420,7 @@ class MainWindow(QMainWindow):
         self.deferred_page_steps = 0
         self.original_cache.clear()
         self.processed_cache.clear()
+        self.colorized_session_paths.clear()
         self.viewer.pixmap_cache.clear()
         self.viewer.clear_pixmap_prefetch_state()
         self.prefetching_original_paths.clear()
@@ -3224,6 +4428,9 @@ class MainWindow(QMainWindow):
         self.prefetch_viewer_plan = []
         self.prefetch_engine_plan = []
         self.prefetch_engine_done_paths.clear()
+        self.colorize_plan = []
+        self.colorize_done_paths.clear()
+        self.clear_colorize_queue()
         self.prefetch_generation += 1
         self.update_prefetch_progress_bars()
         self.rebuild_thumbnail_items()
@@ -3244,6 +4451,7 @@ class MainWindow(QMainWindow):
         self.deferred_page_steps = 0
         self.original_cache.clear()
         self.processed_cache.clear()
+        self.colorized_session_paths.clear()
         self.viewer.pixmap_cache.clear()
         self.viewer.clear_pixmap_prefetch_state()
         self.prefetching_original_paths.clear()
@@ -3251,6 +4459,9 @@ class MainWindow(QMainWindow):
         self.prefetch_viewer_plan = []
         self.prefetch_engine_plan = []
         self.prefetch_engine_done_paths.clear()
+        self.colorize_plan = []
+        self.colorize_done_paths.clear()
+        self.clear_colorize_queue()
         self.prefetch_generation += 1
         self.update_prefetch_progress_bars()
         self.rebuild_thumbnail_items()
@@ -3443,7 +4654,7 @@ class MainWindow(QMainWindow):
             before_parts: list[str] = []
             after_parts: list[str] = []
             for _index, entry_path in display_entries:
-                entry_source = source if entry_path == path and source is not None else self.load_original(entry_path)
+                entry_source = source if entry_path == path and source is not None else self.load_original(self.display_source_path(entry_path))
                 entry_processed = (
                     processed
                     if entry_path == path and processed is not None
@@ -3465,7 +4676,7 @@ class MainWindow(QMainWindow):
             )
             return
         if source is None:
-            source = self.load_original(path)
+            source = self.load_original(self.display_source_path(path))
         if processed is None:
             processed = self.processed_cache.get(self.processing_key(path))
         is_skipped = skipped if skipped is not None else self.should_skip_realcugan(path)
@@ -3495,7 +4706,7 @@ class MainWindow(QMainWindow):
         return image
 
     def should_skip_realcugan(self, path: Path) -> bool:
-        return self.skip_tall_check.isChecked() and self.load_original(path).height() >= self.skip_height_spin.value()
+        return self.skip_tall_check.isChecked() and self.load_original(self.display_source_path(path)).height() >= self.skip_height_spin.value()
 
     def dual_page_reversed(self) -> bool:
         check = getattr(self, "invert_page_position_check", None)
@@ -3516,7 +4727,7 @@ class MainWindow(QMainWindow):
             return False
         if index < 0 or index >= len(self.image_paths):
             return False
-        image = self.load_original(self.image_paths[index])
+        image = self.load_original(self.display_source_path(self.image_paths[index]))
         return not image.isNull() and image.width() > image.height()
 
     def current_display_index_entries(self) -> list[tuple[int, Path]]:
@@ -3531,7 +4742,8 @@ class MainWindow(QMainWindow):
         return entries
 
     def image_state_for_display(self, path: Path, front: bool = False) -> tuple[QImage, QImage | None, str, bool]:
-        source = self.load_original(path)
+        source_path = self.display_source_path(path)
+        source = self.load_original(source_path)
         cache_key = self.processing_key(path)
         processed = self.processed_cache.get(cache_key)
         skipped = False
@@ -3817,6 +5029,8 @@ class MainWindow(QMainWindow):
 
     def is_raiv_scale_folder(self, path: Path) -> bool:
         name = path.name.casefold()
+        if name == "raiv_colorized":
+            return True
         if re.fullmatch(r"x\d+", name):
             return True
         if re.fullmatch(r"realcugan(?:_[a-z0-9_.-]+)?_x\d+", name):
@@ -4437,7 +5651,7 @@ class MainWindow(QMainWindow):
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
-        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "other", "keyconfig"][max(0, min(4, index))]
+        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "colorize", "other", "keyconfig"][max(0, min(5, index))]
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:
@@ -4476,6 +5690,26 @@ class MainWindow(QMainWindow):
         if self.image_paths:
             self.request_schedule_prefetch(0)
 
+    def on_colorize_prefetch_settings_changed(self) -> None:
+        self.persist_config()
+        self.colorize_plan = []
+        self.colorize_done_paths.clear()
+        self.clear_colorize_queue()
+        if self.image_paths:
+            self.request_schedule_prefetch(0)
+
+    def on_colorized_cache_settings_changed(self) -> None:
+        self.persist_config()
+        self.original_cache.clear()
+        self.processed_cache.clear()
+        self.viewer.pixmap_cache.clear()
+        self.viewer.clear_pixmap_prefetch_state()
+        self.prefetching_processed_keys.clear()
+        self.prefetch_engine_done_paths.clear()
+        self.prefetch_generation += 1
+        if self.image_paths:
+            self.display_current_image()
+
     def choose_engine_exe(self) -> None:
         engine = self.current_engine()
         title = f"{ENGINE_LABELS[engine]} exeを選択"
@@ -4503,6 +5737,11 @@ class MainWindow(QMainWindow):
     def clear_prefetch_io_queue(self) -> None:
         with self.prefetch_io_queue.mutex:
             self.prefetch_io_queue.queue.clear()
+
+    def clear_colorize_queue(self) -> None:
+        with self.colorize_queue.mutex:
+            self.colorize_queue.queue.clear()
+            self.colorize_queued_paths.clear()
 
     def queue_prefetch_io_task(self, generation: int, priority: int, kind: str, key: object, source: str, target: str) -> None:
         with self.prefetch_io_lock:
@@ -4553,6 +5792,7 @@ class MainWindow(QMainWindow):
         self.prefetching_original_paths.clear()
         self.prefetching_processed_keys.clear()
         self.clear_prefetch_io_queue()
+        self.clear_colorize_queue()
         realcugan_plan = self.make_plan(self.realcugan_prefetch_spin.value())
         viewer_plan = self.make_prefetch_plan(self.viewer_prefetch_spin.value())
         self.prefetch_viewer_plan = viewer_plan
@@ -4562,6 +5802,19 @@ class MainWindow(QMainWindow):
             for path in self.prefetch_engine_plan
             if self.processing_key(path) in self.processed_cache
         }
+        if self.colorize_prefetch_check.isChecked():
+            self.colorize_plan = self.make_plan(self.colorize_prefetch_spin.value())
+            self.colorize_done_paths = {
+                self.normalized_path(path)
+                for path in self.colorize_plan
+                if self.has_colorized_result(path)
+            }
+            for position, path in enumerate(self.colorize_plan):
+                self.enqueue_colorize(path, front=position == 0, force=False)
+            self.reorder_colorize_queue(self.colorize_plan)
+        else:
+            self.colorize_plan = []
+            self.colorize_done_paths.clear()
         self.start_viewer_prefetch(viewer_plan)
         self.update_prefetch_progress_bars()
         for position, path in enumerate(realcugan_plan):
@@ -4772,13 +6025,14 @@ class MainWindow(QMainWindow):
     def should_skip_upscale_in_worker(self, path: Path) -> bool:
         if not self.config_data.skip_realcugan_for_tall_images:
             return False
-        image = QImage(str(path))
+        image = QImage(str(self.display_source_path(path)))
         return not image.isNull() and image.height() >= self.config_data.skip_realcugan_height_threshold
 
     def run_upscale_engine(self, source: Path) -> dict:
-        output_path, temporary_output = self.prepare_output_path(source)
+        engine_input = self.display_source_path(source)
+        output_path, temporary_output = self.prepare_output_path(engine_input)
         values = {
-            "input": str(source),
+            "input": str(engine_input),
             "output": str(output_path),
             "scale": self.effective_scale(),
             "denoise": self.denoise_combo.currentText(),
@@ -4866,7 +6120,7 @@ class MainWindow(QMainWindow):
     def existing_processed_path(self, source: Path) -> Path | None:
         if self.archive_mode_active() or not self.use_scale_cache_check.isChecked():
             return None
-        path = self.cache_output_path(source, create_dir=False)
+        path = self.cache_output_path(self.display_source_path(source), create_dir=False)
         return path if path.exists() else None
 
     def prepare_output_path(self, source: Path) -> tuple[Path, bool]:
@@ -5107,6 +6361,7 @@ class MainWindow(QMainWindow):
         self.folder_history_save_timer.stop()
         self.save_folder_history_now()
         self.work_queue.put(None)
+        self.colorize_queue.put(None)
         paths = list(self.retired_archive_temp_dirs)
         if self.archive_temp_dir:
             paths.append(self.archive_temp_dir)

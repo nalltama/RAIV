@@ -11,6 +11,27 @@ This file summarizes notable changes for each release. It focuses on user-visibl
 
 No unreleased changes.
 
+## v0.1.4 - 2026-06-02
+
+### 追加 / Added
+
+- その他タブに現在のバージョン表示と手動アップデート確認機能を追加
+- GitHub Releases の最新版を確認し、新バージョンがある場合はダウンロード先URLを表示
+- ComfyUI API連携によるAI彩色タブを追加
+- API形式のworkflow JSONを読み込み、現在画像をComfyUIへ送って彩色結果を保存・表示する機能を追加
+- ComfyUI初期設定、推奨モデル確認、RAIV標準workflow自動生成、推奨モデルダウンロード機能を追加
+- RAIV標準workflowをSDXL Lineart ControlNet対応に変更
+- 推奨ControlNet `shermang_controlnet_standard_lineart_sdxl.safetensors` の検出とダウンロード導線を追加
+- ComfyUIで生成エラーが発生した場合、彩色中のまま待ち続けずエラーを表示するように変更
+- `RAIV_colorized` に彩色済み画像があれば表示に使用する機能を追加
+- 彩色結果をフォルダに保存するか、一時ファイルとして表示するかを選べるように追加
+- AI彩色実行時はComfyUI側の恒久出力を避け、RAIV側で保存先または一時ファイルを管理するように変更
+- 彩色結果を表示に使うかどうかのオン/オフを追加
+- AI彩色の先行処理オン/オフと先読み枚数設定を追加
+- AI彩色の先行処理では彩色済みページをスキップし、手動彩色時のみ既存結果を上書きするように変更
+- AI彩色の彩色強度、線画保持、彩度補正、輝度保持、Positive/Negative promptをUIから調整できるように追加
+- AI彩色の標準サンプラーを `dpmpp_2m_sde` / `karras` / 28 steps に変更
+
 ## v0.1.3 - 2026-05-28
 
 ### 追加 / Added

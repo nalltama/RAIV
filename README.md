@@ -104,6 +104,20 @@ Real-ESRGAN モデル:
 
 `.cur` ファイルはアプリフォルダ内の `cur` フォルダから読み込みます。
 
+AI彩色:
+
+- ComfyUI API連携
+- ComfyUI初期設定と推奨checkpoint / ControlNetのダウンロード
+- SDXL向けLineart ControlNetを使った構造保持
+- API形式のworkflow JSONを使った現在画像の彩色
+- LoadImage / SaveImage ノードの検出
+- 彩色結果を `RAIV_colorized` フォルダへ保存するか、一時ファイルとして表示
+- `RAIV_colorized` に彩色済み画像があれば表示に使用
+- 彩色結果を表示に使うかどうかのオン/オフ
+- AI彩色の先行処理オン/オフと先読み枚数設定
+- 彩色強度、線画保持、彩度補正、輝度保持、Positive/Negative promptの調整
+- 手動彩色時は既存の彩色結果を上書きし、先行処理時は彩色済みページをスキップ
+
 その他:
 
 - Language（日本語 / English）
@@ -112,6 +126,7 @@ Real-ESRGAN モデル:
 - アプリの二重起動禁止
 - 最後に開いていた画像を次回起動時に開く
 - フォルダごとに最後に開いていた画像を記録
+- バージョン表示と手動アップデート確認
 - 次回起動時の古い一時ファイル削除
 
 サムネイル列は下端に表示されます。固定表示では画像表示領域を少し使い、自動表示ではビューアー下端へマウスを近づけた時だけ重ねて表示します。サムネイルの大きさは列の高さ変更に合わせて自動調整されます。
@@ -306,6 +321,20 @@ Image Adjustment:
 
 `.cur` files are loaded from the `cur` folder inside the application folder.
 
+AI Colorize:
+
+- ComfyUI API integration
+- ComfyUI initial setup and recommended checkpoint / ControlNet download
+- Structure preservation using an SDXL Lineart ControlNet
+- Colorize the current image using an API-format workflow JSON
+- Detect LoadImage / SaveImage nodes
+- Save colorized results to the `RAIV_colorized` folder or display them as temporary files
+- Use existing colorized images in `RAIV_colorized` for display
+- Toggle whether colorized results are used for display
+- Toggle AI colorization prefetch and set its prefetch count
+- Adjust color strength, line preservation, saturation correction, luminance preservation, and positive/negative prompts
+- Manual colorization overwrites existing results; prefetch skips already colorized pages
+
 Other:
 
 - Language (Japanese / English)
@@ -314,6 +343,7 @@ Other:
 - Prevent multiple app instances
 - Open the last viewed image on startup
 - Remember the last viewed image for each folder
+- Version display and manual update check
 - Cleanup old temporary files on next startup
 
 The thumbnail strip appears at the bottom. In pinned mode it uses part of the image area; in auto mode it overlays the viewer only when the mouse approaches the bottom edge. Thumbnail size is adjusted automatically from the strip height.
