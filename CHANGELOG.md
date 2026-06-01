@@ -11,6 +11,19 @@ This file summarizes notable changes for each release. It focuses on user-visibl
 
 No unreleased changes.
 
+## v0.1.5 - 2026-06-02
+
+### 追加 / Added
+
+- 画像調整タブに、画像の回転、左右反転、上下反転、表示リセットのボタンを追加
+- 画像調整タブに、表示上だけの明るさ、コントラスト、ガンマ、シャープネス調整を追加
+- JPEG XR / HD Photo 系の `.jxr`、`.wdp`、`.hdp` をSDRへトーンマッピングして互換表示する機能を追加
+- HDR画像表示中だけ有効になる、SDR互換表示変換時の明るさ倍率スライダーを画像調整タブに追加
+- HDR互換表示の明るさを100%へ戻すボタンを追加し、スライダー操作時の再変換を遅延反映して操作中の重さを軽減
+- README.md の画像処理エンジン説明に、アニメ/イラスト向けにはReal-CUGANを優先して試す目安を追記
+- README.md にGitHub Releasesからのダウンロード案内、上書きアップデート方法、Python公式ダウンロードリンクを追加
+- README.md の `run_raiv.vbs` 説明を、VBScript廃止予定を踏まえた注意書きへ修正
+
 ## v0.1.4 - 2026-06-02
 
 ### 追加 / Added

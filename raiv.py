@@ -18,6 +18,7 @@ import urllib.request
 import uuid
 import zipfile
 from collections import OrderedDict, deque
+from ctypes import wintypes
 from dataclasses import asdict, dataclass, field
 from functools import cmp_to_key
 from pathlib import Path, PurePosixPath
@@ -92,7 +93,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "0.1.4"
+APP_VERSION = "0.1.5"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -141,7 +142,8 @@ ENGINE_LABELS = {
     ENGINE_REALESRGAN: "Real-ESRGAN",
 }
 REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+HDR_IMAGE_EXTENSIONS = {".jxr", ".wdp", ".hdp"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"} | HDR_IMAGE_EXTENSIONS
 ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
 TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
 TEMP_WORK_PREFIX = "realcugan_qt_work_"
@@ -175,6 +177,242 @@ MODIFIER_MASK = (
     | Qt.ShiftModifier.value
     | Qt.AltModifier.value
 )
+
+
+class WICGUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+def wic_guid(value: str) -> WICGUID:
+    item = uuid.UUID(value)
+    return WICGUID(
+        item.time_low,
+        item.time_mid,
+        item.time_hi_version,
+        (ctypes.c_ubyte * 8)(
+            item.clock_seq_hi_variant,
+            item.clock_seq_low,
+            *item.node.to_bytes(6, "big"),
+        ),
+    )
+
+
+CLSID_WIC_IMAGING_FACTORY = wic_guid("cacaf262-9370-4615-a13b-9f5539da4c0a")
+IID_IWIC_IMAGING_FACTORY = wic_guid("ec5ec8a9-c395-4314-9c77-54d7a935ff70")
+GUID_WIC_PIXEL_FORMAT_64BPP_RGBA_HALF = wic_guid("6fddc324-4e03-4bfe-b185-3d77768dc93a")
+GUID_WIC_PIXEL_FORMAT_32BPP_RGBA = wic_guid("f5c7ad2d-6a8d-43dd-a7a8-a29935261ae9")
+COINIT_MULTITHREADED = 0
+RPC_E_CHANGED_MODE = ctypes.c_long(0x80010106).value
+CLSCTX_INPROC_SERVER = 1
+GENERIC_READ = 0x80000000
+WIC_DECODE_METADATA_CACHE_ON_DEMAND = 0
+WIC_BITMAP_DITHER_TYPE_NONE = 0
+WIC_BITMAP_PALETTE_TYPE_CUSTOM = 0
+
+
+def succeeded(hr: int) -> bool:
+    return int(hr) >= 0
+
+
+def com_method(pointer: ctypes.c_void_p, index: int, restype, *argtypes):
+    vtable = ctypes.cast(pointer, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+    return ctypes.WINFUNCTYPE(restype, ctypes.c_void_p, *argtypes)(vtable[index])
+
+
+def com_release(pointer: ctypes.c_void_p | None) -> None:
+    if pointer:
+        com_method(pointer, 2, wintypes.ULONG)(pointer)
+
+
+def is_hdr_image_path(path: Path) -> bool:
+    return path.suffix.lower() in HDR_IMAGE_EXTENSIONS
+
+
+def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
+    if is_hdr_image_path(path):
+        image = load_wic_hdr_image(path, hdr_tonemap_brightness)
+        if not image.isNull():
+            return image
+    return QImage(str(path))
+
+
+def load_wic_hdr_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
+    if os.name != "nt":
+        return QImage()
+    image = load_wic_half_tonemapped_image(path, hdr_tonemap_brightness)
+    if not image.isNull():
+        return image
+    return load_wic_8bit_image(path)
+
+
+def create_wic_factory() -> tuple[ctypes.c_void_p | None, bool]:
+    initialized = False
+    hr = ctypes.windll.ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
+    if succeeded(hr):
+        initialized = True
+    elif int(hr) != RPC_E_CHANGED_MODE:
+        return None, False
+    factory = ctypes.c_void_p()
+    hr = ctypes.windll.ole32.CoCreateInstance(
+        ctypes.byref(CLSID_WIC_IMAGING_FACTORY),
+        None,
+        CLSCTX_INPROC_SERVER,
+        ctypes.byref(IID_IWIC_IMAGING_FACTORY),
+        ctypes.byref(factory),
+    )
+    if not succeeded(hr) or not factory:
+        if initialized:
+            ctypes.windll.ole32.CoUninitialize()
+        return None, False
+    return factory, initialized
+
+
+def read_wic_pixels(path: Path, pixel_format: WICGUID, bytes_per_pixel: int) -> tuple[int, int, bytes] | None:
+    factory, initialized = create_wic_factory()
+    decoder = ctypes.c_void_p()
+    frame = ctypes.c_void_p()
+    converter = ctypes.c_void_p()
+    try:
+        if not factory:
+            return None
+        create_decoder = com_method(
+            factory,
+            3,
+            ctypes.c_long,
+            wintypes.LPCWSTR,
+            ctypes.c_void_p,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            ctypes.POINTER(ctypes.c_void_p),
+        )
+        hr = create_decoder(
+            factory,
+            str(path),
+            None,
+            GENERIC_READ,
+            WIC_DECODE_METADATA_CACHE_ON_DEMAND,
+            ctypes.byref(decoder),
+        )
+        if not succeeded(hr) or not decoder:
+            return None
+        get_frame = com_method(decoder, 13, ctypes.c_long, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))
+        hr = get_frame(decoder, 0, ctypes.byref(frame))
+        if not succeeded(hr) or not frame:
+            return None
+        create_converter = com_method(factory, 10, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p))
+        hr = create_converter(factory, ctypes.byref(converter))
+        if not succeeded(hr) or not converter:
+            return None
+        initialize = com_method(
+            converter,
+            8,
+            ctypes.c_long,
+            ctypes.c_void_p,
+            ctypes.POINTER(WICGUID),
+            wintypes.DWORD,
+            ctypes.c_void_p,
+            ctypes.c_double,
+            wintypes.DWORD,
+        )
+        hr = initialize(
+            converter,
+            frame,
+            ctypes.byref(pixel_format),
+            WIC_BITMAP_DITHER_TYPE_NONE,
+            None,
+            0.0,
+            WIC_BITMAP_PALETTE_TYPE_CUSTOM,
+        )
+        if not succeeded(hr):
+            return None
+        width = wintypes.UINT()
+        height = wintypes.UINT()
+        get_size = com_method(converter, 3, ctypes.c_long, ctypes.POINTER(wintypes.UINT), ctypes.POINTER(wintypes.UINT))
+        hr = get_size(converter, ctypes.byref(width), ctypes.byref(height))
+        if not succeeded(hr) or width.value <= 0 or height.value <= 0:
+            return None
+        stride = int(width.value) * int(bytes_per_pixel)
+        buffer_size = stride * int(height.value)
+        buffer = (ctypes.c_ubyte * buffer_size)()
+        copy_pixels = com_method(
+            converter,
+            7,
+            ctypes.c_long,
+            ctypes.c_void_p,
+            wintypes.UINT,
+            wintypes.UINT,
+            ctypes.POINTER(ctypes.c_ubyte),
+        )
+        hr = copy_pixels(converter, None, stride, buffer_size, buffer)
+        if not succeeded(hr):
+            return None
+        return int(width.value), int(height.value), bytes(buffer)
+    finally:
+        com_release(converter)
+        com_release(frame)
+        com_release(decoder)
+        com_release(factory)
+        if initialized:
+            ctypes.windll.ole32.CoUninitialize()
+
+
+def load_wic_8bit_image(path: Path) -> QImage:
+    result = read_wic_pixels(path, GUID_WIC_PIXEL_FORMAT_32BPP_RGBA, 4)
+    if result is None:
+        return QImage()
+    width, height, data = result
+    return QImage(data, width, height, QImage.Format_RGBA8888).copy()
+
+
+def load_wic_half_tonemapped_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
+    if np is None:
+        return QImage()
+    result = read_wic_pixels(path, GUID_WIC_PIXEL_FORMAT_64BPP_RGBA_HALF, 8)
+    if result is None:
+        return QImage()
+    width, height, data = result
+    half = np.frombuffer(data, dtype=np.float16).reshape((height, width, 4)).astype(np.float32)
+    rgb = np.nan_to_num(half[:, :, :3], nan=0.0, posinf=16.0, neginf=0.0)
+    rgb = np.clip(rgb, 0.0, 16.0)
+    scene_luminance = rgb[:, :, 0] * 0.2126 + rgb[:, :, 1] * 0.7152 + rgb[:, :, 2] * 0.0722
+    valid_luminance = scene_luminance[scene_luminance > 0.000001]
+    if valid_luminance.size:
+        median_luminance = max(0.000001, float(np.percentile(valid_luminance, 50)))
+        highlight_luminance = max(median_luminance, float(np.percentile(valid_luminance, 99)))
+    else:
+        median_luminance = 0.18
+        highlight_luminance = 1.0
+
+    # Adapt the scene to an SDR-like viewing range. The exposure follows the
+    # image median, while the white point follows highlights so bright and dark
+    # HDR captures both land in a usable SDR range without a per-file preset.
+    brightness = max(0.25, min(2.0, float(hdr_tonemap_brightness)))
+    exposure = 0.49 * brightness * ((0.77 / median_luminance) ** 0.55)
+    exposure = max(0.12, min(2.5, exposure))
+    white_point = max(1.1, min(4.0, highlight_luminance * exposure * 1.25))
+    gamma = 0.95
+    output_white = 0.96
+    rgb = rgb * exposure
+    luminance = rgb[:, :, 0] * 0.2126 + rgb[:, :, 1] * 0.7152 + rgb[:, :, 2] * 0.0722
+    mapped_luminance = luminance * (1.0 + luminance / (white_point * white_point)) / (1.0 + luminance)
+    scale = np.divide(mapped_luminance, luminance, out=np.ones_like(luminance), where=luminance > 0.000001)
+    rgb = np.clip(rgb * scale[:, :, None], 0.0, 1.0)
+    rgb = np.power(rgb, gamma)
+    srgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    srgb = np.clip(srgb * output_white, 0.0, 1.0)
+    alpha = np.nan_to_num(half[:, :, 3:4], nan=1.0, posinf=1.0, neginf=0.0)
+    alpha = np.clip(alpha, 0.0, 1.0)
+    output = np.concatenate((srgb, alpha), axis=2)
+    output = np.clip(output * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
+    output_data = output.tobytes()
+    return QImage(output_data, width, height, QImage.Format_RGBA8888).copy()
+
+
 ACTION_DEFS = [
     ("open_image", "画像を開く"),
     ("open_folder", "フォルダを開く"),
@@ -596,6 +834,23 @@ UI_TEXT_EN = {
     "全画面表示時にマウスカーソルを非表示": "Hide mouse cursor in fullscreen",
     "画像またはフォルダ/アーカイブをドロップしてください": "Drop an image, folder, or archive",
     "トーンカーブ補正を使う": "Use tone curve adjustment",
+    "表示操作": "Display controls",
+    "左回転": "Rotate left",
+    "右回転": "Rotate right",
+    "左右反転": "Flip horizontal",
+    "上下反転": "Flip vertical",
+    "表示リセット": "Reset display",
+    "基本表示調整": "Basic display adjustment",
+    "明るさ": "Brightness",
+    "コントラスト": "Contrast",
+    "ガンマ": "Gamma",
+    "シャープネス": "Sharpness",
+    "調整をリセット": "Reset adjustments",
+    "表示上だけの非破壊調整です。元ファイルや拡大処理済みファイルは変更しません。": "These are non-destructive display-only adjustments. Original and processed files are not changed.",
+    "HDR互換表示": "HDR compatible display",
+    "HDR互換表示の明るさ": "HDR compatible brightness",
+    "100%に戻す": "Reset to 100%",
+    "HDR画像を表示している時だけ有効です。100%を基準に、SDR互換表示へ変換する時の明るさを調整します。": "Enabled only while displaying an HDR image. Adjusts brightness during SDR-compatible conversion, with 100% as the baseline.",
     "GIMP .curファイルを使い、輝度に応じてRGBを割り当てます。モノクロ漫画を疑似4色刷りのように表示できます。": "Uses a GIMP .cur file to map luminance to RGB, making monochrome manga look like pseudo four-color printing.",
     "トーンカーブ": "Tone curve",
     "再読み込み": "Reload",
@@ -743,6 +998,11 @@ class AppConfig:
     dual_page_landscape_single: bool = True
     tone_curve_enabled: bool = False
     tone_curve_file: str = ""
+    display_brightness: float = 0.0
+    display_contrast: float = 1.0
+    display_gamma: float = 1.0
+    display_sharpness: float = 0.0
+    hdr_tonemap_brightness: float = 1.0
     hide_cursor_in_fullscreen: bool = False
     show_log_panel: bool = False
     show_profile_panel: bool = False
@@ -879,6 +1139,11 @@ def load_config() -> AppConfig:
             config.realesrgan_model = REALESRGAN_MODELS[0]
         if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
+        config.display_brightness = max(-100.0, min(100.0, float(config.display_brightness)))
+        config.display_contrast = max(0.0, min(3.0, float(config.display_contrast)))
+        config.display_gamma = max(0.1, min(5.0, float(config.display_gamma)))
+        config.display_sharpness = max(0.0, min(5.0, float(config.display_sharpness)))
+        config.hdr_tonemap_brightness = max(0.25, min(2.0, float(config.hdr_tonemap_brightness)))
         if config.ui_language not in {"ja", "en"}:
             config.ui_language = "ja"
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
@@ -1469,6 +1734,10 @@ class GLImageView(QOpenGLWidget):
         self.compare_shift_drag_moves_boundary = False
         self.tone_curve_enabled = False
         self.tone_curve_luts: dict[str, list[int]] | None = None
+        self.display_brightness = 0.0
+        self.display_contrast = 1.0
+        self.display_gamma = 1.0
+        self.display_sharpness = 0.0
         self.horizontal_wheel_navigation = False
         self.horizontal_wheel_inverted = False
         self.zoom = 1.0
@@ -1564,10 +1833,10 @@ class GLImageView(QOpenGLWidget):
         return image.transformed(transform, Qt.SmoothTransformation)
 
     def rebuild_display_images(self) -> None:
-        self.source_image = self.transformed_image(self.apply_tone_curve_image(self.raw_source_image))
-        self.processed_image = self.transformed_image(self.apply_tone_curve_image(self.raw_processed_image))
-        self.secondary_source_image = self.transformed_image(self.apply_tone_curve_image(self.raw_secondary_source_image))
-        self.secondary_processed_image = self.transformed_image(self.apply_tone_curve_image(self.raw_secondary_processed_image))
+        self.source_image = self.transformed_image(self.adjusted_display_image(self.raw_source_image))
+        self.processed_image = self.transformed_image(self.adjusted_display_image(self.raw_processed_image))
+        self.secondary_source_image = self.transformed_image(self.adjusted_display_image(self.raw_secondary_source_image))
+        self.secondary_processed_image = self.transformed_image(self.adjusted_display_image(self.raw_secondary_processed_image))
         self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
         self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
         self.secondary_source_pixmap = self.pixmap_for_image(self.raw_secondary_source_image, self.secondary_source_image)
@@ -1685,6 +1954,17 @@ class GLImageView(QOpenGLWidget):
     def set_tone_curve_options(self, enabled: bool, curve: ToneCurve | None) -> None:
         self.tone_curve_enabled = bool(enabled and curve is not None)
         self.tone_curve_luts = {channel: curve.lut(channel) for channel in CURVE_CHANNELS} if self.tone_curve_enabled and curve is not None else None
+        self.pixmap_cache.clear()
+        self.clear_pixmap_prefetch_state()
+        self.rebuild_display_images()
+        self.clear_resample_cache()
+        self.update()
+
+    def set_display_adjustments(self, brightness: float, contrast: float, gamma: float, sharpness: float) -> None:
+        self.display_brightness = max(-100.0, min(100.0, float(brightness)))
+        self.display_contrast = max(0.0, min(3.0, float(contrast)))
+        self.display_gamma = max(0.1, min(5.0, float(gamma)))
+        self.display_sharpness = max(0.0, min(5.0, float(sharpness)))
         self.pixmap_cache.clear()
         self.clear_pixmap_prefetch_state()
         self.rebuild_display_images()
@@ -1874,6 +2154,48 @@ class GLImageView(QOpenGLWidget):
         output = pil.convert("RGBA")
         output_data = output.tobytes()
         return QImage(output_data, output.width, output.height, QImage.Format_RGBA8888).copy()
+
+    def has_display_adjustments(self) -> bool:
+        return (
+            abs(self.display_brightness) > 0.0001
+            or abs(self.display_contrast - 1.0) > 0.0001
+            or abs(self.display_gamma - 1.0) > 0.0001
+            or self.display_sharpness > 0.0001
+        )
+
+    def adjusted_display_image(self, image: QImage) -> QImage:
+        image = self.apply_tone_curve_image(image)
+        if image.isNull() or not self.has_display_adjustments():
+            return image
+        if np is None:
+            return self.apply_sharpness_image(image) if self.display_sharpness > 0.0001 else image
+        source = image.convertToFormat(QImage.Format_RGBA8888)
+        size = source.sizeInBytes()
+        data = bytes(source.bits()[:size])
+        array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
+        rgb = array[:, :, :3].astype(np.float32)
+        if abs(self.display_gamma - 1.0) > 0.0001:
+            rgb = 255.0 * np.power(np.clip(rgb / 255.0, 0.0, 1.0), 1.0 / self.display_gamma)
+        if abs(self.display_contrast - 1.0) > 0.0001:
+            rgb = (rgb - 127.5) * self.display_contrast + 127.5
+        if abs(self.display_brightness) > 0.0001:
+            rgb = rgb + self.display_brightness
+        array[:, :, :3] = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
+        output_data = array.tobytes()
+        adjusted = QImage(output_data, source.width(), source.height(), QImage.Format_RGBA8888).copy()
+        return self.apply_sharpness_image(adjusted)
+
+    def apply_sharpness_image(self, image: QImage) -> QImage:
+        if image.isNull() or self.display_sharpness <= 0.0001 or PILImage is None or ImageFilter is None:
+            return image
+        source = image.convertToFormat(QImage.Format_RGBA8888)
+        size = source.sizeInBytes()
+        data = bytes(source.bits()[:size])
+        pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
+        percent = max(0, round(self.display_sharpness * 100))
+        sharpened = pil.filter(ImageFilter.UnsharpMask(radius=1.0, percent=percent, threshold=2))
+        output_data = sharpened.tobytes()
+        return QImage(output_data, sharpened.width, sharpened.height, QImage.Format_RGBA8888).copy()
 
     def apply_tone_curve_image(self, image: QImage) -> QImage:
         if image.isNull() or not self.tone_curve_enabled or not self.tone_curve_luts or np is None:
@@ -2184,6 +2506,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_resize_refresh_timer = QTimer(self)
         self.thumbnail_resize_refresh_timer.setSingleShot(True)
         self.thumbnail_resize_refresh_timer.timeout.connect(self.refresh_thumbnail_icons_for_size)
+        self.hdr_tonemap_apply_timer = QTimer(self)
+        self.hdr_tonemap_apply_timer.setSingleShot(True)
+        self.hdr_tonemap_apply_timer.timeout.connect(self.apply_hdr_tonemap_brightness)
         self.profile_stats: dict[str, dict[str, float]] = {}
         self.profile_update_timer = QTimer(self)
         self.profile_update_timer.setSingleShot(True)
@@ -2708,6 +3033,84 @@ class MainWindow(QMainWindow):
         self.tone_curve_check = QCheckBox("トーンカーブ補正を使う")
         self.tone_curve_check.setChecked(self.config_data.tone_curve_enabled)
         self.tone_curve_check.stateChanged.connect(self.on_tone_curve_settings_changed)
+        display_controls_label = QLabel("表示操作")
+        display_controls_label.setObjectName("displayControlsLabel")
+        image_adjust_layout.addWidget(display_controls_label)
+        display_controls_layout = QGridLayout()
+        rotate_left_button = QPushButton("左回転")
+        rotate_left_button.clicked.connect(lambda: self.viewer.rotate_display(-90))
+        rotate_right_button = QPushButton("右回転")
+        rotate_right_button.clicked.connect(lambda: self.viewer.rotate_display(90))
+        flip_horizontal_button = QPushButton("左右反転")
+        flip_horizontal_button.clicked.connect(lambda: self.viewer.flip_display(True))
+        flip_vertical_button = QPushButton("上下反転")
+        flip_vertical_button.clicked.connect(lambda: self.viewer.flip_display(False))
+        reset_display_button = QPushButton("表示リセット")
+        reset_display_button.clicked.connect(self.viewer.reset_display_state)
+        display_controls_layout.addWidget(rotate_left_button, 0, 0)
+        display_controls_layout.addWidget(rotate_right_button, 0, 1)
+        display_controls_layout.addWidget(flip_horizontal_button, 1, 0)
+        display_controls_layout.addWidget(flip_vertical_button, 1, 1)
+        display_controls_layout.addWidget(reset_display_button, 2, 0, 1, 2)
+        image_adjust_layout.addLayout(display_controls_layout)
+        image_adjust_layout.addWidget(self.separator())
+        basic_adjust_label = QLabel("基本表示調整")
+        basic_adjust_label.setObjectName("basicDisplayAdjustmentLabel")
+        image_adjust_layout.addWidget(basic_adjust_label)
+        basic_adjust_form = QFormLayout()
+        self.display_brightness_spin = QDoubleSpinBox()
+        self.display_brightness_spin.setRange(-100.0, 100.0)
+        self.display_brightness_spin.setSingleStep(1.0)
+        self.display_brightness_spin.setDecimals(0)
+        self.display_brightness_spin.setValue(float(self.config_data.display_brightness))
+        self.display_brightness_spin.valueChanged.connect(self.on_display_adjustments_changed)
+        basic_adjust_form.addRow("明るさ", self.display_brightness_spin)
+        self.display_contrast_spin = QDoubleSpinBox()
+        self.display_contrast_spin.setRange(0.0, 3.0)
+        self.display_contrast_spin.setSingleStep(0.05)
+        self.display_contrast_spin.setDecimals(2)
+        self.display_contrast_spin.setValue(float(self.config_data.display_contrast))
+        self.display_contrast_spin.valueChanged.connect(self.on_display_adjustments_changed)
+        basic_adjust_form.addRow("コントラスト", self.display_contrast_spin)
+        self.display_gamma_spin = QDoubleSpinBox()
+        self.display_gamma_spin.setRange(0.1, 5.0)
+        self.display_gamma_spin.setSingleStep(0.05)
+        self.display_gamma_spin.setDecimals(2)
+        self.display_gamma_spin.setValue(float(self.config_data.display_gamma))
+        self.display_gamma_spin.valueChanged.connect(self.on_display_adjustments_changed)
+        basic_adjust_form.addRow("ガンマ", self.display_gamma_spin)
+        self.display_sharpness_spin = QDoubleSpinBox()
+        self.display_sharpness_spin.setRange(0.0, 5.0)
+        self.display_sharpness_spin.setSingleStep(0.1)
+        self.display_sharpness_spin.setDecimals(1)
+        self.display_sharpness_spin.setValue(float(self.config_data.display_sharpness))
+        self.display_sharpness_spin.valueChanged.connect(self.on_display_adjustments_changed)
+        basic_adjust_form.addRow("シャープネス", self.display_sharpness_spin)
+        image_adjust_layout.addLayout(basic_adjust_form)
+        reset_adjustments_button = QPushButton("調整をリセット")
+        reset_adjustments_button.clicked.connect(self.reset_display_adjustments)
+        image_adjust_layout.addWidget(reset_adjustments_button)
+        image_adjust_layout.addWidget(self.help_label("表示上だけの非破壊調整です。元ファイルや拡大処理済みファイルは変更しません。"))
+        image_adjust_layout.addWidget(self.separator())
+        hdr_tonemap_label = QLabel("HDR互換表示")
+        hdr_tonemap_label.setObjectName("hdrCompatibleDisplayLabel")
+        image_adjust_layout.addWidget(hdr_tonemap_label)
+        self.hdr_tonemap_brightness_label = QLabel()
+        image_adjust_layout.addWidget(self.hdr_tonemap_brightness_label)
+        self.hdr_tonemap_brightness_slider = QSlider(Qt.Horizontal)
+        self.hdr_tonemap_brightness_slider.setRange(50, 150)
+        self.hdr_tonemap_brightness_slider.setSingleStep(5)
+        self.hdr_tonemap_brightness_slider.setPageStep(10)
+        self.hdr_tonemap_brightness_slider.setValue(round(float(self.config_data.hdr_tonemap_brightness) * 100))
+        self.hdr_tonemap_brightness_slider.valueChanged.connect(self.on_hdr_tonemap_brightness_changed)
+        hdr_tonemap_row = QHBoxLayout()
+        hdr_tonemap_row.addWidget(self.hdr_tonemap_brightness_slider, 1)
+        self.hdr_tonemap_reset_button = QPushButton("100%に戻す")
+        self.hdr_tonemap_reset_button.clicked.connect(self.reset_hdr_tonemap_brightness)
+        hdr_tonemap_row.addWidget(self.hdr_tonemap_reset_button)
+        image_adjust_layout.addLayout(hdr_tonemap_row)
+        image_adjust_layout.addWidget(self.help_label("HDR画像を表示している時だけ有効です。100%を基準に、SDR互換表示へ変換する時の明るさを調整します。"))
+        image_adjust_layout.addWidget(self.separator())
         image_adjust_layout.addWidget(self.tone_curve_check)
         image_adjust_layout.addWidget(self.help_label("GIMP .curファイルを使い、輝度に応じてRGBを割り当てます。モノクロ漫画を疑似4色刷りのように表示できます。"))
         curve_form = QFormLayout()
@@ -2940,11 +3343,12 @@ class MainWindow(QMainWindow):
 
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, basic_adjust_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
 
         tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "colorize": 3, "other": 4, "keyconfig": 5}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
         self.apply_engine_ui()
+        self.update_hdr_tonemap_controls()
         QTimer.singleShot(0, self.apply_language)
         return root
 
@@ -3037,6 +3441,7 @@ class MainWindow(QMainWindow):
             self.tone_curve_channel_combo.blockSignals(False)
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
+        self.update_hdr_tonemap_controls()
         self.refresh_keyconfig_buttons()
 
     def _translate_widget_tree(self, widget: QWidget) -> None:
@@ -3707,7 +4112,7 @@ class MainWindow(QMainWindow):
                 self.original_cache.pop(self.normalized_path(path), None)
                 self.viewer.pixmap_cache.clear()
                 self.viewer.clear_pixmap_prefetch_state()
-                colorized = QImage(str(path))
+                colorized = load_image(path, self.config_data.hdr_tonemap_brightness)
                 if not colorized.isNull():
                     self.original_cache[self.normalized_path(path)] = colorized
                 if self.current_index >= 0 and normalized_source in {
@@ -3829,6 +4234,11 @@ class MainWindow(QMainWindow):
         self.config_data.dual_page_landscape_single = self.dual_page_landscape_check.isChecked()
         self.config_data.tone_curve_enabled = self.tone_curve_check.isChecked()
         self.config_data.tone_curve_file = self.current_tone_curve.path if self.current_tone_curve is not None else ""
+        self.config_data.display_brightness = self.display_brightness_spin.value()
+        self.config_data.display_contrast = self.display_contrast_spin.value()
+        self.config_data.display_gamma = self.display_gamma_spin.value()
+        self.config_data.display_sharpness = self.display_sharpness_spin.value()
+        self.config_data.hdr_tonemap_brightness = self.hdr_tonemap_brightness_slider.value() / 100.0
         self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
         self.config_data.wrap_page_navigation = self.wrap_page_check.isChecked()
         self.config_data.preserve_view_on_page_navigation = self.preserve_view_check.isChecked()
@@ -3898,6 +4308,12 @@ class MainWindow(QMainWindow):
             self.config_data.horizontal_wheel_inverted,
         )
         self.viewer.set_tone_curve_options(self.config_data.tone_curve_enabled, self.current_tone_curve)
+        self.viewer.set_display_adjustments(
+            self.config_data.display_brightness,
+            self.config_data.display_contrast,
+            self.config_data.display_gamma,
+            self.config_data.display_sharpness,
+        )
         self.update_thumbnail_metrics()
         self.layout_viewer_host()
         self.on_compare_changed()
@@ -4064,7 +4480,7 @@ class MainWindow(QMainWindow):
             if generation != self.thumbnail_generation:
                 continue
             started = time.perf_counter()
-            image = QImage(path_text)
+            image = load_image(Path(path_text), self.config_data.hdr_tonemap_brightness)
             size = int(self.config_data.thumbnail_size)
             if not image.isNull():
                 image = image.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
@@ -4161,6 +4577,31 @@ class MainWindow(QMainWindow):
             if label is not None:
                 label.setText("0/0")
         slider.blockSignals(False)
+
+    def current_display_has_hdr_image(self) -> bool:
+        if not self.image_paths or self.current_index < 0:
+            return False
+        try:
+            for _index, path in self.current_display_index_entries():
+                if is_hdr_image_path(self.display_source_path(path)):
+                    return True
+        except Exception:
+            return False
+        return False
+
+    def update_hdr_tonemap_controls(self) -> None:
+        slider = getattr(self, "hdr_tonemap_brightness_slider", None)
+        label = getattr(self, "hdr_tonemap_brightness_label", None)
+        reset_button = getattr(self, "hdr_tonemap_reset_button", None)
+        if slider is None or label is None:
+            return
+        enabled = self.current_display_has_hdr_image()
+        slider.setEnabled(enabled)
+        if reset_button is not None:
+            reset_button.setEnabled(enabled and slider.value() != 100)
+        percent = slider.value()
+        text = "HDR compatible brightness" if self.ui_language() == "en" else "HDR互換表示の明るさ"
+        label.setText(f"{text}: {percent}%")
 
     def on_page_position_slider_changed(self, value: int) -> None:
         if not self.image_paths or value <= 0:
@@ -4637,6 +5078,7 @@ class MainWindow(QMainWindow):
             name_text = self.display_name(path)
         self.status_label.setText(f"{page_text} {self.state_text(state)}: {name_text}")
         self.update_page_position_slider()
+        self.update_hdr_tonemap_controls()
         self.update_window_title(source=source, processed=processed, skipped=skipped)
         self.update_thumbnail_selection(scroll=scroll_thumbnail)
         self.request_borderless_fullscreen_enforce()
@@ -4698,7 +5140,7 @@ class MainWindow(QMainWindow):
             self.original_cache.move_to_end(path)
             return cached
         started = time.perf_counter()
-        image = QImage(str(path))
+        image = load_image(path, self.config_data.hdr_tonemap_brightness)
         self.record_profile("元画像読込(UI)", (time.perf_counter() - started) * 1000)
         self.original_cache[path] = image
         while len(self.original_cache) > max(6, self.config_data.viewer_prefetch_count * 2 + 3):
@@ -4706,7 +5148,10 @@ class MainWindow(QMainWindow):
         return image
 
     def should_skip_realcugan(self, path: Path) -> bool:
-        return self.skip_tall_check.isChecked() and self.load_original(self.display_source_path(path)).height() >= self.skip_height_spin.value()
+        source_path = self.display_source_path(path)
+        if is_hdr_image_path(source_path):
+            return True
+        return self.skip_tall_check.isChecked() and self.load_original(source_path).height() >= self.skip_height_spin.value()
 
     def dual_page_reversed(self) -> bool:
         check = getattr(self, "invert_page_position_check", None)
@@ -4750,7 +5195,7 @@ class MainWindow(QMainWindow):
         if processed is None:
             existing = self.existing_processed_path(path)
             if existing is not None:
-                processed = QImage(str(existing))
+                processed = load_image(existing, self.config_data.hdr_tonemap_brightness)
                 if not processed.isNull():
                     self.processed_cache[cache_key] = processed
         if processed is None or processed.isNull():
@@ -4978,6 +5423,66 @@ class MainWindow(QMainWindow):
         self.viewer.set_tone_curve_options(self.tone_curve_check.isChecked(), self.current_tone_curve)
         self.persist_config()
 
+    def on_display_adjustments_changed(self) -> None:
+        if getattr(self, "initializing", False) or not hasattr(self, "display_brightness_spin"):
+            return
+        self.viewer.set_display_adjustments(
+            self.display_brightness_spin.value(),
+            self.display_contrast_spin.value(),
+            self.display_gamma_spin.value(),
+            self.display_sharpness_spin.value(),
+        )
+        self.persist_config()
+
+    def reset_display_adjustments(self) -> None:
+        if not hasattr(self, "display_brightness_spin"):
+            return
+        widgets_values = (
+            (self.display_brightness_spin, 0.0),
+            (self.display_contrast_spin, 1.0),
+            (self.display_gamma_spin, 1.0),
+            (self.display_sharpness_spin, 0.0),
+        )
+        for widget, value in widgets_values:
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        self.on_display_adjustments_changed()
+
+    def on_hdr_tonemap_brightness_changed(self) -> None:
+        if getattr(self, "initializing", False) or not hasattr(self, "hdr_tonemap_brightness_slider"):
+            return
+        self.config_data.hdr_tonemap_brightness = self.hdr_tonemap_brightness_slider.value() / 100.0
+        self.update_hdr_tonemap_controls()
+        self.persist_config()
+        if self.current_display_has_hdr_image():
+            self.hdr_tonemap_apply_timer.start(180)
+
+    def reset_hdr_tonemap_brightness(self) -> None:
+        slider = getattr(self, "hdr_tonemap_brightness_slider", None)
+        if slider is None:
+            return
+        if slider.value() == 100:
+            self.update_hdr_tonemap_controls()
+            return
+        slider.setValue(100)
+
+    def apply_hdr_tonemap_brightness(self) -> None:
+        if getattr(self, "closing", False):
+            return
+        if not self.current_display_has_hdr_image():
+            return
+        self.original_cache.clear()
+        self.prefetching_original_paths.clear()
+        self.prefetch_generation += 1
+        self.clear_prefetch_io_queue()
+        self.viewer.pixmap_cache.clear()
+        self.viewer.clear_pixmap_prefetch_state()
+        if self.thumbnails_enabled():
+            self.refresh_thumbnail_icons_for_size()
+        if self.image_paths and self.current_index >= 0:
+            self.display_current_image(preserve_view=True)
+
     def save_tone_curve_dialog(self) -> None:
         CURVE_DIR.mkdir(exist_ok=True)
         start = CURVE_DIR / ((self.current_tone_curve.name if self.current_tone_curve else "curve") + ".cur")
@@ -5004,7 +5509,7 @@ class MainWindow(QMainWindow):
             self,
             "画像を開く",
             start,
-            "Images/Archives (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
+            "Images/Archives (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.jxr *.wdp *.hdp *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
         )
         if path:
             self.open_path(Path(path))
@@ -5762,7 +6267,7 @@ class MainWindow(QMainWindow):
             if kind == "original":
                 path = self.normalized_path(Path(source))
                 attempted_originals.append(path)
-                image = QImage(str(path))
+                image = load_image(path, self.config_data.hdr_tonemap_brightness)
                 if not image.isNull():
                     originals[path] = image
                 self.signals.profile_event.emit("元画像IO", (time.perf_counter() - started) * 1000)
@@ -5772,7 +6277,7 @@ class MainWindow(QMainWindow):
                     attempted_processed.append(processed_key)
                     target_path = Path(target)
                     if target_path.exists():
-                        image = QImage(str(target_path))
+                        image = load_image(target_path, self.config_data.hdr_tonemap_brightness)
                         if not image.isNull():
                             processed[processed_key] = image
                     self.signals.profile_event.emit("拡大画像IO", (time.perf_counter() - started) * 1000)
@@ -6023,9 +6528,12 @@ class MainWindow(QMainWindow):
             self.signals.process_done.emit(result)
 
     def should_skip_upscale_in_worker(self, path: Path) -> bool:
+        source_path = self.display_source_path(path)
+        if is_hdr_image_path(source_path):
+            return True
         if not self.config_data.skip_realcugan_for_tall_images:
             return False
-        image = QImage(str(self.display_source_path(path)))
+        image = load_image(source_path, self.config_data.hdr_tonemap_brightness)
         return not image.isNull() and image.height() >= self.config_data.skip_realcugan_height_threshold
 
     def run_upscale_engine(self, source: Path) -> dict:
@@ -6054,7 +6562,7 @@ class MainWindow(QMainWindow):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 check=False,
             )
-            image = QImage(str(output_path)) if completed.returncode == 0 and output_path.exists() else QImage()
+            image = load_image(output_path, self.config_data.hdr_tonemap_brightness) if completed.returncode == 0 and output_path.exists() else QImage()
             if temporary_output and output_path.exists():
                 output_path.unlink(missing_ok=True)
             return {
