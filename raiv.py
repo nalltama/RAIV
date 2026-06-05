@@ -4,6 +4,7 @@ import ctypes
 import io
 import json
 import locale
+import math
 import os
 import queue
 import re
@@ -93,7 +94,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "0.1.5"
+APP_VERSION = "1.0.0"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -151,6 +152,16 @@ TEMP_OUTPUT_PREFIX = "realcugan_"
 TEMP_LOCK_FILE = "viewer.lock"
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\RealtimeAIImageViewer_RAIV_SingleInstance"
 BORDERLESS_FULLSCREEN_OVERSCAN = 1
+GWL_STYLE = -16
+WS_CAPTION = 0x00C00000
+WS_THICKFRAME = 0x00040000
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOZORDER = 0x0004
+SWP_NOOWNERZORDER = 0x0200
+SWP_FRAMECHANGED = 0x0020
+SWP_SHOWWINDOW = 0x0040
+MONITOR_DEFAULTTONEAREST = 2
 FORM_LABEL_WIDTH = 132
 MAX_DISPLAY_SCALE = 5.0
 PREFETCH_DEBOUNCE_MS = 80
@@ -185,6 +196,15 @@ class WICGUID(ctypes.Structure):
         ("Data2", wintypes.WORD),
         ("Data3", wintypes.WORD),
         ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", wintypes.DWORD),
     ]
 
 
@@ -433,8 +453,10 @@ ACTION_DEFS = [
     ("toggle_tone_curve", "トーンカーブ補正オン/オフ"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
-    ("rotate_right", "画像右回転"),
-    ("rotate_left", "画像左回転"),
+    ("rotate_right", "画像右1度回転"),
+    ("rotate_left", "画像左1度回転"),
+    ("rotate_right_90", "画像右90度回転"),
+    ("rotate_left_90", "画像左90度回転"),
     ("flip_horizontal", "画像左右反転"),
     ("flip_vertical", "画像上下反転"),
 ]
@@ -749,8 +771,10 @@ UI_TEXT_EN = {
     "トーンカーブ補正オン/オフ": "Toggle tone curve adjustment",
     "等倍表示": "Actual size",
     "画面フィット表示": "Fit to window",
-    "画像右回転": "Rotate right",
-    "画像左回転": "Rotate left",
+    "画像右1度回転": "Rotate right 1 degree",
+    "画像左1度回転": "Rotate left 1 degree",
+    "画像右90度回転": "Rotate right 90 degrees",
+    "画像左90度回転": "Rotate left 90 degrees",
     "画像左右反転": "Flip horizontal",
     "画像上下反転": "Flip vertical",
     "設定": "Settings",
@@ -829,6 +853,8 @@ UI_TEXT_EN = {
     "サムネイル列を固定表示する": "Pin thumbnail strip",
     "最後/最初でページ送りしたら反対側へ移動": "Wrap around at first/last page",
     "ページ送り時にズームと表示位置を維持": "Preserve zoom and position when changing pages",
+    "回転時に表示全体をフィットし直す": "Refit whole image after rotation",
+    "オフの時は回転してもズーム倍率を維持します。オンにすると、回転後の縦横サイズに合わせて画像全体が収まる倍率へ調整します。": "When off, rotation preserves the current zoom. When on, RAIV adjusts zoom so the whole rotated image fits.",
     "マウス横スクロールでページ送り": "Use horizontal mouse wheel for page navigation",
     "横スクロールのページ送り方向を反転": "Reverse horizontal wheel direction",
     "全画面表示時にマウスカーソルを非表示": "Hide mouse cursor in fullscreen",
@@ -846,6 +872,7 @@ UI_TEXT_EN = {
     "ガンマ": "Gamma",
     "シャープネス": "Sharpness",
     "調整をリセット": "Reset adjustments",
+    "リセット": "Reset",
     "表示上だけの非破壊調整です。元ファイルや拡大処理済みファイルは変更しません。": "These are non-destructive display-only adjustments. Original and processed files are not changed.",
     "HDR互換表示": "HDR compatible display",
     "HDR互換表示の明るさ": "HDR compatible brightness",
@@ -953,6 +980,8 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
         "fit_view": {"keyboard": None, "mouse": mouse_binding(Qt.LeftButton, double=True)},
         "rotate_right": {"keyboard": key_binding(Qt.Key_R), "mouse": None},
         "rotate_left": {"keyboard": key_binding(Qt.Key_L), "mouse": None},
+        "rotate_right_90": {"keyboard": key_binding(Qt.Key_R, Qt.ShiftModifier.value), "mouse": None},
+        "rotate_left_90": {"keyboard": key_binding(Qt.Key_L, Qt.ShiftModifier.value), "mouse": None},
         "flip_horizontal": {"keyboard": key_binding(Qt.Key_H), "mouse": None},
         "flip_vertical": {"keyboard": key_binding(Qt.Key_V), "mouse": None},
     }
@@ -1015,6 +1044,7 @@ class AppConfig:
     horizontal_wheel_inverted: bool = False
     wrap_page_navigation: bool = False
     preserve_view_on_page_navigation: bool = False
+    refit_view_on_rotation: bool = False
     invert_page_position_slider: bool = True
     page_scroll_interval_ms: int = 1
     arrow_right_next: bool = True
@@ -1711,7 +1741,7 @@ class GLImageView(QOpenGLWidget):
         self.key_bindings = default_key_bindings()
         self.duplicate_mouse_bindings: set[tuple] = set()
         self.resample_cache: OrderedDict[tuple[int, int, int, int, str], QPixmap] = OrderedDict()
-        self.pixmap_cache: OrderedDict[tuple[int, int, bool, bool], QPixmap] = OrderedDict()
+        self.pixmap_cache: OrderedDict[tuple[int], QPixmap] = OrderedDict()
         self.pixmap_cache_limit = 128
         self.pixmap_prefetch_queue: deque[tuple[object, QImage]] = deque()
         self.pixmap_prefetch_keys: set[object] = set()
@@ -1825,12 +1855,7 @@ class GLImageView(QOpenGLWidget):
     def transformed_image(self, image: QImage) -> QImage:
         if image.isNull():
             return QImage()
-        if self.display_rotation % 360 == 0 and not self.display_flip_horizontal and not self.display_flip_vertical:
-            return image
-        transform = QTransform()
-        transform.scale(-1 if self.display_flip_horizontal else 1, -1 if self.display_flip_vertical else 1)
-        transform.rotate(self.display_rotation)
-        return image.transformed(transform, Qt.SmoothTransformation)
+        return image
 
     def rebuild_display_images(self) -> None:
         self.source_image = self.transformed_image(self.adjusted_display_image(self.raw_source_image))
@@ -1856,13 +1881,8 @@ class GLImageView(QOpenGLWidget):
             self.pixmap_cache.popitem(last=False)
         return pixmap
 
-    def pixmap_cache_key(self, raw_image: QImage) -> tuple[int, int, bool, bool]:
-        return (
-            int(raw_image.cacheKey()),
-            self.display_rotation % 360,
-            self.display_flip_horizontal,
-            self.display_flip_vertical,
-        )
+    def pixmap_cache_key(self, raw_image: QImage) -> tuple[int]:
+        return (int(raw_image.cacheKey()),)
 
     def set_pixmap_cache_limit(self, limit: int) -> None:
         self.pixmap_cache_limit = max(24, int(limit))
@@ -1908,11 +1928,19 @@ class GLImageView(QOpenGLWidget):
         if self.pixmap_prefetch_queue:
             self.pixmap_prefetch_timer.start(1)
 
-    def rotate_display(self, degrees: int) -> None:
+    def rotate_display(self, degrees: int, reset_view: bool = False) -> None:
+        preserved_scale = self.current_scale()
         self.display_rotation = (self.display_rotation + degrees) % 360
-        self.rebuild_display_images()
-        self.clear_resample_cache()
-        self.reset_view(update=False)
+        self.begin_interactive_resample_delay()
+        if reset_view:
+            self.reset_view(update=False)
+        else:
+            content_size = self.current_content_size()
+            if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
+                self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
+                self.fit_image_size = (content_size.width(), content_size.height())
+                self.zoom = self.clamp_zoom_factor(preserved_scale / max(self.fit_scale_anchor, 0.000001))
+                self.zoomChanged.emit(self.current_scale())
         self.update()
 
     def flip_display(self, horizontal: bool) -> None:
@@ -1920,7 +1948,7 @@ class GLImageView(QOpenGLWidget):
             self.display_flip_horizontal = not self.display_flip_horizontal
         else:
             self.display_flip_vertical = not self.display_flip_vertical
-        self.rebuild_display_images()
+        self.begin_interactive_resample_delay()
         self.clear_resample_cache()
         self.update()
 
@@ -2006,7 +2034,7 @@ class GLImageView(QOpenGLWidget):
             entries.reverse()
         return entries
 
-    def current_content_size(self) -> QSize:
+    def base_content_size(self) -> QSize:
         entries = self.display_page_entries()
         if not entries:
             return QSize()
@@ -2020,6 +2048,24 @@ class GLImageView(QOpenGLWidget):
             height = max(height, image.height())
         return QSize(width, height) if width > 0 and height > 0 else QSize()
 
+    def rotated_content_size(self, size: QSize) -> QSize:
+        if size.isEmpty():
+            return QSize()
+        normalized = self.display_rotation % 360
+        if normalized in (0, 180):
+            return QSize(size.width(), size.height())
+        if normalized in (90, 270):
+            return QSize(size.height(), size.width())
+        angle = math.radians(normalized)
+        cos_value = abs(math.cos(angle))
+        sin_value = abs(math.sin(angle))
+        width = max(1, math.ceil(size.width() * cos_value + size.height() * sin_value))
+        height = max(1, math.ceil(size.width() * sin_value + size.height() * cos_value))
+        return QSize(width, height)
+
+    def current_content_size(self) -> QSize:
+        return self.rotated_content_size(self.base_content_size())
+
     def image_rect(self) -> QRect:
         content_size = self.current_content_size()
         if content_size.isEmpty():
@@ -2031,6 +2077,20 @@ class GLImageView(QOpenGLWidget):
         y = (self.height() - height) // 2 + self.offset.y()
         return QRect(x, y, width, height)
 
+    def base_image_rect(self, rotated_target: QRect) -> QRect:
+        base_size = self.base_content_size()
+        if base_size.isEmpty() or rotated_target.isNull():
+            return QRect()
+        scale = self.current_scale()
+        width = max(1, round(base_size.width() * scale))
+        height = max(1, round(base_size.height() * scale))
+        x = rotated_target.x() + (rotated_target.width() - width) // 2
+        y = rotated_target.y() + (rotated_target.height() - height) // 2
+        return QRect(x, y, width, height)
+
+    def can_pan_view(self) -> bool:
+        return abs(self.zoom - 1.0) > 0.0001
+
     def current_scale(self) -> float:
         content_size = self.current_content_size()
         if content_size.isEmpty():
@@ -2040,6 +2100,15 @@ class GLImageView(QOpenGLWidget):
             self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
             self.fit_image_size = size_key
         return max(0.01, min(MAX_DISPLAY_SCALE, self.fit_scale_anchor * self.zoom))
+
+    def display_pixel_ratio(self) -> float:
+        return max(1.0, float(self.devicePixelRatioF()))
+
+    def scale_for_actual_percent(self, percent: int | float) -> float:
+        return max(0.01, min(MAX_DISPLAY_SCALE, float(percent) / 100.0 / self.display_pixel_ratio()))
+
+    def actual_percent_for_scale(self, scale: float) -> int:
+        return max(1, round(scale * self.display_pixel_ratio() * 100))
 
     def clamp_zoom_factor(self, zoom: float) -> float:
         content_size = self.current_content_size()
@@ -2080,7 +2149,7 @@ class GLImageView(QOpenGLWidget):
         if self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
             self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
             self.fit_image_size = (content_size.width(), content_size.height())
-        actual_scale = max(0.01, min(MAX_DISPLAY_SCALE, percent / 100.0))
+        actual_scale = self.scale_for_actual_percent(percent)
         self.zoom = self.clamp_zoom_factor(actual_scale / self.fit_scale_anchor)
         self.zoomChanged.emit(self.current_scale())
         self.begin_interactive_resample_delay()
@@ -2100,7 +2169,7 @@ class GLImageView(QOpenGLWidget):
         content_size = self.current_content_size()
         if content_size.isEmpty() or self.fit_scale_anchor is None or self.fit_scale_anchor <= 0:
             return
-        self.zoom = self.clamp_zoom_factor(1.0 / self.fit_scale_anchor)
+        self.zoom = self.clamp_zoom_factor(self.scale_for_actual_percent(100) / self.fit_scale_anchor)
         self.zoomChanged.emit(self.current_scale())
         self.begin_interactive_resample_delay()
         self.update()
@@ -2110,7 +2179,7 @@ class GLImageView(QOpenGLWidget):
             return None
         if self.resample_interaction_active:
             return None
-        device_pixel_ratio = max(1.0, float(self.devicePixelRatioF()))
+        device_pixel_ratio = self.display_pixel_ratio()
         physical_width = max(1, round(target.width() * device_pixel_ratio))
         physical_height = max(1, round(target.height() * device_pixel_ratio))
         if physical_width == image.width() and physical_height == image.height():
@@ -2268,6 +2337,18 @@ class GLImageView(QOpenGLWidget):
             self.draw_empty_message(painter)
             painter.end()
             return
+        base_target = self.base_image_rect(target)
+        if base_target.isNull():
+            painter.end()
+            return
+        painter.save()
+        center = target.center()
+        painter.translate(center)
+        painter.rotate(self.display_rotation)
+        painter.scale(-1 if self.display_flip_horizontal else 1, -1 if self.display_flip_vertical else 1)
+        base_center = base_target.center()
+        painter.translate(-base_center.x(), -base_center.y())
+        target = base_target
 
         entries = self.display_page_entries()
         if self.dual_page_enabled and len(entries) > 1:
@@ -2283,6 +2364,7 @@ class GLImageView(QOpenGLWidget):
                 page_target = QRect(x, target.y() + (target.height() - height) // 2, width, height)
                 self.draw_image(painter, page_target, image, pixmap)
                 x += width
+            painter.restore()
             painter.end()
             return
 
@@ -2322,6 +2404,7 @@ class GLImageView(QOpenGLWidget):
             image = self.processed_image if not self.processed_image.isNull() else self.source_image
             if not pixmap.isNull():
                 self.draw_image(painter, target, image, pixmap)
+        painter.restore()
         painter.end()
 
     def matching_mouse_action(self, event, double: bool) -> str | None:
@@ -2380,6 +2463,8 @@ class GLImageView(QOpenGLWidget):
                 self.pan_start = None
             elif self._drag_moves_compare_boundary(event):
                 self._set_split_from_x(round(event.position().x()))
+            elif not self.can_pan_view():
+                self.pan_start = None
             else:
                 self.pan_start = event.position().toPoint()
 
@@ -2400,12 +2485,14 @@ class GLImageView(QOpenGLWidget):
             elif self._drag_moves_compare_boundary(event):
                 self._set_split_from_x(round(event.position().x()))
                 self.pan_start = None
-            elif self.pan_start is not None:
+            elif self.pan_start is not None and self.can_pan_view():
                 pos = event.position().toPoint()
                 delta = pos - self.pan_start
                 self.offset += delta
                 self.pan_start = pos
                 self.update()
+            else:
+                self.pan_start = None
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
@@ -2421,7 +2508,7 @@ class GLImageView(QOpenGLWidget):
         super().mouseDoubleClickEvent(event)
 
     def _drag_moves_compare_boundary(self, event) -> bool:
-        if not self.compare_enabled or self.processed_image.isNull():
+        if not self.compare_enabled or self.source_image.isNull():
             return False
         shift = bool(event.modifiers() & Qt.ShiftModifier)
         return shift if self.compare_shift_drag_moves_boundary else not shift
@@ -2509,6 +2596,9 @@ class MainWindow(QMainWindow):
         self.hdr_tonemap_apply_timer = QTimer(self)
         self.hdr_tonemap_apply_timer.setSingleShot(True)
         self.hdr_tonemap_apply_timer.timeout.connect(self.apply_hdr_tonemap_brightness)
+        self.display_adjustment_apply_timer = QTimer(self)
+        self.display_adjustment_apply_timer.setSingleShot(True)
+        self.display_adjustment_apply_timer.timeout.connect(self.apply_display_adjustments)
         self.profile_stats: dict[str, dict[str, float]] = {}
         self.profile_update_timer = QTimer(self)
         self.profile_update_timer.setSingleShot(True)
@@ -2554,6 +2644,7 @@ class MainWindow(QMainWindow):
         self.before_fullscreen_geometry = QRect()
         self.before_fullscreen_flags = self.windowFlags()
         self.before_fullscreen_state = Qt.WindowNoState
+        self.before_fullscreen_native_style: int | None = None
         self.fullscreen_enforce_pending = False
         self.overlay_resizing = False
         self.overlay_modal_guard = False
@@ -2964,6 +3055,11 @@ class MainWindow(QMainWindow):
         self.preserve_view_check.setChecked(self.config_data.preserve_view_on_page_navigation)
         self.preserve_view_check.stateChanged.connect(self.on_general_settings_changed)
         general_layout.addWidget(self.preserve_view_check)
+        self.refit_rotation_check = QCheckBox("回転時に表示全体をフィットし直す")
+        self.refit_rotation_check.setChecked(self.config_data.refit_view_on_rotation)
+        self.refit_rotation_check.stateChanged.connect(self.on_general_settings_changed)
+        general_layout.addWidget(self.refit_rotation_check)
+        general_layout.addWidget(self.help_label("オフの時は回転してもズーム倍率を維持します。オンにすると、回転後の縦横サイズに合わせて画像全体が収まる倍率へ調整します。"))
         self.horizontal_wheel_check = QCheckBox("マウス横スクロールでページ送り")
         self.horizontal_wheel_check.setChecked(self.config_data.horizontal_wheel_navigation)
         self.horizontal_wheel_check.stateChanged.connect(self.on_general_settings_changed)
@@ -3038,9 +3134,9 @@ class MainWindow(QMainWindow):
         image_adjust_layout.addWidget(display_controls_label)
         display_controls_layout = QGridLayout()
         rotate_left_button = QPushButton("左回転")
-        rotate_left_button.clicked.connect(lambda: self.viewer.rotate_display(-90))
+        rotate_left_button.clicked.connect(lambda: self.viewer.rotate_display(-90, reset_view=self.config_data.refit_view_on_rotation))
         rotate_right_button = QPushButton("右回転")
-        rotate_right_button.clicked.connect(lambda: self.viewer.rotate_display(90))
+        rotate_right_button.clicked.connect(lambda: self.viewer.rotate_display(90, reset_view=self.config_data.refit_view_on_rotation))
         flip_horizontal_button = QPushButton("左右反転")
         flip_horizontal_button.clicked.connect(lambda: self.viewer.flip_display(True))
         flip_vertical_button = QPushButton("上下反転")
@@ -3057,39 +3153,65 @@ class MainWindow(QMainWindow):
         basic_adjust_label = QLabel("基本表示調整")
         basic_adjust_label.setObjectName("basicDisplayAdjustmentLabel")
         image_adjust_layout.addWidget(basic_adjust_label)
-        basic_adjust_form = QFormLayout()
-        self.display_brightness_spin = QDoubleSpinBox()
-        self.display_brightness_spin.setRange(-100.0, 100.0)
-        self.display_brightness_spin.setSingleStep(1.0)
-        self.display_brightness_spin.setDecimals(0)
-        self.display_brightness_spin.setValue(float(self.config_data.display_brightness))
-        self.display_brightness_spin.valueChanged.connect(self.on_display_adjustments_changed)
-        basic_adjust_form.addRow("明るさ", self.display_brightness_spin)
-        self.display_contrast_spin = QDoubleSpinBox()
-        self.display_contrast_spin.setRange(0.0, 3.0)
-        self.display_contrast_spin.setSingleStep(0.05)
-        self.display_contrast_spin.setDecimals(2)
-        self.display_contrast_spin.setValue(float(self.config_data.display_contrast))
-        self.display_contrast_spin.valueChanged.connect(self.on_display_adjustments_changed)
-        basic_adjust_form.addRow("コントラスト", self.display_contrast_spin)
-        self.display_gamma_spin = QDoubleSpinBox()
-        self.display_gamma_spin.setRange(0.1, 5.0)
-        self.display_gamma_spin.setSingleStep(0.05)
-        self.display_gamma_spin.setDecimals(2)
-        self.display_gamma_spin.setValue(float(self.config_data.display_gamma))
-        self.display_gamma_spin.valueChanged.connect(self.on_display_adjustments_changed)
-        basic_adjust_form.addRow("ガンマ", self.display_gamma_spin)
-        self.display_sharpness_spin = QDoubleSpinBox()
-        self.display_sharpness_spin.setRange(0.0, 5.0)
-        self.display_sharpness_spin.setSingleStep(0.1)
-        self.display_sharpness_spin.setDecimals(1)
-        self.display_sharpness_spin.setValue(float(self.config_data.display_sharpness))
-        self.display_sharpness_spin.valueChanged.connect(self.on_display_adjustments_changed)
-        basic_adjust_form.addRow("シャープネス", self.display_sharpness_spin)
-        image_adjust_layout.addLayout(basic_adjust_form)
-        reset_adjustments_button = QPushButton("調整をリセット")
-        reset_adjustments_button.clicked.connect(self.reset_display_adjustments)
-        image_adjust_layout.addWidget(reset_adjustments_button)
+        basic_adjust_grid = QGridLayout()
+        basic_adjust_grid.setColumnStretch(2, 1)
+        self.display_brightness_slider = QSlider(Qt.Horizontal)
+        self.display_brightness_slider.setRange(-100, 100)
+        self.display_brightness_slider.setSingleStep(1)
+        self.display_brightness_slider.setPageStep(10)
+        self.display_brightness_slider.setValue(round(float(self.config_data.display_brightness)))
+        self.display_brightness_slider.valueChanged.connect(self.on_display_adjustments_changed)
+        self.display_brightness_value_label = QLabel()
+        brightness_reset_button = QPushButton("リセット")
+        brightness_reset_button.clicked.connect(lambda: self.reset_display_adjustment("brightness"))
+        basic_adjust_grid.addWidget(QLabel("明るさ"), 0, 0)
+        basic_adjust_grid.addWidget(self.display_brightness_value_label, 0, 1)
+        basic_adjust_grid.addWidget(self.display_brightness_slider, 0, 2)
+        basic_adjust_grid.addWidget(brightness_reset_button, 0, 3)
+
+        self.display_contrast_slider = QSlider(Qt.Horizontal)
+        self.display_contrast_slider.setRange(0, 300)
+        self.display_contrast_slider.setSingleStep(5)
+        self.display_contrast_slider.setPageStep(10)
+        self.display_contrast_slider.setValue(round(float(self.config_data.display_contrast) * 100))
+        self.display_contrast_slider.valueChanged.connect(self.on_display_adjustments_changed)
+        self.display_contrast_value_label = QLabel()
+        contrast_reset_button = QPushButton("リセット")
+        contrast_reset_button.clicked.connect(lambda: self.reset_display_adjustment("contrast"))
+        basic_adjust_grid.addWidget(QLabel("コントラスト"), 1, 0)
+        basic_adjust_grid.addWidget(self.display_contrast_value_label, 1, 1)
+        basic_adjust_grid.addWidget(self.display_contrast_slider, 1, 2)
+        basic_adjust_grid.addWidget(contrast_reset_button, 1, 3)
+
+        self.display_gamma_slider = QSlider(Qt.Horizontal)
+        self.display_gamma_slider.setRange(10, 500)
+        self.display_gamma_slider.setSingleStep(5)
+        self.display_gamma_slider.setPageStep(10)
+        self.display_gamma_slider.setValue(round(float(self.config_data.display_gamma) * 100))
+        self.display_gamma_slider.valueChanged.connect(self.on_display_adjustments_changed)
+        self.display_gamma_value_label = QLabel()
+        gamma_reset_button = QPushButton("リセット")
+        gamma_reset_button.clicked.connect(lambda: self.reset_display_adjustment("gamma"))
+        basic_adjust_grid.addWidget(QLabel("ガンマ"), 2, 0)
+        basic_adjust_grid.addWidget(self.display_gamma_value_label, 2, 1)
+        basic_adjust_grid.addWidget(self.display_gamma_slider, 2, 2)
+        basic_adjust_grid.addWidget(gamma_reset_button, 2, 3)
+
+        self.display_sharpness_slider = QSlider(Qt.Horizontal)
+        self.display_sharpness_slider.setRange(0, 50)
+        self.display_sharpness_slider.setSingleStep(1)
+        self.display_sharpness_slider.setPageStep(5)
+        self.display_sharpness_slider.setValue(round(float(self.config_data.display_sharpness) * 10))
+        self.display_sharpness_slider.valueChanged.connect(self.on_display_adjustments_changed)
+        self.display_sharpness_value_label = QLabel()
+        sharpness_reset_button = QPushButton("リセット")
+        sharpness_reset_button.clicked.connect(lambda: self.reset_display_adjustment("sharpness"))
+        basic_adjust_grid.addWidget(QLabel("シャープネス"), 3, 0)
+        basic_adjust_grid.addWidget(self.display_sharpness_value_label, 3, 1)
+        basic_adjust_grid.addWidget(self.display_sharpness_slider, 3, 2)
+        basic_adjust_grid.addWidget(sharpness_reset_button, 3, 3)
+        image_adjust_layout.addLayout(basic_adjust_grid)
+        self.update_display_adjustment_labels()
         image_adjust_layout.addWidget(self.help_label("表示上だけの非破壊調整です。元ファイルや拡大処理済みファイルは変更しません。"))
         image_adjust_layout.addWidget(self.separator())
         hdr_tonemap_label = QLabel("HDR互換表示")
@@ -3343,7 +3465,7 @@ class MainWindow(QMainWindow):
 
         keyconfig_tab.setWidget(self.build_keyconfig_tab())
 
-        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, basic_adjust_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
+        self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
 
         tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "colorize": 3, "other": 4, "keyconfig": 5}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
@@ -4163,7 +4285,9 @@ class MainWindow(QMainWindow):
             self.setWindowState(self.windowState() | Qt.WindowMaximized)
         self._apply_splitter_panel_width()
         if self.config_data.side_panel_pinned:
-            self.attach_side_panel_to_splitter(visible=self.config_data.side_panel_visible)
+            self.config_data.side_panel_visible = True
+            self.attach_side_panel_to_splitter(visible=True)
+            self.request_pinned_side_panel_repair()
         else:
             self.detach_side_panel_for_overlay(visible=False)
 
@@ -4234,14 +4358,15 @@ class MainWindow(QMainWindow):
         self.config_data.dual_page_landscape_single = self.dual_page_landscape_check.isChecked()
         self.config_data.tone_curve_enabled = self.tone_curve_check.isChecked()
         self.config_data.tone_curve_file = self.current_tone_curve.path if self.current_tone_curve is not None else ""
-        self.config_data.display_brightness = self.display_brightness_spin.value()
-        self.config_data.display_contrast = self.display_contrast_spin.value()
-        self.config_data.display_gamma = self.display_gamma_spin.value()
-        self.config_data.display_sharpness = self.display_sharpness_spin.value()
+        self.config_data.display_brightness = self.display_brightness_value()
+        self.config_data.display_contrast = self.display_contrast_value()
+        self.config_data.display_gamma = self.display_gamma_value()
+        self.config_data.display_sharpness = self.display_sharpness_value()
         self.config_data.hdr_tonemap_brightness = self.hdr_tonemap_brightness_slider.value() / 100.0
         self.config_data.page_scroll_interval_ms = self.page_interval_spin.value()
         self.config_data.wrap_page_navigation = self.wrap_page_check.isChecked()
         self.config_data.preserve_view_on_page_navigation = self.preserve_view_check.isChecked()
+        self.config_data.refit_view_on_rotation = self.refit_rotation_check.isChecked()
         self.config_data.invert_page_position_slider = self.invert_page_position_check.isChecked()
         self.config_data.horizontal_wheel_navigation = self.horizontal_wheel_check.isChecked()
         self.config_data.horizontal_wheel_inverted = self.horizontal_wheel_invert_check.isChecked()
@@ -4281,12 +4406,14 @@ class MainWindow(QMainWindow):
         self.config_data.window_geometry = ""
         side_panel = getattr(self, "side_panel", None)
         pin_button = getattr(self, "pin_button", None)
-        self.config_data.side_panel_visible = (
-            self.side_panel_visible_before_fullscreen
-            if self.is_app_fullscreen()
-            else side_panel.isVisible() if side_panel is not None else self.config_data.side_panel_visible
-        )
-        self.config_data.side_panel_pinned = pin_button.isChecked() if pin_button is not None else self.config_data.side_panel_pinned
+        side_panel_pinned = pin_button.isChecked() if pin_button is not None else self.config_data.side_panel_pinned
+        self.config_data.side_panel_pinned = side_panel_pinned
+        if side_panel_pinned:
+            self.config_data.side_panel_visible = True
+        elif self.is_app_fullscreen():
+            self.config_data.side_panel_visible = self.side_panel_visible_before_fullscreen
+        elif side_panel is not None:
+            self.config_data.side_panel_visible = side_panel.isVisible()
         splitter = getattr(self, "splitter", None)
         if side_panel is not None:
             self.config_data.side_panel_width = int(self.side_panel_width)
@@ -5282,6 +5409,7 @@ class MainWindow(QMainWindow):
         return None
 
     def perform_action(self, action_id: str) -> None:
+        refit_rotation = bool(getattr(self.config_data, "refit_view_on_rotation", False))
         actions = {
             "open_image": self.open_image_dialog,
             "open_folder": self.open_folder_dialog,
@@ -5302,8 +5430,10 @@ class MainWindow(QMainWindow):
             "toggle_tone_curve": self.toggle_tone_curve_mode,
             "actual_size": self.viewer.zoom_to_actual_size,
             "fit_view": self.viewer.reset_display_state,
-            "rotate_right": lambda: self.viewer.rotate_display(90),
-            "rotate_left": lambda: self.viewer.rotate_display(-90),
+            "rotate_right": lambda: self.viewer.rotate_display(1),
+            "rotate_left": lambda: self.viewer.rotate_display(-1),
+            "rotate_right_90": lambda: self.viewer.rotate_display(90, reset_view=refit_rotation),
+            "rotate_left_90": lambda: self.viewer.rotate_display(-90, reset_view=refit_rotation),
             "flip_horizontal": lambda: self.viewer.flip_display(True),
             "flip_vertical": lambda: self.viewer.flip_display(False),
         }
@@ -5423,30 +5553,77 @@ class MainWindow(QMainWindow):
         self.viewer.set_tone_curve_options(self.tone_curve_check.isChecked(), self.current_tone_curve)
         self.persist_config()
 
+    def display_brightness_value(self) -> float:
+        return float(self.display_brightness_slider.value())
+
+    def display_contrast_value(self) -> float:
+        return self.display_contrast_slider.value() / 100.0
+
+    def display_gamma_value(self) -> float:
+        return self.display_gamma_slider.value() / 100.0
+
+    def display_sharpness_value(self) -> float:
+        return self.display_sharpness_slider.value() / 10.0
+
+    def update_display_adjustment_labels(self) -> None:
+        if not hasattr(self, "display_brightness_slider"):
+            return
+        self.display_brightness_value_label.setText(f"{self.display_brightness_value():+.0f}")
+        self.display_contrast_value_label.setText(f"{self.display_contrast_value():.2f}")
+        self.display_gamma_value_label.setText(f"{self.display_gamma_value():.2f}")
+        self.display_sharpness_value_label.setText(f"{self.display_sharpness_value():.1f}")
+
     def on_display_adjustments_changed(self) -> None:
-        if getattr(self, "initializing", False) or not hasattr(self, "display_brightness_spin"):
+        if getattr(self, "initializing", False) or not hasattr(self, "display_brightness_slider"):
+            return
+        self.config_data.display_brightness = self.display_brightness_value()
+        self.config_data.display_contrast = self.display_contrast_value()
+        self.config_data.display_gamma = self.display_gamma_value()
+        self.config_data.display_sharpness = self.display_sharpness_value()
+        self.update_display_adjustment_labels()
+        self.display_adjustment_apply_timer.start(160)
+
+    def apply_display_adjustments(self) -> None:
+        if getattr(self, "closing", False):
             return
         self.viewer.set_display_adjustments(
-            self.display_brightness_spin.value(),
-            self.display_contrast_spin.value(),
-            self.display_gamma_spin.value(),
-            self.display_sharpness_spin.value(),
+            self.config_data.display_brightness,
+            self.config_data.display_contrast,
+            self.config_data.display_gamma,
+            self.config_data.display_sharpness,
         )
         self.persist_config()
 
+    def reset_display_adjustment(self, adjustment: str) -> None:
+        sliders_values = {
+            "brightness": (self.display_brightness_slider, 0),
+            "contrast": (self.display_contrast_slider, 100),
+            "gamma": (self.display_gamma_slider, 100),
+            "sharpness": (self.display_sharpness_slider, 0),
+        }
+        slider_value = sliders_values.get(adjustment)
+        if slider_value is None:
+            return
+        slider, value = slider_value
+        if slider.value() == value:
+            self.update_display_adjustment_labels()
+            return
+        slider.setValue(value)
+
     def reset_display_adjustments(self) -> None:
-        if not hasattr(self, "display_brightness_spin"):
+        if not hasattr(self, "display_brightness_slider"):
             return
         widgets_values = (
-            (self.display_brightness_spin, 0.0),
-            (self.display_contrast_spin, 1.0),
-            (self.display_gamma_spin, 1.0),
-            (self.display_sharpness_spin, 0.0),
+            (self.display_brightness_slider, 0),
+            (self.display_contrast_slider, 100),
+            (self.display_gamma_slider, 100),
+            (self.display_sharpness_slider, 0),
         )
         for widget, value in widgets_values:
             widget.blockSignals(True)
             widget.setValue(value)
             widget.blockSignals(False)
+        self.update_display_adjustment_labels()
         self.on_display_adjustments_changed()
 
     def on_hdr_tonemap_brightness_changed(self) -> None:
@@ -5689,6 +5866,24 @@ class MainWindow(QMainWindow):
     def _ensure_side_panel_width(self) -> None:
         self._apply_splitter_panel_width()
 
+    def request_pinned_side_panel_repair(self) -> None:
+        QTimer.singleShot(0, self.ensure_pinned_side_panel_visible)
+        QTimer.singleShot(120, self.ensure_pinned_side_panel_visible)
+        QTimer.singleShot(500, self.ensure_pinned_side_panel_visible)
+
+    def ensure_pinned_side_panel_visible(self) -> None:
+        if not hasattr(self, "side_panel") or not hasattr(self, "pin_button") or not hasattr(self, "splitter"):
+            return
+        if not self.pin_button.isChecked():
+            return
+        if self.side_panel_overlay:
+            self.attach_side_panel_to_splitter(visible=True)
+        elif not self.side_panel.isVisible():
+            self.side_panel.setVisible(True)
+        sizes = self.splitter.sizes()
+        if len(sizes) < 2 or sizes[1] < max(80, self.side_panel.minimumWidth() // 2):
+            self._apply_splitter_panel_width()
+
     def current_side_panel_width(self) -> int:
         if self.side_panel_overlay:
             return int(self.side_panel_width)
@@ -5700,7 +5895,7 @@ class MainWindow(QMainWindow):
 
     def clamped_side_panel_width(self, width: int | None = None) -> int:
         total = max(1, self.splitter.width() if hasattr(self, "splitter") else self.width())
-        maximum = max(1, total // 2)
+        maximum = max(1, round(total * 0.6))
         minimum = min(max(240, self.side_panel.minimumWidth()), maximum)
         value = int(self.side_panel_width if width is None else width)
         return max(minimum, min(value, maximum))
@@ -5724,7 +5919,7 @@ class MainWindow(QMainWindow):
         self.side_panel.setVisible(visible)
         if visible:
             self._apply_splitter_panel_width()
-            QTimer.singleShot(0, self._apply_splitter_panel_width)
+            self.request_pinned_side_panel_repair()
 
     def detach_side_panel_for_overlay(self, visible: bool = False) -> None:
         if not self.side_panel_overlay:
@@ -5771,14 +5966,19 @@ class MainWindow(QMainWindow):
             self._show_fullscreen_cursor()
             self.borderless_fullscreen = False
             self.fullscreen_enforce_pending = False
-            self.setWindowState(Qt.WindowNoState)
-            self.setWindowFlags(self.before_fullscreen_flags)
-            if self.before_fullscreen_geometry.isValid():
-                self.setGeometry(self.before_fullscreen_geometry)
+            restored_native = self.restore_native_windowed()
+            if not restored_native:
+                self.setWindowState(Qt.WindowNoState)
+                self.setWindowFlags(self.before_fullscreen_flags)
+                if self.before_fullscreen_geometry.isValid():
+                    self.setGeometry(self.before_fullscreen_geometry)
             self.setStyleSheet("")
-            self.show()
             restore_state = self.before_fullscreen_state & ~Qt.WindowFullScreen
-            if restore_state != Qt.WindowNoState:
+            if restored_native:
+                self.setWindowState(restore_state)
+            else:
+                self.show()
+            if restore_state != Qt.WindowNoState and not restored_native:
                 self.setWindowState(restore_state)
             if self.pin_button.isChecked():
                 self.attach_side_panel_to_splitter(visible=True)
@@ -5797,13 +5997,15 @@ class MainWindow(QMainWindow):
                 self.side_panel.hide()
                 self.side_panel.setParent(None)
             self.borderless_fullscreen = True
-            self.setWindowState(Qt.WindowNoState)
-            self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
             self.setStyleSheet("QMainWindow { background: #000000; }")
             target = self.borderless_fullscreen_geometry()
-            if target.isValid():
-                self.setGeometry(target)
-            self.show()
+            applied_native = self.apply_native_borderless_fullscreen(target)
+            if not applied_native:
+                self.setWindowState(Qt.WindowNoState)
+                self.setWindowFlags(Qt.Window | Qt.FramelessWindowHint)
+                if target.isValid():
+                    self.setGeometry(target)
+                self.show()
             if pinned:
                 self.attach_side_panel_to_splitter(visible=True)
             else:
@@ -5814,6 +6016,110 @@ class MainWindow(QMainWindow):
             self.raise_()
             self.request_borderless_fullscreen_enforce()
             self._apply_fullscreen_cursor()
+
+    def window_handle_int(self) -> int:
+        return int(self.winId()) if os.name == "nt" else 0
+
+    def native_window_style(self) -> int | None:
+        hwnd = self.window_handle_int()
+        if not hwnd:
+            return None
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "GetWindowLongPtrW"):
+            return int(user32.GetWindowLongPtrW(wintypes.HWND(hwnd), GWL_STYLE))
+        return int(user32.GetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE))
+
+    def set_native_window_style(self, style: int) -> bool:
+        hwnd = self.window_handle_int()
+        if not hwnd:
+            return False
+        user32 = ctypes.windll.user32
+        if hasattr(user32, "SetWindowLongPtrW"):
+            user32.SetWindowLongPtrW(wintypes.HWND(hwnd), GWL_STYLE, ctypes.c_void_p(style))
+        else:
+            user32.SetWindowLongW(wintypes.HWND(hwnd), GWL_STYLE, style)
+        return True
+
+    def set_native_window_rect(self, rect: QRect, flags: int = 0) -> bool:
+        hwnd = self.window_handle_int()
+        if not hwnd or not rect.isValid():
+            return False
+        user32 = ctypes.windll.user32
+        return bool(user32.SetWindowPos(
+            wintypes.HWND(hwnd),
+            None,
+            rect.x(),
+            rect.y(),
+            rect.width(),
+            rect.height(),
+            SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW | flags,
+        ))
+
+    def native_borderless_fullscreen_rect(self) -> QRect:
+        hwnd = self.window_handle_int()
+        if not hwnd:
+            return QRect()
+        user32 = ctypes.windll.user32
+        monitor = user32.MonitorFromWindow(wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
+        if not monitor:
+            return QRect()
+        info = MONITORINFO()
+        info.cbSize = ctypes.sizeof(MONITORINFO)
+        if not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return QRect()
+        rect = info.rcMonitor
+        overscan = BORDERLESS_FULLSCREEN_OVERSCAN
+        return QRect(
+            int(rect.left) - overscan,
+            int(rect.top) - overscan,
+            int(rect.right - rect.left) + overscan * 2,
+            int(rect.bottom - rect.top) + overscan * 2,
+        )
+
+    def native_rect_from_qt_rect(self, rect: QRect) -> QRect:
+        if os.name != "nt" or not rect.isValid():
+            return QRect()
+        screen = QApplication.screenAt(rect.center()) or self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return QRect()
+        native_screen = self.native_borderless_fullscreen_rect()
+        if not native_screen.isValid():
+            return QRect()
+        logical_screen = screen.geometry()
+        ratio = max(1.0, float(screen.devicePixelRatio()))
+        return QRect(
+            native_screen.x() + round((rect.x() - logical_screen.x()) * ratio) + BORDERLESS_FULLSCREEN_OVERSCAN,
+            native_screen.y() + round((rect.y() - logical_screen.y()) * ratio) + BORDERLESS_FULLSCREEN_OVERSCAN,
+            max(1, round(rect.width() * ratio)),
+            max(1, round(rect.height() * ratio)),
+        )
+
+    def apply_native_borderless_fullscreen(self, target: QRect) -> bool:
+        if os.name != "nt" or not target.isValid():
+            return False
+        native_target = self.native_borderless_fullscreen_rect()
+        if not native_target.isValid():
+            return False
+        style = self.native_window_style()
+        if style is None:
+            return False
+        self.before_fullscreen_native_style = style
+        if not self.set_native_window_style(style & ~(WS_CAPTION | WS_THICKFRAME)):
+            return False
+        return self.set_native_window_rect(native_target)
+
+    def restore_native_windowed(self) -> bool:
+        if os.name != "nt" or self.before_fullscreen_native_style is None:
+            return False
+        if not self.set_native_window_style(self.before_fullscreen_native_style):
+            return False
+        self.before_fullscreen_native_style = None
+        if self.before_fullscreen_state & Qt.WindowMaximized:
+            return self.set_native_window_rect(self.geometry(), SWP_NOMOVE | SWP_NOSIZE)
+        if self.before_fullscreen_geometry.isValid():
+            native_geometry = self.native_rect_from_qt_rect(self.before_fullscreen_geometry)
+            return self.set_native_window_rect(native_geometry if native_geometry.isValid() else self.before_fullscreen_geometry)
+        return self.set_native_window_rect(self.geometry(), SWP_NOMOVE | SWP_NOSIZE)
 
     def borderless_fullscreen_geometry(self) -> QRect:
         screen = self.screen() or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
@@ -5835,15 +6141,26 @@ class MainWindow(QMainWindow):
         self.fullscreen_enforce_pending = False
         if not self.is_app_fullscreen():
             return
-        changed_flags = False
         state = self.windowState()
         if state & Qt.WindowFullScreen:
             self.setWindowState(state & ~Qt.WindowFullScreen)
+        target = self.borderless_fullscreen_geometry()
+        if os.name == "nt" and self.before_fullscreen_native_style is not None:
+            style = self.native_window_style()
+            desired_style = style & ~(WS_CAPTION | WS_THICKFRAME) if style is not None else None
+            if desired_style is not None:
+                self.set_native_window_style(desired_style)
+            native_target = self.native_borderless_fullscreen_rect()
+            if native_target.isValid():
+                self.set_native_window_rect(native_target)
+            if self.side_panel_overlay:
+                self.position_overlay_side_panel()
+            return
+        changed_flags = False
         desired_flags = Qt.Window | Qt.FramelessWindowHint
         if self.windowFlags() != desired_flags:
             self.setWindowFlags(desired_flags)
             changed_flags = True
-        target = self.borderless_fullscreen_geometry()
         if target.isValid() and self.geometry() != target:
             self.setGeometry(target)
         if changed_flags or not self.isVisible():
@@ -5989,7 +6306,7 @@ class MainWindow(QMainWindow):
         return self.borderless_fullscreen
 
     def update_zoom_label(self, scale: float) -> None:
-        percent = max(1, round(scale * 100))
+        percent = self.viewer.actual_percent_for_scale(scale)
         prefix = "Zoom" if self.ui_language() == "en" else "ズーム"
         self.zoom_label.setText(f"{prefix}: {percent}%")
         if hasattr(self, "zoom_slider") and not self.zoom_slider.isSliderDown():

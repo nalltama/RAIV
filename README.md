@@ -10,11 +10,18 @@ English version is below the Japanese section.
 
 - [RAIV Releases](https://github.com/nalltama/RAIV/releases)
 
-通常は最新リリースの `RAIV-vX.Y.Z.zip` をダウンロードし、任意のフォルダへ展開してください。
+配布ZIPは2種類あります。
+
+- `RAIV-vX.Y.Z-pyw.zip`: 無駄のないpyw版。容量が小さく、Pythonをインストール済みの環境向けです。
+- `RAIV-vX.Y.Z-standalone.zip`: スタンドアロン版。容量は大きくなりますが、PythonをPCへインストールしなくても `RAIV.exe` から起動できます。
+
+通常は、Pythonを入れたくない場合はスタンドアロン版、容量を抑えたい場合やPython環境が既にある場合はpyw版を選んでください。ダウンロードしたZIPを任意のフォルダへ展開して使います。
 
 ## 初回セットアップ
 
-Python をインストールしたあと、最初に次を実行してください。Python をまだ入れていない場合は、公式サイトからWindows版をインストールできます。
+スタンドアロン版では、このセットアップは不要です。
+
+pyw版を使う場合は、Python をインストールしたあと、最初に次を実行してください。Python をまだ入れていない場合は、公式サイトからWindows版をインストールできます。
 
 - [Python Downloads](https://www.python.org/downloads/)
 
@@ -34,13 +41,15 @@ RAR/CBR は環境によって、別途 7-Zip、UnRAR、bsdtar のいずれかが
 
 ## アップデート
 
-新しいバージョンへ更新する場合は、GitHub Releases ページから新しい `RAIV-vX.Y.Z.zip` をダウンロードし、展開した中身で既存のRAIVフォルダを上書きしてください。
+新しいバージョンへ更新する場合は、GitHub Releases ページから使用中の配布形式に合わせて新しい `RAIV-vX.Y.Z-pyw.zip` または `RAIV-vX.Y.Z-standalone.zip` をダウンロードし、展開した中身で既存のRAIVフォルダを上書きしてください。
 
 通常、`setting.json` や `folder_history.json` は配布ZIPに含まれていないため、既存フォルダを上書きしても設定やフォルダ履歴は残ります。不安な場合は、上書き前にRAIVフォルダ全体を別の場所へコピーしてバックアップしてください。
 
 ## 起動
 
-通常は `run_raiv.pyw` を実行します。Python の関連付け環境によって `.pyw` のダブルクリック起動ができない場合は、`install_pyw_association.bat` を実行すると、現在のユーザーの `.pyw` 関連付けを `where pyw` で見つかる `pyw.exe` に設定できます。
+スタンドアロン版では `RAIV.exe` を実行します。
+
+pyw版では通常 `run_raiv.pyw` を実行します。Python の関連付け環境によって `.pyw` のダブルクリック起動ができない場合は、`install_pyw_association.bat` を実行すると、現在のユーザーの `.pyw` 関連付けを `where pyw` で見つかる `pyw.exe` に設定できます。
 
 Windows のバージョンや既定アプリ設定によっては、バッチ実行後に `run_raiv.pyw` をダブルクリックした時、`アプリを選択して .pyw ファイルを開く` 画面が表示されることがあります。その場合は `pyw.exe` を選び、`常に使う` を押してください。以後は `run_raiv.pyw` をダブルクリックするだけで起動できます。
 
@@ -112,6 +121,7 @@ Real-ESRGAN モデル:
 - 画面下部サムネイルの表示と固定/自動表示
 - 最後/最初でページ送りした時のループ
 - ページ送り時にズーム、表示位置、回転/反転状態を維持
+- 回転時にズーム倍率を維持するか、回転後の画像全体が収まるようにフィットし直すかの切り替え
 - マウス横スクロールのページ送り有効化と方向反転
 - 全画面時のマウスカーソル非表示
 - ログ表示
@@ -195,8 +205,10 @@ AI彩色:
 - `Q`: 見開き表示中に1ページ送り（キーコンフィグで変更可能）
 - `E`: 見開き表示中に1ページ戻し（キーコンフィグで変更可能）
 - `T`: トーンカーブ補正を切り替え（キーコンフィグで変更可能）
-- `R`: 画像を右回転（キーコンフィグで変更可能）
-- `L`: 画像を左回転（キーコンフィグで変更可能）
+- `R`: 画像を右に1度回転（キーコンフィグで変更可能）
+- `L`: 画像を左に1度回転（キーコンフィグで変更可能）
+- `Shift` + `R`: 画像を右に90度回転（キーコンフィグで変更可能）
+- `Shift` + `L`: 画像を左に90度回転（キーコンフィグで変更可能）
 - `H`: 画像を左右反転（キーコンフィグで変更可能）
 - `V`: 画像を上下反転（キーコンフィグで変更可能）
 - `Space`: 次ページへ移動
@@ -250,11 +262,18 @@ Download the latest version from the GitHub Releases page.
 
 - [RAIV Releases](https://github.com/nalltama/RAIV/releases)
 
-Usually, download the latest `RAIV-vX.Y.Z.zip` and extract it to any folder.
+There are two release ZIPs.
+
+- `RAIV-vX.Y.Z-pyw.zip`: lightweight pyw edition. It is smaller and intended for environments where Python is already installed.
+- `RAIV-vX.Y.Z-standalone.zip`: standalone edition. It is larger, but it does not require installing Python on the PC and can be launched with `RAIV.exe`.
+
+Choose the standalone edition if you do not want to install Python. Choose the pyw edition if you already have Python or want a smaller download. Extract the downloaded ZIP to any folder.
 
 ## First Setup
 
-After installing Python, run the following command first. If Python is not installed yet, install the Windows version from the official site.
+The standalone edition does not require this setup.
+
+For the pyw edition, after installing Python, run the following command first. If Python is not installed yet, install the Windows version from the official site.
 
 - [Python Downloads](https://www.python.org/downloads/)
 
@@ -274,13 +293,15 @@ Depending on your environment, RAR/CBR support may also require 7-Zip, UnRAR, or
 
 ## Updating
 
-To update to a new version, download the new `RAIV-vX.Y.Z.zip` from the GitHub Releases page and overwrite the existing RAIV folder with the extracted files.
+To update to a new version, download the new `RAIV-vX.Y.Z-pyw.zip` or `RAIV-vX.Y.Z-standalone.zip` from the GitHub Releases page according to the edition you use, then overwrite the existing RAIV folder with the extracted files.
 
 Normally, `setting.json` and `folder_history.json` are not included in the release ZIP, so overwriting the folder keeps your settings and folder history. If you want to be extra careful, copy the whole RAIV folder somewhere else as a backup before overwriting it.
 
 ## Launch
 
-Usually, run `run_raiv.pyw`. If double-clicking `.pyw` files does not work because of Python file association settings, run `install_pyw_association.bat` to associate `.pyw` with the `pyw.exe` found by `where pyw` for the current Windows user.
+For the standalone edition, run `RAIV.exe`.
+
+For the pyw edition, usually run `run_raiv.pyw`. If double-clicking `.pyw` files does not work because of Python file association settings, run `install_pyw_association.bat` to associate `.pyw` with the `pyw.exe` found by `where pyw` for the current Windows user.
 
 Depending on your Windows version and default app settings, double-clicking `run_raiv.pyw` after running the batch file may still show an `Open .pyw file with` app selection dialog. In that case, choose `pyw.exe` and click `Always`. After that, `run_raiv.pyw` should launch by double-clicking.
 
@@ -352,6 +373,7 @@ General:
 - Bottom thumbnail strip with pinned/auto display modes
 - Wrap around at first/last page
 - Preserve zoom, pan, rotation, and flip state during page navigation
+- Choose whether rotation preserves zoom or refits the whole rotated image
 - Horizontal mouse wheel page navigation and direction reverse
 - Hide mouse cursor in fullscreen
 - Log display
@@ -435,8 +457,10 @@ Keyboard:
 - `Q`: shift one page forward in spread view, configurable
 - `E`: shift one page backward in spread view, configurable
 - `T`: toggle tone curve adjustment, configurable
-- `R`: rotate image right, configurable
-- `L`: rotate image left, configurable
+- `R`: rotate image right by 1 degree, configurable
+- `L`: rotate image left by 1 degree, configurable
+- `Shift` + `R`: rotate image right by 90 degrees, configurable
+- `Shift` + `L`: rotate image left by 90 degrees, configurable
 - `H`: flip image horizontally, configurable
 - `V`: flip image vertically, configurable
 - `Space`: next page
