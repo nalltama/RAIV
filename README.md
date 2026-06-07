@@ -36,6 +36,7 @@ install_support.bat
 - `opencv-python-headless`: Lanczos4 用の任意パッケージ
 - `py7zr`: 7z/CB7 アーカイブ対応
 - `rarfile`: RAR/CBR アーカイブ対応の補助
+- `novelai-sdk`: NovelAI 画像生成API連携
 
 RAR/CBR は環境によって、別途 7-Zip、UnRAR、bsdtar のいずれかが必要です。
 
@@ -151,9 +152,34 @@ AI彩色:
 - 彩色強度、線画保持、彩度補正、輝度保持、Positive/Negative promptの調整
 - 手動彩色時は既存の彩色結果を上書きし、先行処理時は彩色済みページをスキップ
 
+NovelAI生成:
+
+- 永続APIトークンを使ったNovelAIのテキストから画像生成
+- 保存先フォルダ指定（既定は `RAIV_generated`）
+- 保存ファイル名をシード値または時刻から選択（既定はシード値）
+- プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定
+- APIトークン、品質タグ、モデル、サンプラー、自動処理などを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
+- アニメモード / ケモノモード切替（ケモノモードでは生成時に `fur dataset` をプロンプト先頭へ追加）
+- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード（入力欄からの追加は1行扱い。既存テキストの分解時は括弧外の`, `を区切りとして扱います）
+- タグプリセットの保存、読込、削除（`setting.json` とは別の `novelai_prompt_presets.json` に保存）
+- 品質タグ追加と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定
+- Enterで生成、Shift+Enterで改行する入力オプション
+- 日付ごとのサブフォルダ保存
+- NovelAI標準に近いサイズプリセットと自由な幅 / 高さ入力
+- `novelai-sdk` による推定消費Anlas表示（実際の消費量と完全一致する保証はありません）
+- 生成後の自動表示とReal-CUGAN / Real-ESRGAN処理キュー投入
+- 生成設定を画像ごとのJSONサイドカーに保存
+- NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映
+
+永続APIトークンは `setting.json` ではなく、Windows DPAPIで暗号化した `novelai_token.dat` に保存されます。タグプリセットは `novelai_prompt_presets.json` に保存されます。共有PCや配布用ZIPを作る場合は、これらの個人設定ファイルを同梱しないでください。
+
+NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persistent API Tokenが必要です。RAIVはNovelAI公式アプリではなく、Anlatan / NovelAIとは提携していません。NovelAIの利用はNovelAIの利用規約に従ってください。RAIVは開発者や配布者のAPIトークンを同梱せず、NovelAIの制限、Anlas消費、認証を回避する目的の機能も提供しません。
+
 その他:
 
 - Language（日本語 / English）
+- AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
+- 右ペインの左右移動
 - 拡大縮小時の高品質補完
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area
 - アプリの二重起動禁止
@@ -211,6 +237,8 @@ AI彩色:
 - `Shift` + `L`: 画像を左に90度回転（キーコンフィグで変更可能）
 - `H`: 画像を左右反転（キーコンフィグで変更可能）
 - `V`: 画像を上下反転（キーコンフィグで変更可能）
+- `G`: NovelAI画像生成（キーコンフィグで変更可能）
+- `Delete`: 現在画像を削除（キーコンフィグで変更可能）
 - `Space`: 次ページへ移動
 - `Backspace`: 前ページへ移動
 
@@ -288,6 +316,7 @@ This batch file installs the following Python packages:
 - `opencv-python-headless`: optional package for Lanczos4
 - `py7zr`: 7z/CB7 archive support
 - `rarfile`: helper package for RAR/CBR archive support
+- `novelai-sdk`: NovelAI image generation API integration
 
 Depending on your environment, RAR/CBR support may also require 7-Zip, UnRAR, or bsdtar.
 
@@ -403,9 +432,34 @@ AI Colorize:
 - Adjust color strength, line preservation, saturation correction, luminance preservation, and positive/negative prompts
 - Manual colorization overwrites existing results; prefetch skips already colorized pages
 
+NovelAI Generation:
+
+- NovelAI text2img generation using a Persistent API Token
+- Configurable output folder (default: `RAIV_generated`)
+- Select generated filename style from seed or timestamp (default: seed)
+- Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings
+- API token, quality tags, model/sampler, and automatic processing settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
+- Anime / Furry mode switch. Furry mode adds `fur dataset` to the beginning of the generation prompt.
+- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Text entered in the add field is kept as one row; decomposing existing text splits on `, ` outside brackets.
+- Save, load, and delete tag presets. Presets are stored in `novelai_prompt_presets.json`, separate from `setting.json`.
+- Add Quality Tags and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None)
+- Enter-to-generate option, with Shift+Enter inserting a line break
+- Date-based output subfolders
+- NovelAI-like size presets plus custom width / height input
+- Estimated Anlas cost using `novelai-sdk` (not guaranteed to exactly match the actual charge)
+- Automatically display generated images and enqueue them for Real-CUGAN / Real-ESRGAN processing
+- Save generation settings as a JSON sidecar for each generated image
+- Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings
+
+The Persistent API Token is stored in `novelai_token.dat` encrypted with Windows DPAPI, not in `setting.json`. Tag presets are stored in `novelai_prompt_presets.json`. On shared PCs or when creating release ZIPs, do not include these personal files.
+
+NovelAI Generation requires the user's own NovelAI Persistent API Token. RAIV is not an official NovelAI app and is not affiliated with Anlatan / NovelAI. Use of NovelAI is subject to NovelAI's terms of service. RAIV does not bundle a developer or distributor API token and does not provide features intended to bypass NovelAI limits, Anlas usage, or authentication.
+
 Other:
 
 - Language (Japanese / English)
+- Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
+- Move the side panel between the left and right side
 - High-quality scaling for zoomed/resized display
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area
 - Prevent multiple app instances
@@ -463,6 +517,8 @@ Keyboard:
 - `Shift` + `L`: rotate image left by 90 degrees, configurable
 - `H`: flip image horizontally, configurable
 - `V`: flip image vertically, configurable
+- `G`: generate a NovelAI image, configurable
+- `Delete`: delete current image, configurable
 - `Space`: next page
 - `Backspace`: previous page
 

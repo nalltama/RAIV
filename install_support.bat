@@ -8,7 +8,7 @@ where py >nul 2>nul
 if %errorlevel% equ 0 (
     py -m pip install --upgrade pip
     if %errorlevel% neq 0 exit /b %errorlevel%
-    py -m pip install PySide6 Pillow py7zr rarfile
+    py -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.9.1
     if %errorlevel% neq 0 exit /b %errorlevel%
     py -m pip install opencv-python-headless
     if %errorlevel% neq 0 echo Optional OpenCV install failed. Lanczos4 will fall back to Lanczos3.
@@ -19,7 +19,7 @@ where python >nul 2>nul
 if %errorlevel% equ 0 (
     python -m pip install --upgrade pip
     if %errorlevel% neq 0 exit /b %errorlevel%
-    python -m pip install PySide6 Pillow py7zr rarfile
+    python -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.9.1
     if %errorlevel% neq 0 exit /b %errorlevel%
     python -m pip install opencv-python-headless
     if %errorlevel% neq 0 echo Optional OpenCV install failed. Lanczos4 will fall back to Lanczos3.
@@ -40,6 +40,7 @@ echo   - Pillow   : high quality CPU image resampling
 echo   - OpenCV   : optional Lanczos4 resampling support
 echo   - py7zr    : 7z/CB7 archive support
 echo   - rarfile  : RAR/CBR archive support helper
+echo   - novelai-sdk : NovelAI image generation API support
 echo.
 echo RAR/CBR may also require an external extractor.
 echo If RAR files do not open, install one of these separately:

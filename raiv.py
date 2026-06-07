@@ -7,6 +7,7 @@ import locale
 import math
 import os
 import queue
+import random
 import re
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from ctypes import byref
 from collections import OrderedDict, deque
 from ctypes import wintypes
 from dataclasses import asdict, dataclass, field
@@ -31,6 +33,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractItemView,
+        QButtonGroup,
         QCheckBox,
         QComboBox,
         QDialog,
@@ -41,6 +44,7 @@ try:
         QFrame,
         QGridLayout,
         QHBoxLayout,
+        QInputDialog,
         QLabel,
         QLineEdit,
         QListView,
@@ -94,11 +98,13 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
 FOLDER_HISTORY_PATH = APP_DIR / "folder_history.json"
+NOVELAI_PROMPT_PRESETS_PATH = APP_DIR / "novelai_prompt_presets.json"
+NOVELAI_TOKEN_PATH = APP_DIR / "novelai_token.dat"
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/nalltama/RAIV/releases/latest"
 DEFAULT_COMFYUI_API_URL = "http://127.0.0.1:8000"
 COMFYUI_RECOMMENDED_MODEL_NAME = "animagine-xl-4.0-opt.safetensors"
@@ -118,6 +124,124 @@ DEFAULT_COLORIZE_NEGATIVE_PROMPT = (
     "monochrome, grayscale, muddy colors, oversaturated, neon colors, "
     "low quality, blurry, broken lineart, warped text, unreadable text, watermark, logo"
 )
+DEFAULT_NOVELAI_MODEL = "nai-diffusion-4-5-full"
+DEFAULT_NOVELAI_SAMPLER = "k_euler_ancestral"
+DEFAULT_NOVELAI_SCHEDULER = "karras"
+DEFAULT_NOVELAI_GENERATED_DIR = APP_DIR / "RAIV_generated"
+MAX_NOVELAI_SEED = 4294967295
+NOVELAI_FURRY_DATASET_TAG = "fur dataset"
+NOVELAI_DATASET_MODE_OPTIONS = [
+    ("anime", "アニメモード"),
+    ("furry", "ケモノモード"),
+]
+NOVELAI_QUALITY_TAGS_SUFFIX = ", very aesthetic, masterpiece, no text"
+NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL = {
+    "nai-diffusion-4-5-full": [
+        ", very aesthetic, masterpiece, no text",
+        ", location, very aesthetic, masterpiece, no text",
+    ],
+    "nai-diffusion-4-5-curated": [
+        ", location, masterpiece, no text, -0.8::feet::, rating:general",
+    ],
+    "nai-diffusion-4-full": [
+        ", no text, best quality, very aesthetic, absurdres",
+    ],
+    "nai-diffusion-4-curated": [
+        ", rating:general, amazing quality, very aesthetic, absurdres",
+    ],
+    "nai-diffusion-3": [
+        ", best quality, amazing quality, very aesthetic, absurdres",
+    ],
+}
+NOVELAI_UC_PRESET_OPTIONS = [
+    ("strong", "強い"),
+    ("light", "弱い"),
+    ("furry_focus", "ケモノモード"),
+    ("human_focus", "人間に重点を置く"),
+    ("none", "指定なし"),
+]
+NOVELAI_UC_PRESET_TEXTS_BY_MODEL = {
+    "nai-diffusion-4-5-full": {
+        "strong": [
+            "nsfw, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page",
+            "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page",
+        ],
+        "light": [
+            "nsfw, lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page",
+            "lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page",
+        ],
+        "furry_focus": [
+            "nsfw, {worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic",
+            "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic",
+        ],
+        "human_focus": [
+            "nsfw, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy",
+            "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy",
+        ],
+    },
+    "nai-diffusion-4-5-curated": {
+        "strong": [
+            "blurry, lowres, upscaled, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, negative space, blank page",
+        ],
+        "light": [
+            "blurry, lowres, upscaled, artistic error, scan artifacts, jpeg artifacts, logo, too many watermarks, negative space, blank page",
+        ],
+        "human_focus": [
+            "blurry, lowres, upscaled, artistic error, film grain, scan artifacts, bad anatomy, bad hands, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, halftone, multiple views, logo, too many watermarks, @_@, mismatched pupils, glowing eyes, negative space, blank page",
+        ],
+    },
+    "nai-diffusion-4-full": {
+        "strong": [
+            "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, multiple views, logo, too many watermarks",
+        ],
+        "light": [
+            "blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing",
+        ],
+    },
+    "nai-diffusion-4-curated": {
+        "strong": [
+            "blurry, lowres, error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, logo, dated, signature, multiple views, gigantic breasts",
+        ],
+        "light": [
+            "blurry, lowres, error, worst quality, bad quality, jpeg artifacts, very displeasing, logo, dated, signature",
+        ],
+    },
+    "nai-diffusion-3": {
+        "strong": [
+            "lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract],",
+        ],
+        "light": [
+            "lowres, jpeg artifacts, worst quality, watermark, blurry, very displeasing,",
+        ],
+        "human_focus": [
+            "lowres, {bad}, error, fewer, extra, missing, worst quality, jpeg artifacts, bad quality, watermark, unfinished, displeasing, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract], bad anatomy, bad hands, @_@, mismatched pupils, heart-shaped pupils, glowing eyes,",
+        ],
+    },
+}
+NOVELAI_SIZE_PRESETS = {
+    "Portrait 832x1216": (832, 1216),
+    "Landscape 1216x832": (1216, 832),
+    "Square 1024x1024": (1024, 1024),
+    "Small Portrait 512x768": (512, 768),
+    "Small Landscape 768x512": (768, 512),
+    "Small Square 640x640": (640, 640),
+}
+NOVELAI_MODEL_OPTIONS = [
+    "nai-diffusion-4-5-full",
+    "nai-diffusion-4-5-curated",
+    "nai-diffusion-4-full",
+    "nai-diffusion-4-curated",
+    "nai-diffusion-3",
+]
+NOVELAI_SAMPLER_OPTIONS = [
+    "k_euler_ancestral",
+    "k_euler",
+    "k_dpmpp_2m",
+    "k_dpmpp_2s_ancestral",
+    "k_dpmpp_sde",
+    "ddim",
+]
+NOVELAI_SCHEDULER_OPTIONS = ["karras", "exponential", "polyexponential"]
 APP_ICON_ICO = APP_DIR / "assets" / "app_icon.ico"
 APP_ICON_PNG = APP_DIR / "assets" / "app_icon.png"
 CURVE_DIR = APP_DIR / "cur"
@@ -162,6 +286,11 @@ SWP_NOOWNERZORDER = 0x0200
 SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
 MONITOR_DEFAULTTONEAREST = 2
+FO_DELETE = 3
+FOF_ALLOWUNDO = 0x0040
+FOF_NOCONFIRMATION = 0x0010
+FOF_SILENT = 0x0004
+FOF_NOERRORUI = 0x0400
 FORM_LABEL_WIDTH = 132
 MAX_DISPLAY_SCALE = 5.0
 PREFETCH_DEBOUNCE_MS = 80
@@ -183,6 +312,7 @@ RESAMPLE_ALGORITHMS = {
     "area": "Area",
 }
 DEFAULT_RESAMPLE_ALGORITHM = "bicubic"
+SETTINGS_TAB_IDS = ["realcugan", "general", "image_adjust", "colorize", "novelai", "other", "keyconfig"]
 MODIFIER_MASK = (
     Qt.ControlModifier.value
     | Qt.ShiftModifier.value
@@ -205,6 +335,19 @@ class MONITORINFO(ctypes.Structure):
         ("rcMonitor", wintypes.RECT),
         ("rcWork", wintypes.RECT),
         ("dwFlags", wintypes.DWORD),
+    ]
+
+
+class SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("wFunc", wintypes.UINT),
+        ("pFrom", wintypes.LPCWSTR),
+        ("pTo", wintypes.LPCWSTR),
+        ("fFlags", wintypes.USHORT),
+        ("fAnyOperationsAborted", wintypes.BOOL),
+        ("hNameMappings", wintypes.LPVOID),
+        ("lpszProgressTitle", wintypes.LPCWSTR),
     ]
 
 
@@ -451,6 +594,8 @@ ACTION_DEFS = [
     ("dual_page_shift_forward", "1ページ送り(見開き表示時)"),
     ("dual_page_shift_backward", "1ページ戻し(見開き表示時)"),
     ("toggle_tone_curve", "トーンカーブ補正オン/オフ"),
+    ("generate_novelai", "NovelAI画像生成"),
+    ("delete_current_image", "現在画像を削除"),
     ("actual_size", "等倍表示"),
     ("fit_view", "画面フィット表示"),
     ("rotate_right", "画像右1度回転"),
@@ -769,6 +914,8 @@ UI_TEXT_EN = {
     "1ページ送り(見開き表示時)": "Shift one page forward (spread view)",
     "1ページ戻し(見開き表示時)": "Shift one page backward (spread view)",
     "トーンカーブ補正オン/オフ": "Toggle tone curve adjustment",
+    "NovelAI画像生成": "Generate NovelAI image",
+    "現在画像を削除": "Delete current image",
     "等倍表示": "Actual size",
     "画面フィット表示": "Fit to window",
     "画像右1度回転": "Rotate right 1 degree",
@@ -781,10 +928,13 @@ UI_TEXT_EN = {
     "固定": "Pin",
     "固定中": "Pinned",
     "自動表示": "Auto",
+    "左へ移動する": "Move left",
+    "右に表示する": "Show right",
     "エンジン設定": "Engine",
     "全般": "General",
     "画像調整": "Image Adjustment",
     "AI彩色(β)": "AI Colorize (beta)",
+    "NovelAI生成(β)": "NovelAI Generation (beta)",
     "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
@@ -814,10 +964,14 @@ UI_TEXT_EN = {
     "使用できる置換: {input} {output} {scale} {denoise} {tile} {model}": "Available placeholders: {input} {output} {scale} {denoise} {tile} {model}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "アプリの二重起動を禁止する": "Prevent multiple app instances",
+    "AI彩色を表示しない": "Hide AI Colorize tab",
+    "NovelAI生成を表示しない": "Hide NovelAI Generation tab",
+    "キーコンフィグを表示しない": "Hide Key Config tab",
     "最後に開いていた画像を次回起動時に開く": "Open the last viewed image on startup",
     "フォルダごとに最後に開いていた画像を記録する": "Remember last viewed image for each folder",
     "フォルダ履歴保存件数": "Folder history limit",
     "0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。": "0 means unlimited. History is saved to folder_history.json, not setting.json.",
+    "削除時、拡大結果も削除する": "Also delete processed results when deleting",
     "バージョン": "Version",
     "アップデートを確認": "Check for updates",
     "表示言語": "Language",
@@ -900,6 +1054,61 @@ UI_TEXT_EN = {
     "出力画像ノード": "Output image node",
     "現在画像を彩色": "Colorize current image",
     "ComfyUIを起動しておき、初期設定を実行してください。推奨モデルがある場合はRAIV用workflowを自動生成します。": "Start ComfyUI first, then run initial setup. If the recommended model exists, RAIV generates its workflow automatically.",
+    "NovelAIの永続APIトークンを使い、テキストから画像を生成してRAIVへ取り込みます。バイブストランスファー、画像から画像生成、インペイントは未対応です。": "Generate text2img images with a NovelAI Persistent API Token and import them into RAIV. Vibe Transfer, img2img, and inpaint are not supported yet.",
+    "永続APIトークン": "Persistent API Token",
+    "保存先": "Output folder",
+    "日付ごとにサブフォルダを生成する": "Create subfolder for each date",
+    "ファイル名": "Filename",
+    "シード値.png": "Seed.png",
+    "時刻.png": "Time.png",
+    "プロンプトを分解する": "Split prompts into tags",
+    "タグプリセット": "Tag preset",
+    "読込": "Load",
+    "追加": "Add",
+    "タグプリセット名": "Tag preset name",
+    "有効 / 無効": "Enable / Disable",
+    "上へ": "Move up",
+    "下へ": "Move down",
+    "強調": "Emphasize",
+    "抑制": "Suppress",
+    "削除": "Delete",
+    "サイズ": "Size",
+    "プロンプト": "Prompt",
+    "除外したい要素": "Undesired Content",
+    "モデル": "Model",
+    "サンプラー": "Sampler",
+    "ノイズスケジュール": "Noise Schedule",
+    "画像解像度": "Image Resolution",
+    "幅 / 高さ": "Width / Height",
+    "ステップ数": "Steps",
+    "プロンプトガイダンス": "Prompt Guidance",
+    "プロンプトガイダンスの再調整": "Prompt Guidance Rescale",
+    "多様性": "Variety",
+    "生成枚数": "Number of Images",
+    "ランダムシード": "Random Seed",
+    "シード値": "Seed",
+    "Enterで生成する（改行はShift+Enter）": "Generate with Enter (Shift+Enter inserts a line break)",
+    "品質タグを追加する": "Add quality tags",
+    "除外プリセット": "Undesired Content preset",
+    "モード": "Mode",
+    "アニメモード": "Anime mode",
+    "ケモノモード": "Furry mode",
+    "詳細設定 >": "Advanced Settings >",
+    "詳細設定 v": "Advanced Settings v",
+    "強い": "Strong",
+    "弱い": "Light",
+    "ケモノモード": "Furry Focus",
+    "人間に重点を置く": "Human Focus",
+    "指定なし": "None",
+    "OpusプランとしてAnlasを推定": "Estimate Anlas as Opus plan",
+    "生成後に自動表示": "Display after generation",
+    "生成後に拡大処理キューへ投入": "Enqueue upscaling after generation",
+    "生成設定をJSONサイドカーに保存": "Save settings as JSON sidecar",
+    "生成": "Generate",
+    "メタデータをインポート": "Import metadata",
+    "NovelAIメタデータを読み込めませんでした。": "Could not load NovelAI metadata.",
+    "NovelAIメタデータをインポートしました。": "Imported NovelAI metadata.",
+    "推定消費Anlas: novelai-sdk未インストール、または現在の設定では推定できません。": "Estimated Anlas: novelai-sdk is not installed, or the current settings cannot be estimated.",
     "値": "Value",
     "赤": "Red",
     "緑": "Green",
@@ -940,6 +1149,7 @@ UI_TEXT_EN = {
     "画像ファイル、画像フォルダ、またはアーカイブを指定してください。": "Please select an image file, image folder, or archive.",
     "対応画像がありません。": "No supported images found.",
     "このアーカイブには対応画像がありません。": "This archive contains no supported images.",
+    "画像を削除できませんでした。": "Could not delete the image.",
 }
 
 UI_TEXT_JA = {value: key for key, value in UI_TEXT_EN.items()}
@@ -984,6 +1194,8 @@ def default_key_bindings() -> dict[str, dict[str, dict | None]]:
         "rotate_left_90": {"keyboard": key_binding(Qt.Key_L, Qt.ShiftModifier.value), "mouse": None},
         "flip_horizontal": {"keyboard": key_binding(Qt.Key_H), "mouse": None},
         "flip_vertical": {"keyboard": key_binding(Qt.Key_V), "mouse": None},
+        "generate_novelai": {"keyboard": key_binding(Qt.Key_G), "mouse": None},
+        "delete_current_image": {"keyboard": key_binding(Qt.Key_Delete), "mouse": None},
     }
 
 
@@ -1009,6 +1221,36 @@ class AppConfig:
     colorize_luminance_preserve: float = 0.72
     colorize_positive_prompt: str = DEFAULT_COLORIZE_POSITIVE_PROMPT
     colorize_negative_prompt: str = DEFAULT_COLORIZE_NEGATIVE_PROMPT
+    novelai_api_token: str = ""
+    novelai_output_dir: str = str(DEFAULT_NOVELAI_GENERATED_DIR)
+    novelai_date_subfolders: bool = False
+    novelai_filename_mode: str = "seed"
+    novelai_prompt: str = ""
+    novelai_negative_prompt: str = ""
+    novelai_split_prompts: bool = False
+    novelai_prompt_items: list[dict[str, object]] = field(default_factory=list)
+    novelai_negative_prompt_items: list[dict[str, object]] = field(default_factory=list)
+    novelai_enter_to_generate: bool = True
+    novelai_quality_tags: bool = True
+    novelai_uc_preset: str = "strong"
+    novelai_dataset_mode: str = "anime"
+    novelai_model: str = DEFAULT_NOVELAI_MODEL
+    novelai_sampler: str = DEFAULT_NOVELAI_SAMPLER
+    novelai_scheduler: str = DEFAULT_NOVELAI_SCHEDULER
+    novelai_seed: int = 0
+    novelai_random_seed: bool = True
+    novelai_width: int = 832
+    novelai_height: int = 1216
+    novelai_steps: int = 28
+    novelai_scale: float = 5.0
+    novelai_cfg_rescale: float = 0.0
+    novelai_variety_boost: bool = False
+    novelai_batch_count: int = 1
+    novelai_is_opus: bool = False
+    novelai_auto_open: bool = True
+    novelai_auto_upscale: bool = True
+    novelai_save_metadata_json: bool = False
+    novelai_detail_expanded: bool = True
     viewer_prefetch_count: int = 20
     save_upscaled_to_scale_folder: bool = False
     use_scale_folder_cache: bool = True
@@ -1067,8 +1309,70 @@ class AppConfig:
     side_panel_visible: bool = True
     side_panel_pinned: bool = True
     side_panel_width: int = 460
+    side_panel_on_left: bool = False
+    hide_colorize_tab: bool = False
+    hide_novelai_tab: bool = False
+    hide_keyconfig_tab: bool = False
+    delete_processed_with_source: bool = True
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
+
+
+class DATA_BLOB(ctypes.Structure):
+    _fields_ = [
+        ("cbData", wintypes.DWORD),
+        ("pbData", ctypes.POINTER(ctypes.c_byte)),
+    ]
+
+
+def bytes_to_blob(data: bytes) -> DATA_BLOB:
+    buffer = ctypes.create_string_buffer(data)
+    blob = DATA_BLOB(len(data), ctypes.cast(buffer, ctypes.POINTER(ctypes.c_byte)))
+    blob._buffer = buffer  # type: ignore[attr-defined]
+    return blob
+
+
+def blob_to_bytes(blob: DATA_BLOB) -> bytes:
+    if not blob.pbData or blob.cbData == 0:
+        return b""
+    try:
+        return ctypes.string_at(blob.pbData, blob.cbData)
+    finally:
+        ctypes.windll.kernel32.LocalFree(blob.pbData)
+
+
+def dpapi_protect(data: bytes) -> bytes:
+    input_blob = bytes_to_blob(data)
+    output_blob = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptProtectData(byref(input_blob), None, None, None, None, 0, byref(output_blob)):
+        raise OSError(ctypes.get_last_error())
+    return blob_to_bytes(output_blob)
+
+
+def dpapi_unprotect(data: bytes) -> bytes:
+    input_blob = bytes_to_blob(data)
+    output_blob = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(byref(input_blob), None, None, None, None, 0, byref(output_blob)):
+        raise OSError(ctypes.get_last_error())
+    return blob_to_bytes(output_blob)
+
+
+def load_novelai_api_token() -> str:
+    if not NOVELAI_TOKEN_PATH.exists():
+        return ""
+    try:
+        return dpapi_unprotect(NOVELAI_TOKEN_PATH.read_bytes()).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def save_novelai_api_token(token: str) -> None:
+    token = token.strip()
+    if not token:
+        if NOVELAI_TOKEN_PATH.exists():
+            NOVELAI_TOKEN_PATH.unlink()
+        return
+    NOVELAI_TOKEN_PATH.write_bytes(dpapi_protect(token.encode("utf-8")))
 
 
 def set_process_app_user_model_id() -> None:
@@ -1169,6 +1473,27 @@ def load_config() -> AppConfig:
             config.realesrgan_model = REALESRGAN_MODELS[0]
         if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
+        if not config.novelai_output_dir:
+            config.novelai_output_dir = str(DEFAULT_NOVELAI_GENERATED_DIR)
+        if config.novelai_filename_mode not in {"seed", "time"}:
+            config.novelai_filename_mode = "seed"
+        if config.novelai_uc_preset not in {key for key, _label in NOVELAI_UC_PRESET_OPTIONS}:
+            config.novelai_uc_preset = "strong"
+        if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
+            config.novelai_dataset_mode = "anime"
+        if not config.novelai_model or config.novelai_model not in NOVELAI_MODEL_OPTIONS:
+            config.novelai_model = DEFAULT_NOVELAI_MODEL
+        if not config.novelai_sampler or config.novelai_sampler not in NOVELAI_SAMPLER_OPTIONS:
+            config.novelai_sampler = DEFAULT_NOVELAI_SAMPLER
+        if not config.novelai_scheduler or config.novelai_scheduler not in NOVELAI_SCHEDULER_OPTIONS:
+            config.novelai_scheduler = DEFAULT_NOVELAI_SCHEDULER
+        config.novelai_seed = max(0, min(MAX_NOVELAI_SEED, int(config.novelai_seed)))
+        config.novelai_width = max(64, min(4096, int(config.novelai_width)))
+        config.novelai_height = max(64, min(4096, int(config.novelai_height)))
+        config.novelai_steps = max(1, min(150, int(config.novelai_steps)))
+        config.novelai_scale = max(0.0, min(30.0, float(config.novelai_scale)))
+        config.novelai_cfg_rescale = max(0.0, min(1.0, float(config.novelai_cfg_rescale)))
+        config.novelai_batch_count = max(1, min(8, int(config.novelai_batch_count)))
         config.display_brightness = max(-100.0, min(100.0, float(config.display_brightness)))
         config.display_contrast = max(0.0, min(3.0, float(config.display_contrast)))
         config.display_gamma = max(0.1, min(5.0, float(config.display_gamma)))
@@ -1183,13 +1508,23 @@ def load_config() -> AppConfig:
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
         if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
             config.compare_split = int(data["compare_split"]) * 10
+        legacy_token = str(config.novelai_api_token or "").strip()
+        if legacy_token:
+            try:
+                if not load_novelai_api_token():
+                    save_novelai_api_token(legacy_token)
+            except Exception:
+                pass
+            config.novelai_api_token = ""
         return config
     except Exception:
         return AppConfig()
 
 
 def save_config(config: AppConfig) -> None:
-    CONFIG_PATH.write_text(json.dumps(asdict(config), ensure_ascii=False, indent=2), encoding="utf-8")
+    data = asdict(config)
+    data["novelai_api_token"] = ""
+    CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_folder_history() -> dict[str, dict[str, object]]:
@@ -1215,6 +1550,26 @@ def load_folder_history() -> dict[str, dict[str, object]]:
 def save_folder_history(entries: dict[str, dict[str, object]]) -> None:
     FOLDER_HISTORY_PATH.write_text(
         json.dumps({"entries": entries}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_novelai_prompt_presets() -> list[dict[str, object]]:
+    if not NOVELAI_PROMPT_PRESETS_PATH.exists():
+        return []
+    try:
+        data = json.loads(NOVELAI_PROMPT_PRESETS_PATH.read_text(encoding="utf-8-sig"))
+        presets = data.get("presets", data) if isinstance(data, dict) else data
+        if not isinstance(presets, list):
+            return []
+        return [preset for preset in presets if isinstance(preset, dict) and str(preset.get("name") or "").strip()]
+    except Exception:
+        return []
+
+
+def save_novelai_prompt_presets(presets: list[dict[str, object]]) -> None:
+    NOVELAI_PROMPT_PRESETS_PATH.write_text(
+        json.dumps({"presets": presets}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -1701,6 +2056,319 @@ class AppSignals(QObject):
     comfyui_download_progress = Signal(object)
     comfyui_download_done = Signal(object)
     comfyui_colorize_started = Signal(str)
+    novelai_generation_started = Signal(str)
+    novelai_generation_done = Signal(object)
+
+
+class NovelAIClientAdapter:
+    def __init__(self, api_token: str) -> None:
+        self.api_token = api_token.strip()
+        if not self.api_token:
+            raise ValueError("NovelAI API token is empty")
+        try:
+            from novelai import NovelAI
+            from novelai.types import GenerateImageParams
+        except ImportError as exc:
+            raise RuntimeError("novelai-sdk is not installed. Run install_support.bat, then restart RAIV.") from exc
+        self._client_class = NovelAI
+        self._params_class = GenerateImageParams
+        self.client = NovelAI(api_key=self.api_token)
+
+    def estimate_anlas(self, request: dict[str, object], is_opus: bool) -> int | None:
+        try:
+            params = self._build_params(request)
+            estimate = params.calculate_anlas(is_opus=is_opus)
+            return int(estimate)
+        except Exception:
+            return None
+
+    def generate_images(self, request: dict[str, object]) -> list[object]:
+        params = self._build_params(request)
+        images = self.client.image.generate(params)
+        if not images:
+            raise ValueError("NovelAI did not return an image")
+        return list(images)
+
+    def _build_params(self, request: dict[str, object]):
+        kwargs: dict[str, object] = {
+            "prompt": str(request.get("prompt", "")),
+            "model": str(request.get("model", DEFAULT_NOVELAI_MODEL)),
+            "size": (int(request.get("width", 832)), int(request.get("height", 1216))),
+            "steps": int(request.get("steps", 28)),
+            "scale": float(request.get("scale", 5.0)),
+            "cfg_rescale": max(0.0, min(1.0, float(request.get("cfg_rescale", 0.0)))),
+            "seed": int(request.get("seed", 0)),
+            "n_samples": max(1, min(8, int(request.get("n_samples", 1)))),
+            "variety_boost": bool(request.get("variety_boost", False)),
+            "quality": bool(request.get("quality", True)),
+            "uc_preset": str(request.get("uc_preset", "strong")),
+        }
+        negative_prompt = str(request.get("negative_prompt", "")).strip()
+        if negative_prompt:
+            kwargs["negative_prompt"] = negative_prompt
+        sampler = str(request.get("sampler", "")).strip()
+        if sampler:
+            kwargs["sampler"] = sampler
+        scheduler = str(request.get("noise_schedule", request.get("scheduler", ""))).strip()
+        if scheduler:
+            kwargs["noise_schedule"] = scheduler
+        return self._params_class(**kwargs)
+
+
+class PromptSubmitTextEdit(QTextEdit):
+    submitRequested = Signal()
+
+    def __init__(self, text: str = "") -> None:
+        super().__init__(text)
+        self.enter_submits = True
+
+    def keyPressEvent(self, event) -> None:
+        if (
+            self.enter_submits
+            and event.key() in {Qt.Key_Return, Qt.Key_Enter}
+            and not (event.modifiers() & Qt.ShiftModifier)
+        ):
+            self.submitRequested.emit()
+            return
+        super().keyPressEvent(event)
+
+
+class NovelAIPromptTagRow(QWidget):
+    changed = Signal()
+    deleteRequested = Signal(object)
+    moveUpRequested = Signal(object)
+    moveDownRequested = Signal(object)
+
+    def __init__(self, tag: str, active: bool = True, parent=None) -> None:
+        super().__init__(parent)
+        self.tag = tag.strip()
+        self.active = active
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+        self.handle_label = QLabel("☰")
+        self.handle_label.setFixedWidth(22)
+        self.handle_label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.handle_label)
+        self.up_button = QPushButton("🔼")
+        self.up_button.setFixedWidth(34)
+        self.up_button.setToolTip("上へ")
+        self.up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
+        layout.addWidget(self.up_button)
+        self.down_button = QPushButton("🔽")
+        self.down_button.setFixedWidth(34)
+        self.down_button.setToolTip("下へ")
+        self.down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
+        layout.addWidget(self.down_button)
+        self.active_button = QPushButton("👁")
+        self.active_button.setFixedWidth(34)
+        self.active_button.setToolTip("有効 / 無効")
+        self.active_button.clicked.connect(self.toggle_active)
+        layout.addWidget(self.active_button)
+        self.emphasis_button = QPushButton("強調")
+        self.emphasis_button.setFixedWidth(54)
+        self.emphasis_button.clicked.connect(self.increase_emphasis)
+        layout.addWidget(self.emphasis_button)
+        self.suppress_button = QPushButton("抑制")
+        self.suppress_button.setFixedWidth(54)
+        self.suppress_button.clicked.connect(self.increase_suppression)
+        layout.addWidget(self.suppress_button)
+        self.text_edit = QLineEdit(self.tag)
+        self.text_edit.textChanged.connect(self.on_text_changed)
+        layout.addWidget(self.text_edit, 1)
+        self.delete_button = QPushButton("❌")
+        self.delete_button.setFixedWidth(34)
+        self.delete_button.setToolTip("削除")
+        self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self))
+        layout.addWidget(self.delete_button)
+        self.refresh()
+
+    def toggle_active(self) -> None:
+        self.active = not self.active
+        self.refresh()
+        self.changed.emit()
+
+    def on_text_changed(self, text: str) -> None:
+        self.tag = text.strip()
+        self.changed.emit()
+
+    def increase_emphasis(self) -> None:
+        if self.tag.startswith("[") and self.tag.endswith("]"):
+            self.tag = self.tag[1:-1].strip()
+        else:
+            self.tag = "{" + self.tag + "}"
+        self.refresh()
+        self.changed.emit()
+
+    def increase_suppression(self) -> None:
+        if self.tag.startswith("{") and self.tag.endswith("}"):
+            self.tag = self.tag[1:-1].strip()
+        else:
+            self.tag = "[" + self.tag + "]"
+        self.refresh()
+        self.changed.emit()
+
+    def refresh(self) -> None:
+        self.active_button.setText("👁" if self.active else "◌")
+        self.text_edit.blockSignals(True)
+        self.text_edit.setText(self.tag)
+        self.text_edit.blockSignals(False)
+        self.text_edit.setEnabled(self.active)
+        self.emphasis_button.setEnabled(self.active)
+        self.suppress_button.setEnabled(self.active)
+
+
+class NovelAIPromptListEditor(QWidget):
+    changed = Signal()
+    submitRequested = Signal()
+
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.updating = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        input_row = QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 0, 0)
+        self.input_edit = QLineEdit()
+        self.input_edit.returnPressed.connect(self.add_from_input)
+        input_row.addWidget(self.input_edit, 1)
+        self.add_button = QPushButton("追加")
+        self.add_button.clicked.connect(self.add_from_input)
+        input_row.addWidget(self.add_button)
+        layout.addLayout(input_row)
+        self.list_widget = QListWidget()
+        self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.MoveAction)
+        self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.model().rowsMoved.connect(lambda *_args: self.emit_changed())
+        self.list_widget.setMinimumHeight(118)
+        layout.addWidget(self.list_widget)
+        self.set_text(text)
+
+    def add_from_input(self) -> None:
+        text = self.input_edit.text().strip()
+        if not text:
+            self.submitRequested.emit()
+            return
+        self.add_tag(text, True)
+        self.input_edit.clear()
+        self.emit_changed()
+
+    def split_prompt_text(self, text: str) -> list[str]:
+        parts: list[str] = []
+        current: list[str] = []
+        curly_depth = 0
+        square_depth = 0
+        text = text.replace("\n", ", ")
+        index = 0
+        while index < len(text):
+            char = text[index]
+            if char == "{":
+                curly_depth += 1
+            elif char == "}" and curly_depth > 0:
+                curly_depth -= 1
+            elif char == "[":
+                square_depth += 1
+            elif char == "]" and square_depth > 0:
+                square_depth -= 1
+            if char == "," and curly_depth == 0 and square_depth == 0 and index + 1 < len(text) and text[index + 1].isspace():
+                part = "".join(current).strip()
+                if part:
+                    parts.append(part)
+                current = []
+                while index + 1 < len(text) and text[index + 1].isspace():
+                    index += 1
+            else:
+                current.append(char)
+            index += 1
+        part = "".join(current).strip()
+        if part:
+            parts.append(part)
+        return parts
+
+    def add_tag(self, tag: str, active: bool = True) -> None:
+        item = QListWidgetItem()
+        row = NovelAIPromptTagRow(tag, active)
+        row.changed.connect(self.emit_changed)
+        row.deleteRequested.connect(self.delete_row)
+        row.moveUpRequested.connect(self.move_row_up)
+        row.moveDownRequested.connect(self.move_row_down)
+        item.setSizeHint(row.sizeHint())
+        self.list_widget.addItem(item)
+        self.list_widget.setItemWidget(item, row)
+
+    def row_index(self, row: object) -> int:
+        for index in range(self.list_widget.count()):
+            if self.list_widget.itemWidget(self.list_widget.item(index)) is row:
+                return index
+        return -1
+
+    def move_row_up(self, row: object) -> None:
+        self.move_row(row, -1)
+
+    def move_row_down(self, row: object) -> None:
+        self.move_row(row, 1)
+
+    def move_row(self, row: object, offset: int) -> None:
+        index = self.row_index(row)
+        target = index + offset
+        if index < 0 or target < 0 or target >= self.list_widget.count():
+            return
+        items = self.to_items()
+        items[index], items[target] = items[target], items[index]
+        self.set_items(items)
+        self.list_widget.setCurrentRow(target)
+        self.emit_changed()
+
+    def delete_row(self, row: object) -> None:
+        index = self.row_index(row)
+        if index >= 0:
+            self.list_widget.takeItem(index)
+            self.emit_changed()
+
+    def set_text(self, text: str) -> None:
+        self.updating = True
+        self.list_widget.clear()
+        for tag in self.split_prompt_text(text):
+            self.add_tag(tag, True)
+        self.updating = False
+
+    def set_items(self, items: list[dict[str, object]], fallback_text: str = "") -> None:
+        self.updating = True
+        self.list_widget.clear()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            tag = str(item.get("tag") or "").strip()
+            if tag:
+                self.add_tag(tag, bool(item.get("active", True)))
+        if self.list_widget.count() == 0 and fallback_text:
+            for tag in self.split_prompt_text(fallback_text):
+                self.add_tag(tag, True)
+        self.updating = False
+
+    def to_items(self) -> list[dict[str, object]]:
+        items: list[dict[str, object]] = []
+        for index in range(self.list_widget.count()):
+            row = self.list_widget.itemWidget(self.list_widget.item(index))
+            if isinstance(row, NovelAIPromptTagRow) and row.tag.strip():
+                items.append({"tag": row.tag.strip(), "active": bool(row.active)})
+        return items
+
+    def to_text(self, active_only: bool = True) -> str:
+        tags: list[str] = []
+        for index in range(self.list_widget.count()):
+            row = self.list_widget.itemWidget(self.list_widget.item(index))
+            if isinstance(row, NovelAIPromptTagRow) and (row.active or not active_only):
+                if row.tag.strip():
+                    tags.append(row.tag.strip())
+        return ", ".join(tags)
+
+    def emit_changed(self) -> None:
+        if not self.updating:
+            self.changed.emit()
 
 
 class GLImageView(QOpenGLWidget):
@@ -2528,6 +3196,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.initializing = True
         self.config_data = load_config()
+        self.novelai_prompt_presets = load_novelai_prompt_presets()
         self.duplicate_keyboard_bindings = duplicate_binding_signatures(self.config_data.key_bindings, "keyboard")
         self.show_log_panel = self.config_data.show_log_panel
         if self.config_data.cleanup_temp_on_start:
@@ -2549,6 +3218,8 @@ class MainWindow(QMainWindow):
         self.signals.comfyui_setup_done.connect(self.on_comfyui_setup_done)
         self.signals.comfyui_download_progress.connect(self.on_comfyui_download_progress)
         self.signals.comfyui_download_done.connect(self.on_comfyui_download_done)
+        self.signals.novelai_generation_started.connect(self.on_novelai_generation_started)
+        self.signals.novelai_generation_done.connect(self.on_novelai_generation_done)
 
         self.image_paths: list[Path] = []
         self.image_path_set: set[Path] = set()
@@ -2615,6 +3286,8 @@ class MainWindow(QMainWindow):
         self.colorize_plan: list[Path] = []
         self.colorize_done_paths: set[Path] = set()
         self.colorized_session_paths: dict[Path, Path] = {}
+        self.novelai_generation_running = False
+        self.novelai_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
         self.archive_temp_dir: Path | None = None
         self.retired_archive_temp_dirs: list[Path] = []
         self.archive_display_names: dict[Path, str] = {}
@@ -2684,10 +3357,16 @@ class MainWindow(QMainWindow):
         self.side_panel = self._build_side_panel()
         self.side_panel.installEventFilter(self)
         self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.addWidget(self.viewer_host)
-        self.splitter.addWidget(self.side_panel)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
+        if self.config_data.side_panel_on_left:
+            self.splitter.addWidget(self.side_panel)
+            self.splitter.addWidget(self.viewer_host)
+            self.splitter.setStretchFactor(0, 0)
+            self.splitter.setStretchFactor(1, 1)
+        else:
+            self.splitter.addWidget(self.viewer_host)
+            self.splitter.addWidget(self.side_panel)
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.setStretchFactor(1, 0)
         self.splitter.splitterMoved.connect(self.on_splitter_moved)
         self.setCentralWidget(self.splitter)
 
@@ -2706,6 +3385,8 @@ class MainWindow(QMainWindow):
             worker.start()
         self.colorize_worker = threading.Thread(target=self._colorize_worker_loop, daemon=True)
         self.colorize_worker.start()
+        self.novelai_worker = threading.Thread(target=self._novelai_worker_loop, daemon=True)
+        self.novelai_worker.start()
         self.thumbnail_worker = threading.Thread(target=self._thumbnail_worker_loop, daemon=True)
         self.thumbnail_worker.start()
 
@@ -2815,8 +3496,12 @@ class MainWindow(QMainWindow):
         self.pin_button.setChecked(self.config_data.side_panel_pinned)
         self.pin_button.toggled.connect(self.on_side_panel_pin_changed)
         header.addWidget(self.pin_button)
+        self.side_panel_side_button = QPushButton()
+        self.side_panel_side_button.clicked.connect(self.toggle_side_panel_side)
+        header.addWidget(self.side_panel_side_button)
         layout.addLayout(header)
         self.pin_button.setText("固定中" if self.config_data.side_panel_pinned else "自動表示")
+        self.update_side_panel_side_button()
 
         tabs = QTabWidget()
         self.tabs = tabs
@@ -2824,18 +3509,21 @@ class MainWindow(QMainWindow):
         general_tab = QScrollArea()
         image_adjust_tab = QScrollArea()
         colorize_tab = QScrollArea()
+        novelai_tab = QScrollArea()
         other_tab = QScrollArea()
         keyconfig_tab = QScrollArea()
         realcugan_tab.setWidgetResizable(True)
         general_tab.setWidgetResizable(True)
         image_adjust_tab.setWidgetResizable(True)
         colorize_tab.setWidgetResizable(True)
+        novelai_tab.setWidgetResizable(True)
         other_tab.setWidgetResizable(True)
         keyconfig_tab.setWidgetResizable(True)
         tabs.addTab(realcugan_tab, "エンジン設定")
         tabs.addTab(general_tab, "全般")
         tabs.addTab(image_adjust_tab, "画像調整")
         tabs.addTab(colorize_tab, "AI彩色(β)")
+        tabs.addTab(novelai_tab, "NovelAI生成(β)")
         tabs.addTab(other_tab, "その他")
         tabs.addTab(keyconfig_tab, "キーコンフィグ")
         tabs.currentChanged.connect(self.on_settings_tab_changed)
@@ -3392,6 +4080,8 @@ class MainWindow(QMainWindow):
         colorize_tab.setWidget(colorize_content)
         self.detect_comfyui_nodes(update_status=False)
 
+        novelai_tab.setWidget(self.build_novelai_tab_content())
+
         other_content = QWidget()
         other_layout = QVBoxLayout(other_content)
         language_form = QFormLayout()
@@ -3421,6 +4111,19 @@ class MainWindow(QMainWindow):
         other_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
         other_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
         other_layout.addWidget(self.separator())
+        self.hide_colorize_tab_check = QCheckBox("AI彩色を表示しない")
+        self.hide_colorize_tab_check.setChecked(self.config_data.hide_colorize_tab)
+        self.hide_colorize_tab_check.stateChanged.connect(self.on_tab_visibility_settings_changed)
+        other_layout.addWidget(self.hide_colorize_tab_check)
+        self.hide_novelai_tab_check = QCheckBox("NovelAI生成を表示しない")
+        self.hide_novelai_tab_check.setChecked(self.config_data.hide_novelai_tab)
+        self.hide_novelai_tab_check.stateChanged.connect(self.on_tab_visibility_settings_changed)
+        other_layout.addWidget(self.hide_novelai_tab_check)
+        self.hide_keyconfig_tab_check = QCheckBox("キーコンフィグを表示しない")
+        self.hide_keyconfig_tab_check.setChecked(self.config_data.hide_keyconfig_tab)
+        self.hide_keyconfig_tab_check.stateChanged.connect(self.on_tab_visibility_settings_changed)
+        other_layout.addWidget(self.hide_keyconfig_tab_check)
+        other_layout.addWidget(self.separator())
         self.single_instance_check = QCheckBox("アプリの二重起動を禁止する")
         self.single_instance_check.setChecked(self.config_data.single_instance_enabled)
         self.single_instance_check.stateChanged.connect(self.on_general_settings_changed)
@@ -3441,6 +4144,10 @@ class MainWindow(QMainWindow):
         folder_history_form.addRow("フォルダ履歴保存件数", self.folder_history_limit_spin)
         other_layout.addLayout(folder_history_form)
         other_layout.addWidget(self.help_label("0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。"))
+        self.delete_processed_check = QCheckBox("削除時、拡大結果も削除する")
+        self.delete_processed_check.setChecked(self.config_data.delete_processed_with_source)
+        self.delete_processed_check.stateChanged.connect(self.on_general_settings_changed)
+        other_layout.addWidget(self.delete_processed_check)
         self.cleanup_check = QCheckBox("次回起動時に古い一時ファイルを削除")
         self.cleanup_check.setChecked(self.config_data.cleanup_temp_on_start)
         self.cleanup_check.stateChanged.connect(self.on_cleanup_changed)
@@ -3467,12 +4174,273 @@ class MainWindow(QMainWindow):
 
         self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
 
-        tab_index = {"realcugan": 0, "general": 1, "image_adjust": 2, "colorize": 3, "other": 4, "keyconfig": 5}.get(self.config_data.settings_tab, 0)
+        tab_index = {tab_id: index for index, tab_id in enumerate(SETTINGS_TAB_IDS)}.get(self.config_data.settings_tab, 0)
         self.tabs.setCurrentIndex(tab_index)
+        self.apply_settings_tab_visibility()
         self.apply_engine_ui()
         self.update_hdr_tonemap_controls()
         QTimer.singleShot(0, self.apply_language)
         return root
+
+    def build_novelai_tab_content(self) -> QWidget:
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.addWidget(self.help_label("NovelAIの永続APIトークンを使い、テキストから画像を生成してRAIVへ取り込みます。バイブストランスファー、画像から画像生成、インペイントは未対応です。"))
+
+        auth_form = QFormLayout()
+        output_row = QHBoxLayout()
+        self.novelai_output_dir_edit = QLineEdit(self.config_data.novelai_output_dir or str(DEFAULT_NOVELAI_GENERATED_DIR))
+        self.novelai_output_dir_edit.editingFinished.connect(self.on_novelai_settings_changed)
+        output_button = QPushButton("参照")
+        output_button.clicked.connect(self.choose_novelai_output_dir)
+        output_row.addWidget(self.novelai_output_dir_edit, 1)
+        output_row.addWidget(output_button)
+        auth_form.addRow("保存先", output_row)
+        layout.addLayout(auth_form)
+        output_options_row = QHBoxLayout()
+        self.novelai_date_subfolders_check = QCheckBox("日付ごとにサブフォルダを生成する")
+        self.novelai_date_subfolders_check.setChecked(self.config_data.novelai_date_subfolders)
+        self.novelai_date_subfolders_check.stateChanged.connect(self.on_novelai_settings_changed)
+        output_options_row.addWidget(self.novelai_date_subfolders_check)
+        output_options_row.addSpacing(12)
+        output_options_row.addWidget(QLabel("ファイル名"))
+        self.novelai_filename_combo = QComboBox()
+        self.novelai_filename_combo.addItem("シード値.png", "seed")
+        self.novelai_filename_combo.addItem("時刻.png", "time")
+        self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_filename_mode)
+        self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
+        output_options_row.addWidget(self.novelai_filename_combo)
+        output_options_row.addStretch(1)
+        layout.addLayout(output_options_row)
+        self.novelai_split_prompts_check = QCheckBox("プロンプトを分解する")
+        self.novelai_split_prompts_check.setChecked(self.config_data.novelai_split_prompts)
+        self.novelai_split_prompts_check.stateChanged.connect(self.on_novelai_split_prompts_changed)
+        layout.addWidget(self.novelai_split_prompts_check)
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("タグプリセット"))
+        self.novelai_prompt_preset_combo = QComboBox()
+        preset_row.addWidget(self.novelai_prompt_preset_combo, 1)
+        self.novelai_prompt_preset_load_button = QPushButton("読込")
+        self.novelai_prompt_preset_load_button.clicked.connect(self.load_novelai_prompt_preset)
+        preset_row.addWidget(self.novelai_prompt_preset_load_button)
+        self.novelai_prompt_preset_save_button = QPushButton("保存")
+        self.novelai_prompt_preset_save_button.clicked.connect(self.save_novelai_prompt_preset_dialog)
+        preset_row.addWidget(self.novelai_prompt_preset_save_button)
+        self.novelai_prompt_preset_delete_button = QPushButton("削除")
+        self.novelai_prompt_preset_delete_button.clicked.connect(self.delete_novelai_prompt_preset)
+        preset_row.addWidget(self.novelai_prompt_preset_delete_button)
+        layout.addLayout(preset_row)
+        self.refresh_novelai_prompt_preset_combo()
+
+        layout.addWidget(QLabel("プロンプト"))
+        self.novelai_prompt_edit = PromptSubmitTextEdit(self.config_data.novelai_prompt)
+        self.novelai_prompt_edit.setFixedHeight(90)
+        self.novelai_prompt_edit.textChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_prompt_edit.submitRequested.connect(self.generate_novelai_images)
+        layout.addWidget(self.novelai_prompt_edit)
+        self.novelai_prompt_list_edit = NovelAIPromptListEditor("")
+        self.novelai_prompt_list_edit.set_items(self.config_data.novelai_prompt_items, self.config_data.novelai_prompt)
+        self.novelai_prompt_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
+        self.novelai_prompt_list_edit.submitRequested.connect(self.generate_novelai_images)
+        layout.addWidget(self.novelai_prompt_list_edit)
+        layout.addWidget(QLabel("除外したい要素"))
+        self.novelai_negative_edit = PromptSubmitTextEdit(self.config_data.novelai_negative_prompt)
+        self.novelai_negative_edit.setFixedHeight(70)
+        self.novelai_negative_edit.textChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_negative_edit.submitRequested.connect(self.generate_novelai_images)
+        layout.addWidget(self.novelai_negative_edit)
+        self.novelai_negative_list_edit = NovelAIPromptListEditor("")
+        self.novelai_negative_list_edit.set_items(self.config_data.novelai_negative_prompt_items, self.config_data.novelai_negative_prompt)
+        self.novelai_negative_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
+        self.novelai_negative_list_edit.submitRequested.connect(self.generate_novelai_images)
+        layout.addWidget(self.novelai_negative_list_edit)
+        self.novelai_enter_generate_check = QCheckBox("Enterで生成する（改行はShift+Enter）")
+        self.novelai_enter_generate_check.setChecked(self.config_data.novelai_enter_to_generate)
+        self.novelai_enter_generate_check.stateChanged.connect(self.on_novelai_enter_generate_changed)
+        layout.addWidget(self.novelai_enter_generate_check)
+        self.on_novelai_enter_generate_changed()
+        self.update_novelai_prompt_editor_visibility()
+        size_form = QFormLayout()
+        self.novelai_size_combo = QComboBox()
+        self.novelai_size_combo.addItems(list(NOVELAI_SIZE_PRESETS.keys()) + ["Custom"])
+        self.novelai_size_combo.currentTextChanged.connect(self.on_novelai_size_preset_changed)
+        size_form.addRow("画像解像度", self.novelai_size_combo)
+        size_row = QHBoxLayout()
+        self.novelai_width_spin = QSpinBox()
+        self.novelai_width_spin.setRange(64, 4096)
+        self.novelai_width_spin.setSingleStep(64)
+        self.novelai_width_spin.setFixedWidth(96)
+        self.novelai_width_spin.setValue(self.config_data.novelai_width)
+        self.novelai_width_spin.valueChanged.connect(self.on_novelai_size_changed)
+        self.novelai_height_spin = QSpinBox()
+        self.novelai_height_spin.setRange(64, 4096)
+        self.novelai_height_spin.setSingleStep(64)
+        self.novelai_height_spin.setFixedWidth(96)
+        self.novelai_height_spin.setValue(self.config_data.novelai_height)
+        self.novelai_height_spin.valueChanged.connect(self.on_novelai_size_changed)
+        size_row.addWidget(self.novelai_width_spin)
+        size_row.addWidget(QLabel("x"))
+        size_row.addWidget(self.novelai_height_spin)
+        size_row.addStretch(1)
+        size_form.addRow("幅 / 高さ", size_row)
+        layout.addLayout(size_form)
+
+        basic_form = QFormLayout()
+        number_row = QHBoxLayout()
+        self.novelai_batch_group = QButtonGroup(self)
+        self.novelai_batch_group.setExclusive(True)
+        for value in range(1, 9):
+            button = QPushButton(str(value))
+            button.setCheckable(True)
+            button.setFixedWidth(34)
+            self.novelai_batch_group.addButton(button, value)
+            number_row.addWidget(button)
+        number_row.addStretch(1)
+        batch_button = self.novelai_batch_group.button(max(1, min(8, int(self.config_data.novelai_batch_count))))
+        if batch_button is not None:
+            batch_button.setChecked(True)
+        self.novelai_batch_group.idClicked.connect(self.on_novelai_settings_changed)
+        basic_form.addRow("生成枚数", number_row)
+        seed_row = QHBoxLayout()
+        seed_row.setContentsMargins(0, 0, 0, 0)
+        seed_row.setAlignment(Qt.AlignLeft)
+        self.novelai_random_seed_check = QCheckBox("ランダムシード")
+        self.novelai_random_seed_check.setChecked(self.config_data.novelai_random_seed)
+        self.novelai_random_seed_check.stateChanged.connect(self.on_novelai_random_seed_changed)
+        self.novelai_seed_spin = QLineEdit(str(max(0, min(MAX_NOVELAI_SEED, int(self.config_data.novelai_seed)))))
+        self.novelai_seed_spin.setFixedWidth(128)
+        self.novelai_seed_spin.setAlignment(Qt.AlignLeft)
+        self.novelai_seed_spin.setPlaceholderText("0-4294967295")
+        self.novelai_seed_spin.textChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_seed_spin.editingFinished.connect(self.normalize_novelai_seed_input)
+        self.novelai_seed_spin.setEnabled(not self.config_data.novelai_random_seed)
+        seed_row.addWidget(self.novelai_random_seed_check)
+        seed_row.addWidget(self.novelai_seed_spin)
+        seed_row.addStretch(1)
+        basic_form.addRow("シード値", seed_row)
+        layout.addLayout(basic_form)
+
+        self.novelai_detail_button = QPushButton("詳細設定 >")
+        self.novelai_detail_button.setCheckable(True)
+        self.novelai_detail_button.clicked.connect(self.on_novelai_detail_toggled)
+        layout.addWidget(self.novelai_detail_button)
+        self.novelai_detail_widget = QWidget()
+        detail_layout = QVBoxLayout(self.novelai_detail_widget)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_auth_form = QFormLayout()
+        self.novelai_token_edit = QLineEdit(load_novelai_api_token())
+        self.novelai_token_edit.setEchoMode(QLineEdit.Password)
+        self.novelai_token_edit.editingFinished.connect(self.on_novelai_settings_changed)
+        detail_auth_form.addRow("永続APIトークン", self.novelai_token_edit)
+        detail_layout.addLayout(detail_auth_form)
+        quality_form = QFormLayout()
+        self.novelai_quality_tags_check = QCheckBox("品質タグを追加する")
+        self.novelai_quality_tags_check.setChecked(self.config_data.novelai_quality_tags)
+        self.novelai_quality_tags_check.stateChanged.connect(self.on_novelai_settings_changed)
+        quality_form.addRow(self.novelai_quality_tags_check)
+        self.novelai_uc_preset_combo = QComboBox()
+        for key, label in NOVELAI_UC_PRESET_OPTIONS:
+            self.novelai_uc_preset_combo.addItem(label, key)
+        self.set_combo_by_data(self.novelai_uc_preset_combo, self.config_data.novelai_uc_preset)
+        self.novelai_uc_preset_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
+        quality_form.addRow("除外プリセット", self.novelai_uc_preset_combo)
+        self.novelai_dataset_mode_combo = QComboBox()
+        for key, label in NOVELAI_DATASET_MODE_OPTIONS:
+            self.novelai_dataset_mode_combo.addItem(label, key)
+        self.set_combo_by_data(self.novelai_dataset_mode_combo, self.config_data.novelai_dataset_mode)
+        self.novelai_dataset_mode_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
+        quality_form.addRow("モード", self.novelai_dataset_mode_combo)
+        detail_layout.addLayout(quality_form)
+
+        params_form = QFormLayout()
+        self.novelai_model_combo = QComboBox()
+        self.novelai_model_combo.addItems(NOVELAI_MODEL_OPTIONS)
+        self.novelai_model_combo.setCurrentText(self.config_data.novelai_model or DEFAULT_NOVELAI_MODEL)
+        self.novelai_model_combo.currentTextChanged.connect(self.on_novelai_settings_changed)
+        params_form.addRow("モデル", self.novelai_model_combo)
+        self.novelai_sampler_combo = QComboBox()
+        self.novelai_sampler_combo.addItems(NOVELAI_SAMPLER_OPTIONS)
+        self.novelai_sampler_combo.setCurrentText(self.config_data.novelai_sampler or DEFAULT_NOVELAI_SAMPLER)
+        self.novelai_sampler_combo.currentTextChanged.connect(self.on_novelai_settings_changed)
+        params_form.addRow("サンプラー", self.novelai_sampler_combo)
+        self.novelai_scheduler_combo = QComboBox()
+        self.novelai_scheduler_combo.addItems(NOVELAI_SCHEDULER_OPTIONS)
+        self.novelai_scheduler_combo.setCurrentText(self.config_data.novelai_scheduler or DEFAULT_NOVELAI_SCHEDULER)
+        self.novelai_scheduler_combo.currentTextChanged.connect(self.on_novelai_settings_changed)
+        params_form.addRow("ノイズスケジュール", self.novelai_scheduler_combo)
+        self.novelai_steps_spin = QSpinBox()
+        self.novelai_steps_spin.setRange(1, 150)
+        self.novelai_steps_spin.setFixedWidth(96)
+        self.novelai_steps_spin.setValue(self.config_data.novelai_steps)
+        self.novelai_steps_spin.valueChanged.connect(self.on_novelai_settings_changed)
+        params_form.addRow("ステップ数", self.novelai_steps_spin)
+        self.novelai_scale_spin = QDoubleSpinBox()
+        self.novelai_scale_spin.setRange(0.0, 30.0)
+        self.novelai_scale_spin.setSingleStep(0.1)
+        self.novelai_scale_spin.setDecimals(2)
+        self.novelai_scale_spin.setFixedWidth(96)
+        self.novelai_scale_spin.setValue(float(self.config_data.novelai_scale))
+        self.novelai_scale_spin.valueChanged.connect(self.on_novelai_settings_changed)
+        guidance_row = QHBoxLayout()
+        guidance_row.addWidget(self.novelai_scale_spin)
+        self.novelai_variety_boost_check = QCheckBox("多様性")
+        self.novelai_variety_boost_check.setChecked(self.config_data.novelai_variety_boost)
+        self.novelai_variety_boost_check.stateChanged.connect(self.on_novelai_settings_changed)
+        guidance_row.addWidget(self.novelai_variety_boost_check)
+        guidance_row.addStretch(1)
+        params_form.addRow("プロンプトガイダンス", guidance_row)
+        self.novelai_cfg_rescale_spin = QDoubleSpinBox()
+        self.novelai_cfg_rescale_spin.setRange(0.0, 1.0)
+        self.novelai_cfg_rescale_spin.setSingleStep(0.01)
+        self.novelai_cfg_rescale_spin.setDecimals(2)
+        self.novelai_cfg_rescale_spin.setFixedWidth(96)
+        self.novelai_cfg_rescale_spin.setValue(float(self.config_data.novelai_cfg_rescale))
+        self.novelai_cfg_rescale_spin.valueChanged.connect(self.on_novelai_settings_changed)
+        params_form.addRow("プロンプトガイダンスの再調整", self.novelai_cfg_rescale_spin)
+        detail_layout.addLayout(params_form)
+
+        self.novelai_opus_check = QCheckBox("OpusプランとしてAnlasを推定")
+        self.novelai_opus_check.setChecked(self.config_data.novelai_is_opus)
+        self.novelai_opus_check.stateChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_auto_open_check = QCheckBox("生成後に自動表示")
+        self.novelai_auto_open_check.setChecked(self.config_data.novelai_auto_open)
+        self.novelai_auto_open_check.stateChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_auto_upscale_check = QCheckBox("生成後に拡大処理キューへ投入")
+        self.novelai_auto_upscale_check.setChecked(self.config_data.novelai_auto_upscale)
+        self.novelai_auto_upscale_check.stateChanged.connect(self.on_novelai_settings_changed)
+        self.novelai_metadata_check = QCheckBox("生成設定をJSONサイドカーに保存")
+        self.novelai_metadata_check.setChecked(self.config_data.novelai_save_metadata_json)
+        self.novelai_metadata_check.stateChanged.connect(self.on_novelai_settings_changed)
+        for check in (
+            self.novelai_opus_check,
+            self.novelai_auto_open_check,
+            self.novelai_auto_upscale_check,
+            self.novelai_metadata_check,
+        ):
+            detail_layout.addWidget(check)
+        layout.addWidget(self.novelai_detail_widget)
+        self.novelai_detail_button.setChecked(bool(self.config_data.novelai_detail_expanded))
+        self.on_novelai_detail_toggled(self.novelai_detail_button.isChecked())
+
+        self.novelai_anlas_label = self.help_label("")
+        self.novelai_anlas_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.novelai_anlas_label)
+        run_row = QHBoxLayout()
+        self.novelai_generate_button = QPushButton("生成")
+        self.novelai_generate_button.clicked.connect(self.generate_novelai_images)
+        run_row.addWidget(self.novelai_generate_button)
+        self.novelai_import_button = QPushButton("メタデータをインポート")
+        self.novelai_import_button.clicked.connect(self.import_novelai_metadata_dialog)
+        run_row.addWidget(self.novelai_import_button)
+        run_row.addStretch(1)
+        layout.addLayout(run_row)
+        self.novelai_status_label = self.help_label("")
+        self.novelai_status_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.novelai_status_label)
+        layout.addStretch(1)
+        self.sync_novelai_size_preset()
+        self.update_novelai_anlas_preview()
+        return content
 
     def build_keyconfig_tab(self) -> QWidget:
         content = QWidget()
@@ -3521,6 +4489,431 @@ class MainWindow(QMainWindow):
                 if widget is not None:
                     widget.setFixedWidth(FORM_LABEL_WIDTH)
 
+    def choose_novelai_output_dir(self) -> None:
+        current = Path(self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR))
+        folder = QFileDialog.getExistingDirectory(self, "NovelAI生成画像の保存先", str(current if current.exists() else APP_DIR))
+        if folder:
+            self.novelai_output_dir_edit.setText(folder)
+            self.on_novelai_settings_changed()
+
+    def refresh_novelai_prompt_preset_combo(self, selected_name: str = "") -> None:
+        combo = getattr(self, "novelai_prompt_preset_combo", None)
+        if combo is None:
+            return
+        current = selected_name or str(combo.currentData() or "")
+        combo.blockSignals(True)
+        combo.clear()
+        for preset in self.novelai_prompt_presets:
+            name = str(preset.get("name") or "").strip()
+            if name:
+                combo.addItem(name, name)
+        if current:
+            self.set_combo_by_data(combo, current)
+        combo.blockSignals(False)
+
+    def novelai_prompt_items_for_preset(self, editor: NovelAIPromptListEditor, text_edit: PromptSubmitTextEdit) -> list[dict[str, object]]:
+        if self.novelai_split_prompts_enabled():
+            return editor.to_items()
+        return [{"tag": tag, "active": True} for tag in editor.split_prompt_text(text_edit.toPlainText())]
+
+    def current_novelai_prompt_preset_payload(self, name: str) -> dict[str, object]:
+        return {
+            "name": name,
+            "prompt_items": self.novelai_prompt_items_for_preset(self.novelai_prompt_list_edit, self.novelai_prompt_edit),
+            "negative_items": self.novelai_prompt_items_for_preset(self.novelai_negative_list_edit, self.novelai_negative_edit),
+        }
+
+    def save_novelai_prompt_preset_dialog(self) -> None:
+        current_name = str(self.novelai_prompt_preset_combo.currentData() or "") if hasattr(self, "novelai_prompt_preset_combo") else ""
+        name, ok = QInputDialog.getText(self, APP_NAME, "タグプリセット名", text=current_name)
+        name = name.strip()
+        if not ok or not name:
+            return
+        existing_index = next((index for index, preset in enumerate(self.novelai_prompt_presets) if str(preset.get("name") or "") == name), -1)
+        if existing_index >= 0:
+            answer = QMessageBox.question(self, APP_NAME, f"タグプリセット「{name}」を上書きしますか？")
+            if answer != QMessageBox.Yes:
+                return
+            self.novelai_prompt_presets[existing_index] = self.current_novelai_prompt_preset_payload(name)
+        else:
+            self.novelai_prompt_presets.append(self.current_novelai_prompt_preset_payload(name))
+        self.novelai_prompt_presets.sort(key=lambda preset: str(preset.get("name") or "").casefold())
+        save_novelai_prompt_presets(self.novelai_prompt_presets)
+        self.refresh_novelai_prompt_preset_combo(name)
+
+    def selected_novelai_prompt_preset(self) -> dict[str, object] | None:
+        name = str(self.novelai_prompt_preset_combo.currentData() or "") if hasattr(self, "novelai_prompt_preset_combo") else ""
+        if not name:
+            return None
+        return next((preset for preset in self.novelai_prompt_presets if str(preset.get("name") or "") == name), None)
+
+    def load_novelai_prompt_preset(self) -> None:
+        preset = self.selected_novelai_prompt_preset()
+        if preset is None:
+            return
+        prompt_items = preset.get("prompt_items")
+        negative_items = preset.get("negative_items")
+        self.novelai_split_prompts_check.blockSignals(True)
+        self.novelai_split_prompts_check.setChecked(True)
+        self.novelai_split_prompts_check.blockSignals(False)
+        self.novelai_prompt_list_edit.set_items(prompt_items if isinstance(prompt_items, list) else [], "")
+        self.novelai_negative_list_edit.set_items(negative_items if isinstance(negative_items, list) else [], "")
+        self.sync_novelai_text_from_lists()
+        self.update_novelai_prompt_editor_visibility()
+        self.on_novelai_settings_changed()
+
+    def delete_novelai_prompt_preset(self) -> None:
+        preset = self.selected_novelai_prompt_preset()
+        if preset is None:
+            return
+        name = str(preset.get("name") or "")
+        answer = QMessageBox.question(self, APP_NAME, f"タグプリセット「{name}」を削除しますか？")
+        if answer != QMessageBox.Yes:
+            return
+        self.novelai_prompt_presets = [item for item in self.novelai_prompt_presets if str(item.get("name") or "") != name]
+        save_novelai_prompt_presets(self.novelai_prompt_presets)
+        self.refresh_novelai_prompt_preset_combo()
+
+    def sync_novelai_size_preset(self) -> None:
+        if not hasattr(self, "novelai_size_combo"):
+            return
+        current = (self.novelai_width_spin.value(), self.novelai_height_spin.value())
+        label = next((name for name, size in NOVELAI_SIZE_PRESETS.items() if size == current), "Custom")
+        self.novelai_size_combo.blockSignals(True)
+        self.novelai_size_combo.setCurrentText(label)
+        self.novelai_size_combo.blockSignals(False)
+
+    def on_novelai_size_preset_changed(self, text: str) -> None:
+        size = NOVELAI_SIZE_PRESETS.get(text)
+        if size is not None:
+            width, height = size
+            self.novelai_width_spin.blockSignals(True)
+            self.novelai_height_spin.blockSignals(True)
+            self.novelai_width_spin.setValue(width)
+            self.novelai_height_spin.setValue(height)
+            self.novelai_width_spin.blockSignals(False)
+            self.novelai_height_spin.blockSignals(False)
+        self.on_novelai_settings_changed()
+
+    def on_novelai_size_changed(self, *_args) -> None:
+        self.sync_novelai_size_preset()
+        self.on_novelai_settings_changed()
+
+    def on_novelai_random_seed_changed(self, *_args) -> None:
+        if hasattr(self, "novelai_seed_spin"):
+            self.novelai_seed_spin.setEnabled(not self.novelai_random_seed_check.isChecked())
+        self.on_novelai_settings_changed()
+
+    def novelai_seed_value(self) -> int:
+        text = self.novelai_seed_spin.text().strip() if hasattr(self, "novelai_seed_spin") else "0"
+        try:
+            return max(0, min(MAX_NOVELAI_SEED, int(text)))
+        except ValueError:
+            return 0
+
+    def set_novelai_seed_value(self, value: object) -> None:
+        try:
+            seed = max(0, min(MAX_NOVELAI_SEED, int(value)))
+        except (TypeError, ValueError):
+            seed = 0
+        self.novelai_seed_spin.setText(str(seed))
+
+    def normalize_novelai_seed_input(self) -> None:
+        self.set_novelai_seed_value(self.novelai_seed_value())
+
+    def on_novelai_detail_toggled(self, checked: bool) -> None:
+        if hasattr(self, "novelai_detail_widget"):
+            self.novelai_detail_widget.setVisible(bool(checked))
+        if hasattr(self, "novelai_detail_button"):
+            if self.novelai_detail_button.isChecked() != bool(checked):
+                self.novelai_detail_button.blockSignals(True)
+                self.novelai_detail_button.setChecked(bool(checked))
+                self.novelai_detail_button.blockSignals(False)
+            self.novelai_detail_button.setText(self.tr_ui("詳細設定 v" if checked else "詳細設定 >"))
+        if hasattr(self, "config_data"):
+            self.config_data.novelai_detail_expanded = bool(checked)
+            if not getattr(self, "initializing", False):
+                self.persist_config()
+
+    def novelai_split_prompts_enabled(self) -> bool:
+        return bool(getattr(self, "novelai_split_prompts_check", None) and self.novelai_split_prompts_check.isChecked())
+
+    def novelai_prompt_text(self) -> str:
+        if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_prompt_list_edit"):
+            return self.novelai_prompt_list_edit.to_text()
+        return self.novelai_prompt_edit.toPlainText().strip()
+
+    def novelai_negative_prompt_text(self) -> str:
+        if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_negative_list_edit"):
+            return self.novelai_negative_list_edit.to_text()
+        return self.novelai_negative_edit.toPlainText().strip()
+
+    def novelai_dataset_mode(self) -> str:
+        combo = getattr(self, "novelai_dataset_mode_combo", None)
+        mode = combo.currentData() if combo is not None else self.config_data.novelai_dataset_mode
+        return str(mode or "anime")
+
+    def apply_novelai_dataset_mode_to_prompt(self, prompt: str) -> str:
+        prompt = prompt.strip()
+        if self.novelai_dataset_mode() != "furry":
+            return prompt
+        folded = prompt.casefold()
+        tag = NOVELAI_FURRY_DATASET_TAG
+        if folded == tag or folded.startswith(f"{tag},"):
+            return prompt
+        return f"{tag}, {prompt}" if prompt else tag
+
+    def restore_novelai_dataset_mode(self, prompt: str) -> tuple[str, str]:
+        stripped = prompt.strip()
+        tag = NOVELAI_FURRY_DATASET_TAG
+        folded = stripped.casefold()
+        if folded == tag:
+            return "", "furry"
+        if folded.startswith(f"{tag},"):
+            return stripped[len(tag) + 1 :].lstrip(), "furry"
+        return prompt, "anime"
+
+    def update_novelai_prompt_editor_visibility(self) -> None:
+        if not hasattr(self, "novelai_prompt_list_edit"):
+            return
+        split_enabled = self.novelai_split_prompts_enabled()
+        self.novelai_prompt_edit.setVisible(not split_enabled)
+        self.novelai_negative_edit.setVisible(not split_enabled)
+        self.novelai_prompt_list_edit.setVisible(split_enabled)
+        self.novelai_negative_list_edit.setVisible(split_enabled)
+        if hasattr(self, "novelai_enter_generate_check"):
+            self.novelai_enter_generate_check.setEnabled(not split_enabled)
+
+    def sync_novelai_lists_from_text(self) -> None:
+        if hasattr(self, "novelai_prompt_list_edit"):
+            self.novelai_prompt_list_edit.set_text(self.novelai_prompt_edit.toPlainText())
+        if hasattr(self, "novelai_negative_list_edit"):
+            self.novelai_negative_list_edit.set_text(self.novelai_negative_edit.toPlainText())
+
+    def on_novelai_split_prompts_changed(self, *_args) -> None:
+        if self.novelai_split_prompts_enabled():
+            self.sync_novelai_lists_from_text()
+        else:
+            self.sync_novelai_text_from_lists()
+        self.update_novelai_prompt_editor_visibility()
+        self.on_novelai_settings_changed()
+
+    def on_novelai_prompt_list_changed(self) -> None:
+        if not self.novelai_split_prompts_enabled():
+            return
+        self.sync_novelai_text_from_lists()
+        self.on_novelai_settings_changed()
+
+    def sync_novelai_text_from_lists(self) -> None:
+        self.novelai_prompt_edit.blockSignals(True)
+        self.novelai_negative_edit.blockSignals(True)
+        self.novelai_prompt_edit.setPlainText(self.novelai_prompt_list_edit.to_text())
+        self.novelai_negative_edit.setPlainText(self.novelai_negative_list_edit.to_text())
+        self.novelai_prompt_edit.blockSignals(False)
+        self.novelai_negative_edit.blockSignals(False)
+
+    def on_novelai_enter_generate_changed(self, *_args) -> None:
+        enabled = bool(self.novelai_enter_generate_check.isChecked()) if hasattr(self, "novelai_enter_generate_check") else True
+        for edit_name in ("novelai_prompt_edit", "novelai_negative_edit"):
+            edit = getattr(self, edit_name, None)
+            if edit is not None:
+                edit.enter_submits = enabled
+        self.on_novelai_settings_changed()
+
+    def novelai_number_of_images(self) -> int:
+        group = getattr(self, "novelai_batch_group", None)
+        if group is None:
+            return max(1, min(8, int(self.config_data.novelai_batch_count)))
+        value = group.checkedId()
+        return max(1, min(8, int(value if value > 0 else 1)))
+
+    def on_novelai_settings_changed(self, *_args) -> None:
+        if not getattr(self, "initializing", False):
+            self.persist_config()
+        self.update_novelai_anlas_preview()
+
+    def current_novelai_request(self, seed: int | None = None) -> dict[str, object]:
+        return {
+            "prompt": self.apply_novelai_dataset_mode_to_prompt(self.novelai_prompt_text()),
+            "negative_prompt": self.novelai_negative_prompt_text(),
+            "model": self.novelai_model_combo.currentText().strip() or DEFAULT_NOVELAI_MODEL,
+            "sampler": self.novelai_sampler_combo.currentText().strip() or DEFAULT_NOVELAI_SAMPLER,
+            "noise_schedule": self.novelai_scheduler_combo.currentText().strip() or DEFAULT_NOVELAI_SCHEDULER,
+            "seed": int(self.novelai_seed_value() if seed is None else seed),
+            "width": self.novelai_width_spin.value(),
+            "height": self.novelai_height_spin.value(),
+            "steps": self.novelai_steps_spin.value(),
+            "scale": self.novelai_scale_spin.value(),
+            "cfg_rescale": self.novelai_cfg_rescale_spin.value(),
+            "variety_boost": self.novelai_variety_boost_check.isChecked(),
+            "n_samples": self.novelai_number_of_images(),
+            "quality": self.novelai_quality_tags_check.isChecked(),
+            "uc_preset": self.novelai_uc_preset_combo.currentData() or "strong",
+        }
+
+    def estimate_novelai_anlas(self) -> int | None:
+        try:
+            from novelai.types import GenerateImageParams
+            request = self.current_novelai_request()
+            kwargs: dict[str, object] = {
+                "prompt": str(request["prompt"]),
+                "model": str(request["model"]),
+                "size": (int(request["width"]), int(request["height"])),
+                "steps": int(request["steps"]),
+                "scale": float(request["scale"]),
+                "cfg_rescale": float(request["cfg_rescale"]),
+                "seed": int(request["seed"]),
+                "n_samples": int(request["n_samples"]),
+                "variety_boost": bool(request["variety_boost"]),
+                "quality": bool(request["quality"]),
+                "uc_preset": str(request["uc_preset"]),
+            }
+            if str(request["negative_prompt"]).strip():
+                kwargs["negative_prompt"] = str(request["negative_prompt"]).strip()
+            if str(request["sampler"]).strip():
+                kwargs["sampler"] = str(request["sampler"]).strip()
+            if str(request["noise_schedule"]).strip():
+                kwargs["noise_schedule"] = str(request["noise_schedule"]).strip()
+            params = GenerateImageParams(**kwargs)
+            estimate = params.calculate_anlas(is_opus=self.novelai_opus_check.isChecked())
+            return int(estimate)
+        except Exception:
+            return None
+
+    def update_novelai_anlas_preview(self) -> None:
+        if not hasattr(self, "novelai_anlas_label"):
+            return
+        estimate = self.estimate_novelai_anlas()
+        if estimate is None:
+            self.novelai_anlas_label.setText("推定消費Anlas: novelai-sdk未インストール、または現在の設定では推定できません。")
+            return
+        self.novelai_anlas_label.setText(f"推定消費Anlas: {estimate}（SDKによる推定。実際の消費量と完全一致する保証はありません）")
+
+    def import_novelai_metadata_dialog(self) -> None:
+        initial = self.config_data.last_dir or self.novelai_output_dir_edit.text().strip() or str(APP_DIR)
+        path_text, _filter = QFileDialog.getOpenFileName(
+            self,
+            "NovelAIメタデータをインポート",
+            initial,
+            "Images (*.png *.webp);;All files (*.*)",
+        )
+        if not path_text:
+            return
+        try:
+            metadata = self.read_novelai_metadata(Path(path_text))
+            self.apply_novelai_metadata(metadata)
+            self.novelai_status_label.setText("NovelAIメタデータをインポートしました。")
+            self.persist_config()
+        except Exception as exc:
+            self.novelai_status_label.setText(f"NovelAIメタデータを読み込めませんでした: {exc}")
+            QMessageBox.warning(self, APP_NAME, f"NovelAIメタデータを読み込めませんでした。\n\n{exc}")
+
+    def read_novelai_metadata(self, path: Path) -> dict[str, object]:
+        if PILImage is None:
+            raise RuntimeError("Pillow is not available")
+        with PILImage.open(path) as image:
+            info = dict(image.info)
+        comment = info.get("Comment") or info.get("comment") or info.get("parameters")
+        if not isinstance(comment, str) or not comment.strip():
+            raise ValueError("Comment JSONが見つかりません。")
+        data = json.loads(comment)
+        if not isinstance(data, dict):
+            raise ValueError("Comment JSONの形式が不正です。")
+        data["_source_text"] = str(info.get("Source") or "")
+        return data
+
+    def novelai_model_from_metadata(self, metadata: dict[str, object]) -> str:
+        model = str(metadata.get("model") or "").strip()
+        if model in NOVELAI_MODEL_OPTIONS:
+            return model
+        source = str(metadata.get("_source_text") or "").casefold()
+        if "4.5" in source:
+            return "nai-diffusion-4-5-curated" if "curated" in source else "nai-diffusion-4-5-full"
+        if "v4" in source or "diffusion 4" in source:
+            return "nai-diffusion-4-curated" if "curated" in source else "nai-diffusion-4-full"
+        if "v3" in source or "diffusion 3" in source:
+            return "nai-diffusion-3"
+        return DEFAULT_NOVELAI_MODEL
+
+    def strip_novelai_suffix(self, text: str, suffixes: list[str]) -> tuple[str, bool]:
+        stripped = text.rstrip()
+        folded = stripped.casefold()
+        for suffix in sorted(suffixes, key=len, reverse=True):
+            suffix = suffix.strip()
+            if suffix and folded.endswith(suffix.casefold()):
+                return stripped[: len(stripped) - len(suffix)].rstrip(), True
+        return text, False
+
+    def restore_novelai_quality_tags(self, prompt: str, model: str) -> tuple[str, bool]:
+        suffixes = NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL.get(model, [])
+        return self.strip_novelai_suffix(prompt, suffixes)
+
+    def restore_novelai_uc_preset(self, negative: str, model: str) -> tuple[str, str]:
+        preset_texts = NOVELAI_UC_PRESET_TEXTS_BY_MODEL.get(model, {})
+        candidates: list[tuple[str, str]] = []
+        for preset, suffixes in preset_texts.items():
+            for suffix in suffixes:
+                candidates.append((preset, suffix))
+        stripped = negative.rstrip()
+        folded = stripped.casefold()
+        for preset, preset_text in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
+            preset_text = preset_text.strip()
+            if not preset_text:
+                continue
+            preset_folded = preset_text.casefold()
+            if folded.startswith(preset_folded):
+                remainder = stripped[len(preset_text) :].lstrip(" ,")
+                return remainder, preset
+        for preset, preset_text in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
+            preset_text = preset_text.strip()
+            if preset_text and folded.endswith(preset_text.casefold()):
+                return stripped[: len(stripped) - len(preset_text)].rstrip(" ,"), preset
+        return negative, "none"
+
+    def set_novelai_number_of_images(self, value: int) -> None:
+        button = self.novelai_batch_group.button(max(1, min(8, int(value))))
+        if button is not None:
+            button.setChecked(True)
+
+    def apply_novelai_metadata(self, metadata: dict[str, object]) -> None:
+        prompt = str(metadata.get("prompt") or metadata.get("Description") or "")
+        v4_prompt = metadata.get("v4_prompt")
+        if not prompt and isinstance(v4_prompt, dict):
+            caption = v4_prompt.get("caption")
+            if isinstance(caption, dict):
+                prompt = str(caption.get("base_caption") or "")
+        negative = str(metadata.get("uc") or "")
+        v4_negative = metadata.get("v4_negative_prompt")
+        if not negative and isinstance(v4_negative, dict):
+            caption = v4_negative.get("caption")
+            if isinstance(caption, dict):
+                negative = str(caption.get("base_caption") or "")
+        model = self.novelai_model_from_metadata(metadata)
+        prompt, dataset_mode = self.restore_novelai_dataset_mode(prompt)
+        prompt, quality_enabled = self.restore_novelai_quality_tags(prompt, model)
+        negative, uc_preset = self.restore_novelai_uc_preset(negative, model)
+        self.novelai_prompt_edit.setPlainText(prompt)
+        self.novelai_negative_edit.setPlainText(negative)
+        self.sync_novelai_lists_from_text()
+        self.set_combo_by_text(self.novelai_model_combo, model)
+        self.set_combo_by_data(self.novelai_dataset_mode_combo, dataset_mode)
+        self.set_combo_by_text(self.novelai_sampler_combo, str(metadata.get("sampler") or DEFAULT_NOVELAI_SAMPLER))
+        self.set_combo_by_text(self.novelai_scheduler_combo, str(metadata.get("noise_schedule") or DEFAULT_NOVELAI_SCHEDULER))
+        self.novelai_width_spin.setValue(max(64, min(4096, int(metadata.get("width", self.novelai_width_spin.value())))))
+        self.novelai_height_spin.setValue(max(64, min(4096, int(metadata.get("height", self.novelai_height_spin.value())))))
+        self.sync_novelai_size_preset()
+        self.novelai_steps_spin.setValue(max(1, min(150, int(metadata.get("steps", self.novelai_steps_spin.value())))))
+        self.novelai_scale_spin.setValue(max(0.0, min(30.0, float(metadata.get("scale", self.novelai_scale_spin.value())))))
+        self.novelai_cfg_rescale_spin.setValue(max(0.0, min(1.0, float(metadata.get("cfg_rescale", self.novelai_cfg_rescale_spin.value())))))
+        self.novelai_random_seed_check.setChecked(False)
+        self.novelai_seed_spin.setEnabled(True)
+        self.set_novelai_seed_value(metadata.get("seed", self.novelai_seed_value()))
+        self.set_novelai_number_of_images(max(1, min(8, int(metadata.get("n_samples", 1)))))
+        self.novelai_variety_boost_check.setChecked(bool(metadata.get("variety_boost", False)))
+        self.novelai_quality_tags_check.setChecked(quality_enabled)
+        self.set_combo_by_data(self.novelai_uc_preset_combo, uc_preset)
+        self.update_novelai_anlas_preview()
+
     def separator(self) -> QFrame:
         frame = QFrame()
         frame.setFrameShape(QFrame.HLine)
@@ -3547,6 +4940,7 @@ class MainWindow(QMainWindow):
                 self.tabs.setTabText(index, self.tr_ui(self.tabs.tabText(index)))
         if hasattr(self, "pin_button"):
             self.pin_button.setText(self.tr_ui("固定中" if self.pin_button.isChecked() else "自動表示"))
+        self.update_side_panel_side_button()
         if hasattr(self, "language_label"):
             self.language_label.setText("Language")
         if hasattr(self, "version_label"):
@@ -3561,6 +4955,14 @@ class MainWindow(QMainWindow):
             index = self.tone_curve_channel_combo.findData(current)
             self.tone_curve_channel_combo.setCurrentIndex(max(0, index))
             self.tone_curve_channel_combo.blockSignals(False)
+        if hasattr(self, "novelai_uc_preset_combo"):
+            current = self.novelai_uc_preset_combo.currentData() or "strong"
+            self.novelai_uc_preset_combo.blockSignals(True)
+            self.novelai_uc_preset_combo.clear()
+            for key, label in NOVELAI_UC_PRESET_OPTIONS:
+                self.novelai_uc_preset_combo.addItem(self.tr_ui(label), key)
+            self.set_combo_by_data(self.novelai_uc_preset_combo, current)
+            self.novelai_uc_preset_combo.blockSignals(False)
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
         self.update_hdr_tonemap_controls()
@@ -3669,6 +5071,10 @@ class MainWindow(QMainWindow):
 
     def set_combo_by_data(self, combo: QComboBox, value: str) -> None:
         index = combo.findData(value)
+        combo.setCurrentIndex(max(0, index))
+
+    def set_combo_by_text(self, combo: QComboBox, value: str) -> None:
+        index = combo.findText(value)
         combo.setCurrentIndex(max(0, index))
 
     def detect_comfyui_nodes(self, update_status: bool = True) -> None:
@@ -3907,6 +5313,138 @@ class MainWindow(QMainWindow):
             self.comfyui_status_label.setText(f"推奨{result.get('label', 'モデル')}を保存しました: {result.get('path')}\n不足が残っている場合は、続けてダウンロードを押してください。\n最後にComfyUI初期設定をもう一度実行してください。")
         else:
             self.comfyui_status_label.setText(f"推奨ファイルのダウンロードに失敗しました: {result.get('message', '')}")
+
+    def generate_novelai_images(self) -> None:
+        if self.novelai_generation_running:
+            self.novelai_status_label.setText("NovelAI生成は実行中です。")
+            return
+        token = self.novelai_token_edit.text().strip()
+        if not token:
+            QMessageBox.information(self, APP_NAME, "NovelAI Persistent API Tokenを入力してください。")
+            return
+        prompt = self.novelai_prompt_text()
+        if not prompt:
+            QMessageBox.information(self, APP_NAME, "Promptを入力してください。")
+            return
+        output_dir = Path(self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR))
+        task = {
+            "api_token": token,
+            "output_dir": output_dir,
+            "date_subfolders": self.novelai_date_subfolders_check.isChecked(),
+            "filename_mode": self.novelai_filename_combo.currentData() or "seed",
+            "request": self.current_novelai_request(),
+            "random_seed": self.novelai_random_seed_check.isChecked(),
+            "save_metadata_json": self.novelai_metadata_check.isChecked(),
+            "auto_open": self.novelai_auto_open_check.isChecked(),
+            "auto_upscale": self.novelai_auto_upscale_check.isChecked(),
+            "is_opus": self.novelai_opus_check.isChecked(),
+        }
+        self.persist_config()
+        self.novelai_generation_running = True
+        self.novelai_generate_button.setEnabled(False)
+        self.novelai_status_label.setText("NovelAI生成キューへ追加しました。")
+        self.novelai_queue.put(task)
+
+    def _novelai_worker_loop(self) -> None:
+        while True:
+            task = self.novelai_queue.get()
+            if task is None or getattr(self, "closing", False):
+                return
+            self.signals.novelai_generation_started.emit(str(task.get("output_dir", "")))
+            try:
+                result = self.run_novelai_generation(task)
+            except Exception as exc:
+                result = {"ok": False, "message": str(exc), "paths": []}
+            self.signals.novelai_generation_done.emit(result)
+
+    def run_novelai_generation(self, task: dict[str, object]) -> dict[str, object]:
+        output_dir = Path(task["output_dir"])
+        if bool(task.get("date_subfolders", False)):
+            output_dir = output_dir / time.strftime("%Y-%m-%d")
+        request = dict(task["request"])  # type: ignore[arg-type]
+        random_seed_enabled = bool(task.get("random_seed", True))
+        save_metadata_json = bool(task.get("save_metadata_json", True))
+        adapter = NovelAIClientAdapter(str(task.get("api_token", "")))
+        generated_paths: list[Path] = []
+        started = time.perf_counter()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        seed = random.randint(0, MAX_NOVELAI_SEED) if random_seed_enabled else int(request.get("seed", 0)) % (MAX_NOVELAI_SEED + 1)
+        request = {**request, "seed": seed, "n_samples": max(1, min(8, int(request.get("n_samples", 1))))}
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        images = adapter.generate_images(request)
+        for index, image in enumerate(images, start=1):
+            output_path = self.unique_novelai_output_path(output_dir, timestamp, seed, str(task.get("filename_mode", "seed")), index if len(images) > 1 else None)
+            image.save(str(output_path))
+            generated_paths.append(output_path)
+            if save_metadata_json:
+                metadata = {
+                    "source": "NovelAI",
+                    "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "request": request,
+                    "image_index": index,
+                    "estimated_anlas": adapter.estimate_anlas(request, bool(task.get("is_opus", False))),
+                }
+                output_path.with_suffix(output_path.suffix + ".json").write_text(
+                    json.dumps(metadata, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+        return {
+            "ok": True,
+            "paths": generated_paths,
+            "seed": seed,
+            "auto_open": bool(task.get("auto_open", True)),
+            "auto_upscale": bool(task.get("auto_upscale", True)),
+            "elapsed_ms": (time.perf_counter() - started) * 1000,
+        }
+
+    def unique_novelai_output_path(self, output_dir: Path, timestamp: str, seed: int, filename_mode: str = "seed", image_index: int | None = None) -> Path:
+        base = str(seed) if filename_mode == "seed" else timestamp
+        if image_index is not None:
+            base = f"{base}_{image_index:02d}"
+        path = output_dir / f"{base}.png"
+        suffix = 1
+        while path.exists():
+            path = output_dir / f"{base}_{suffix}.png"
+            suffix += 1
+        return path
+
+    def on_novelai_generation_started(self, output_dir: str) -> None:
+        self.append_log_if_visible(f"NovelAI generation started: {output_dir}")
+        if hasattr(self, "novelai_status_label"):
+            self.novelai_status_label.setText(f"NovelAIで生成中: {output_dir}")
+
+    def on_novelai_generation_done(self, result: object) -> None:
+        self.novelai_generation_running = False
+        if hasattr(self, "novelai_generate_button"):
+            self.novelai_generate_button.setEnabled(True)
+        if not isinstance(result, dict) or not result.get("ok"):
+            message = str(result.get("message", "unknown error")) if isinstance(result, dict) else "unknown error"
+            self.append_log_if_visible(f"NovelAI generation failed: {message}")
+            if hasattr(self, "novelai_status_label"):
+                self.novelai_status_label.setText(f"NovelAI生成に失敗しました: {message}")
+            return
+        paths = [Path(path) for path in result.get("paths", [])]
+        if "seed" in result:
+            self.set_novelai_seed_value(result.get("seed"))
+            self.persist_config()
+        if not paths:
+            if hasattr(self, "novelai_status_label"):
+                self.novelai_status_label.setText("NovelAI生成は完了しましたが、画像がありません。")
+            return
+        self.record_profile("NovelAI生成", float(result.get("elapsed_ms", 0.0)))
+        self.append_log_if_visible(f"NovelAI generation done: {len(paths)} image(s)")
+        if hasattr(self, "novelai_status_label"):
+            self.novelai_status_label.setText(f"NovelAI生成完了: {len(paths)}枚")
+        if result.get("auto_open", True):
+            self.open_path_deferred(paths[-1])
+        if result.get("auto_upscale", True):
+            QTimer.singleShot(200, lambda generated=paths: self.enqueue_generated_upscales(generated))
+
+    def enqueue_generated_upscales(self, paths: list[Path]) -> None:
+        for index, path in enumerate(paths):
+            if path.exists() and self.is_image(path):
+                self.enqueue_realcugan(path, front=index == 0, force=False, check_existing=True, check_skip=True)
+        self.update_prefetch_progress_bars()
 
     def current_colorize_input_path(self) -> Path | None:
         if not self.image_paths or self.current_index < 0 or self.current_index >= len(self.image_paths):
@@ -4383,6 +5921,10 @@ class MainWindow(QMainWindow):
         self.config_data.restore_last_image_on_start = self.restore_last_image_check.isChecked()
         self.config_data.remember_last_image_per_folder = self.folder_history_check.isChecked()
         self.config_data.folder_history_limit = self.folder_history_limit_spin.value()
+        self.config_data.delete_processed_with_source = self.delete_processed_check.isChecked()
+        self.config_data.hide_colorize_tab = self.hide_colorize_tab_check.isChecked()
+        self.config_data.hide_novelai_tab = self.hide_novelai_tab_check.isChecked()
+        self.config_data.hide_keyconfig_tab = self.hide_keyconfig_tab_check.isChecked()
         if hasattr(self, "comfyui_api_edit"):
             self.config_data.comfyui_api_url = self.comfyui_api_edit.text().strip() or DEFAULT_COMFYUI_API_URL
             self.config_data.comfyui_base_dir = self.comfyui_base_dir_edit.text().strip()
@@ -4396,8 +5938,43 @@ class MainWindow(QMainWindow):
             self.config_data.colorize_luminance_preserve = self.colorize_luminance_spin.value()
             self.config_data.colorize_positive_prompt = self.colorize_positive_edit.toPlainText().strip() or DEFAULT_COLORIZE_POSITIVE_PROMPT
             self.config_data.colorize_negative_prompt = self.colorize_negative_edit.toPlainText().strip() or DEFAULT_COLORIZE_NEGATIVE_PROMPT
+        if hasattr(self, "novelai_token_edit"):
+            try:
+                save_novelai_api_token(self.novelai_token_edit.text())
+            except Exception as exc:
+                self.append_log_if_visible(f"Failed to save NovelAI token with DPAPI: {exc}")
+            self.config_data.novelai_api_token = ""
+            self.config_data.novelai_output_dir = self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR)
+            self.config_data.novelai_date_subfolders = self.novelai_date_subfolders_check.isChecked()
+            self.config_data.novelai_filename_mode = self.novelai_filename_combo.currentData() or "seed"
+            self.config_data.novelai_prompt = self.novelai_prompt_text()
+            self.config_data.novelai_negative_prompt = self.novelai_negative_prompt_text()
+            self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
+            self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
+            self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
+            self.config_data.novelai_enter_to_generate = self.novelai_enter_generate_check.isChecked()
+            self.config_data.novelai_quality_tags = self.novelai_quality_tags_check.isChecked()
+            self.config_data.novelai_uc_preset = self.novelai_uc_preset_combo.currentData() or "strong"
+            self.config_data.novelai_dataset_mode = self.novelai_dataset_mode()
+            self.config_data.novelai_model = self.novelai_model_combo.currentText().strip() or DEFAULT_NOVELAI_MODEL
+            self.config_data.novelai_sampler = self.novelai_sampler_combo.currentText().strip() or DEFAULT_NOVELAI_SAMPLER
+            self.config_data.novelai_scheduler = self.novelai_scheduler_combo.currentText().strip() or DEFAULT_NOVELAI_SCHEDULER
+            self.config_data.novelai_seed = self.novelai_seed_value()
+            self.config_data.novelai_random_seed = self.novelai_random_seed_check.isChecked()
+            self.config_data.novelai_width = self.novelai_width_spin.value()
+            self.config_data.novelai_height = self.novelai_height_spin.value()
+            self.config_data.novelai_steps = self.novelai_steps_spin.value()
+            self.config_data.novelai_scale = self.novelai_scale_spin.value()
+            self.config_data.novelai_cfg_rescale = self.novelai_cfg_rescale_spin.value()
+            self.config_data.novelai_variety_boost = self.novelai_variety_boost_check.isChecked()
+            self.config_data.novelai_batch_count = self.novelai_number_of_images()
+            self.config_data.novelai_is_opus = self.novelai_opus_check.isChecked()
+            self.config_data.novelai_auto_open = self.novelai_auto_open_check.isChecked()
+            self.config_data.novelai_auto_upscale = self.novelai_auto_upscale_check.isChecked()
+            self.config_data.novelai_save_metadata_json = self.novelai_metadata_check.isChecked()
+            self.config_data.novelai_detail_expanded = self.novelai_detail_button.isChecked()
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
-        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "colorize", "other", "keyconfig"][max(0, min(5, self.tabs.currentIndex()))]
+        self.config_data.settings_tab = SETTINGS_TAB_IDS[max(0, min(len(SETTINGS_TAB_IDS) - 1, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
             rect = self.normalGeometry() if self.isMaximized() else self.geometry()
             if rect.isValid():
@@ -4417,6 +5994,7 @@ class MainWindow(QMainWindow):
         splitter = getattr(self, "splitter", None)
         if side_panel is not None:
             self.config_data.side_panel_width = int(self.side_panel_width)
+            self.config_data.side_panel_on_left = self.side_panel_on_left()
         if splitter is not None and not self.side_panel_overlay:
             sizes = self.splitter.sizes()
             if len(sizes) >= 2 and sizes[1] >= 80:
@@ -5436,6 +7014,8 @@ class MainWindow(QMainWindow):
             "rotate_left_90": lambda: self.viewer.rotate_display(-90, reset_view=refit_rotation),
             "flip_horizontal": lambda: self.viewer.flip_display(True),
             "flip_vertical": lambda: self.viewer.flip_display(False),
+            "generate_novelai": self.generate_novelai_images,
+            "delete_current_image": self.delete_current_image,
         }
         action = actions.get(action_id)
         if action is not None:
@@ -5837,6 +7417,37 @@ class MainWindow(QMainWindow):
     def toggle_side_panel(self) -> None:
         self.pin_button.setChecked(not self.pin_button.isChecked())
 
+    def update_side_panel_side_button(self) -> None:
+        if hasattr(self, "side_panel_side_button"):
+            self.side_panel_side_button.setText(self.tr_ui("右に表示する" if self.side_panel_on_left() else "左へ移動する"))
+
+    def toggle_side_panel_side(self) -> None:
+        if not hasattr(self, "splitter"):
+            return
+        self.side_panel_width = self.current_side_panel_width()
+        visible = self.side_panel.isVisible()
+        overlay = self.side_panel_overlay
+        self.side_panel.hide()
+        self.side_panel.setParent(None)
+        self.side_panel_overlay = False
+        self.config_data.side_panel_on_left = not self.side_panel_on_left()
+        self.update_side_panel_side_button()
+        if overlay and not self.pin_button.isChecked():
+            self.side_panel.setParent(self)
+            self.side_panel.installEventFilter(self)
+            self.side_panel_overlay = True
+            self.position_overlay_side_panel()
+            self.side_panel.setVisible(visible)
+        else:
+            if self.side_panel_on_left():
+                self.splitter.insertWidget(0, self.side_panel)
+            else:
+                self.splitter.addWidget(self.side_panel)
+            self.side_panel.installEventFilter(self)
+            self.side_panel.setVisible(visible)
+            self._apply_splitter_panel_width()
+        self.persist_config()
+
     def toggle_thumbnail_panel(self) -> None:
         if not self.thumbnails_enabled():
             self.thumbnail_enabled_check.setChecked(True)
@@ -5861,6 +7472,8 @@ class MainWindow(QMainWindow):
             return True
         if not rect.contains(local):
             return False
+        if self.side_panel_on_left():
+            return local.x() < rect.width() - SIDE_PANEL_HIDE_MARGIN
         return local.x() > SIDE_PANEL_HIDE_MARGIN
 
     def _ensure_side_panel_width(self) -> None:
@@ -5881,15 +7494,26 @@ class MainWindow(QMainWindow):
         elif not self.side_panel.isVisible():
             self.side_panel.setVisible(True)
         sizes = self.splitter.sizes()
-        if len(sizes) < 2 or sizes[1] < max(80, self.side_panel.minimumWidth() // 2):
+        side_index = self.side_panel_splitter_index()
+        if len(sizes) < 2 or sizes[side_index] < max(80, self.side_panel.minimumWidth() // 2):
             self._apply_splitter_panel_width()
+
+    def side_panel_on_left(self) -> bool:
+        return bool(getattr(self.config_data, "side_panel_on_left", False))
+
+    def side_panel_splitter_index(self) -> int:
+        return 0 if self.side_panel_on_left() else 1
+
+    def viewer_splitter_index(self) -> int:
+        return 1 if self.side_panel_on_left() else 0
 
     def current_side_panel_width(self) -> int:
         if self.side_panel_overlay:
             return int(self.side_panel_width)
         sizes = self.splitter.sizes()
-        if len(sizes) >= 2 and sizes[1] > 0:
-            self.side_panel_width = self.clamped_side_panel_width(sizes[1])
+        side_index = self.side_panel_splitter_index()
+        if len(sizes) >= 2 and sizes[side_index] > 0:
+            self.side_panel_width = self.clamped_side_panel_width(sizes[side_index])
             return self.side_panel_width
         return self.clamped_side_panel_width()
 
@@ -5906,14 +7530,20 @@ class MainWindow(QMainWindow):
             return
         panel_width = self.clamped_side_panel_width()
         self.adjusting_splitter = True
-        self.splitter.setSizes([max(1, total - panel_width), panel_width])
+        if self.side_panel_on_left():
+            self.splitter.setSizes([panel_width, max(1, total - panel_width)])
+        else:
+            self.splitter.setSizes([max(1, total - panel_width), panel_width])
         self.adjusting_splitter = False
 
     def attach_side_panel_to_splitter(self, visible: bool = True) -> None:
         if self.side_panel_overlay:
             self.side_panel.hide()
             self.side_panel.setParent(None)
-            self.splitter.addWidget(self.side_panel)
+            if self.side_panel_on_left():
+                self.splitter.insertWidget(0, self.side_panel)
+            else:
+                self.splitter.addWidget(self.side_panel)
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = False
         self.side_panel.setVisible(visible)
@@ -5931,7 +7561,10 @@ class MainWindow(QMainWindow):
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = True
             self.adjusting_splitter = True
-            self.splitter.setSizes([max(1, self.splitter.width()), 0])
+            if self.side_panel_on_left():
+                self.splitter.setSizes([0, max(1, self.splitter.width())])
+            else:
+                self.splitter.setSizes([max(1, self.splitter.width()), 0])
             self.adjusting_splitter = False
         self.position_overlay_side_panel()
         self.side_panel.setVisible(visible)
@@ -5941,7 +7574,10 @@ class MainWindow(QMainWindow):
             return
         central = self.centralWidget().geometry()
         width = min(self.clamped_side_panel_width(), max(1, central.width() // 2))
-        self.side_panel.setGeometry(central.right() - width + 1, central.top(), width, central.height())
+        if self.side_panel_on_left():
+            self.side_panel.setGeometry(central.left(), central.top(), width, central.height())
+        else:
+            self.side_panel.setGeometry(central.right() - width + 1, central.top(), width, central.height())
 
     def on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self.adjusting_splitter or self.side_panel_overlay:
@@ -5950,12 +7586,17 @@ class MainWindow(QMainWindow):
         if len(sizes) < 2:
             return
         total = sum(sizes)
+        side_index = self.side_panel_splitter_index()
+        viewer_index = self.viewer_splitter_index()
         max_panel = max(self.side_panel.minimumWidth(), total // 2)
-        panel = min(sizes[1], max_panel)
+        panel = min(sizes[side_index], max_panel)
         panel = max(self.side_panel.minimumWidth(), panel)
-        if panel != sizes[1]:
+        if panel != sizes[side_index]:
             self.adjusting_splitter = True
-            self.splitter.setSizes([max(1, total - panel), panel])
+            new_sizes = [0, 0]
+            new_sizes[side_index] = panel
+            new_sizes[viewer_index] = max(1, total - panel)
+            self.splitter.setSizes(new_sizes)
             self.adjusting_splitter = False
         self.side_panel_width = panel
         self.config_data.side_panel_width = panel
@@ -6205,19 +7846,28 @@ class MainWindow(QMainWindow):
             if event.type() in {QEvent.Enter, QEvent.MouseButtonPress, QEvent.MouseMove}:
                 self._show_fullscreen_cursor()
             if self.side_panel_overlay and not self.pin_button.isChecked():
-                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and event.position().x() <= 18:
+                resize_hit = (
+                    event.position().x() >= self.side_panel.width() - 18
+                    if self.side_panel_on_left()
+                    else event.position().x() <= 18
+                )
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and resize_hit:
                     self.overlay_resizing = True
                     self.side_panel.setCursor(Qt.SizeHorCursor)
                     return True
                 if event.type() == QEvent.MouseMove:
                     if self.overlay_resizing:
                         local = self.mapFromGlobal(event.globalPosition().toPoint())
-                        right = self.side_panel.geometry().right()
-                        self.side_panel_width = self.clamped_side_panel_width(right - local.x() + 1)
+                        if self.side_panel_on_left():
+                            left = self.side_panel.geometry().left()
+                            self.side_panel_width = self.clamped_side_panel_width(local.x() - left + 1)
+                        else:
+                            right = self.side_panel.geometry().right()
+                            self.side_panel_width = self.clamped_side_panel_width(right - local.x() + 1)
                         self.config_data.side_panel_width = self.side_panel_width
                         self.position_overlay_side_panel()
                         return True
-                    self.side_panel.setCursor(Qt.SizeHorCursor if event.position().x() <= 18 else Qt.ArrowCursor)
+                    self.side_panel.setCursor(Qt.SizeHorCursor if resize_hit else Qt.ArrowCursor)
                 if event.type() == QEvent.MouseButtonRelease and self.overlay_resizing:
                     self.overlay_resizing = False
                     self.side_panel.unsetCursor()
@@ -6235,7 +7885,8 @@ class MainWindow(QMainWindow):
             if not self.pin_button.isChecked():
                 trigger_width = min(self.clamped_side_panel_width(), max(1, self.viewer.width() // 2))
                 x = event.position().x()
-                if x >= self.viewer.width() - trigger_width:
+                should_show = x <= trigger_width if self.side_panel_on_left() else x >= self.viewer.width() - trigger_width
+                if should_show:
                     self.show_side_panel()
                 elif self.side_panel_overlay and self.side_panel.isVisible() and self.should_hide_overlay_panel():
                     self.side_panel.hide()
@@ -6467,13 +8118,36 @@ class MainWindow(QMainWindow):
             else:
                 self._show_fullscreen_cursor()
 
+    def on_tab_visibility_settings_changed(self) -> None:
+        self.apply_settings_tab_visibility()
+        self.persist_config()
+
+    def apply_settings_tab_visibility(self) -> None:
+        if not hasattr(self, "tabs"):
+            return
+        hidden = {
+            "colorize": bool(self.hide_colorize_tab_check.isChecked()) if hasattr(self, "hide_colorize_tab_check") else self.config_data.hide_colorize_tab,
+            "novelai": bool(self.hide_novelai_tab_check.isChecked()) if hasattr(self, "hide_novelai_tab_check") else self.config_data.hide_novelai_tab,
+            "keyconfig": bool(self.hide_keyconfig_tab_check.isChecked()) if hasattr(self, "hide_keyconfig_tab_check") else self.config_data.hide_keyconfig_tab,
+        }
+        for index, tab_id in enumerate(SETTINGS_TAB_IDS):
+            if hasattr(self.tabs, "setTabVisible"):
+                self.tabs.setTabVisible(index, not hidden.get(tab_id, False))
+        current_id = SETTINGS_TAB_IDS[max(0, min(len(SETTINGS_TAB_IDS) - 1, self.tabs.currentIndex()))]
+        if hidden.get(current_id, False):
+            for fallback in ("other", "general", "realcugan"):
+                index = SETTINGS_TAB_IDS.index(fallback)
+                if not hidden.get(fallback, False):
+                    self.tabs.setCurrentIndex(index)
+                    break
+
     def on_language_changed(self) -> None:
         self.config_data.ui_language = self.language_combo.currentData() or "ja"
         self.apply_language()
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
-        self.config_data.settings_tab = ["realcugan", "general", "image_adjust", "colorize", "other", "keyconfig"][max(0, min(5, index))]
+        self.config_data.settings_tab = SETTINGS_TAB_IDS[max(0, min(len(SETTINGS_TAB_IDS) - 1, index))]
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:
@@ -7164,6 +8838,75 @@ class MainWindow(QMainWindow):
     def display_name(self, path: Path) -> str:
         return self.archive_display_names.get(path.resolve(), path.name)
 
+    def send_paths_to_recycle_bin(self, paths: list[Path]) -> bool:
+        existing = []
+        for path in paths:
+            try:
+                if path.exists():
+                    existing.append(str(path.resolve()))
+            except OSError:
+                continue
+        if not existing:
+            return True
+        if os.name != "nt":
+            return False
+        joined = "\0".join(existing) + "\0\0"
+        operation = SHFILEOPSTRUCTW()
+        operation.hwnd = wintypes.HWND(int(self.winId()))
+        operation.wFunc = FO_DELETE
+        operation.pFrom = joined
+        operation.pTo = None
+        operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI
+        result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(operation))
+        return result == 0 and not operation.fAnyOperationsAborted
+
+    def processed_result_paths_for_delete(self, source: Path) -> list[Path]:
+        if self.archive_mode_active():
+            return []
+        folder = source.parent
+        paths: list[Path] = []
+        try:
+            entries = list(folder.iterdir())
+        except OSError:
+            return []
+        for entry in entries:
+            if not entry.is_dir() or not self.is_raiv_scale_folder(entry):
+                continue
+            candidate = entry / source.name
+            if candidate.exists():
+                paths.append(candidate)
+        return paths
+
+    def delete_current_image(self) -> None:
+        if self.archive_mode_active() or not self.image_paths or self.current_index < 0:
+            return
+        source = self.normalized_path(self.image_paths[self.current_index])
+        if not source.is_file():
+            return
+        delete_paths = [source]
+        if self.delete_processed_check.isChecked():
+            delete_paths.extend(self.processed_result_paths_for_delete(source))
+        next_index = self.current_index
+        if not self.send_paths_to_recycle_bin(delete_paths):
+            QMessageBox.warning(self, APP_NAME, self.tr_ui("画像を削除できませんでした。"))
+            return
+        self.append_log_if_visible(f"Deleted image: {source}")
+        self.image_paths.pop(self.current_index)
+        self.refresh_image_path_sets()
+        self.original_cache.pop(source, None)
+        self.processed_cache.pop(self.processing_key(source), None)
+        self.viewer.pixmap_cache.clear()
+        self.viewer.clear_pixmap_prefetch_state()
+        self.rebuild_thumbnail_items()
+        if not self.image_paths:
+            self.set_empty_folder(source.parent)
+            return
+        self.current_index = min(next_index, len(self.image_paths) - 1)
+        self.config_data.last_image_path = str(self.image_paths[self.current_index].resolve())
+        self.record_folder_history(self.image_paths[self.current_index])
+        self.display_current_image(preserve_view=False, navigation=True)
+        self.schedule_prefetch()
+
     def write_temp_lock(self, temp_dir: Path) -> None:
         try:
             (temp_dir / TEMP_LOCK_FILE).write_text(str(os.getpid()), encoding="utf-8")
@@ -7187,6 +8930,7 @@ class MainWindow(QMainWindow):
         self.save_folder_history_now()
         self.work_queue.put(None)
         self.colorize_queue.put(None)
+        self.novelai_queue.put(None)
         paths = list(self.retired_archive_temp_dirs)
         if self.archive_temp_dir:
             paths.append(self.archive_temp_dir)

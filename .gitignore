@@ -1,6 +1,8 @@
 ﻿# User-local settings
 setting.json
 folder_history.json
+novelai_prompt_presets.json
+novelai_token.dat
 
 # Python cache/runtime output
 __pycache__/
@@ -31,4 +33,5 @@ realcugan_qt_archive_*/
 realcugan_qt_work_*/
 *_realcugan_x*.png
 RAIV_colorized/
+RAIV_generated/
 comfyui_workflows/
