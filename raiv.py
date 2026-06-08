@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 
 try:
     from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
@@ -98,7 +98,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -402,6 +402,20 @@ def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
         if not image.isNull():
             return image
     return QImage(str(path))
+
+
+def read_image_size(path: Path) -> QSize:
+    reader = QImageReader(str(path))
+    size = reader.size()
+    if size.isValid():
+        return size
+    if PILImage is not None:
+        try:
+            with PILImage.open(path) as image:
+                return QSize(int(image.width), int(image.height))
+        except Exception:
+            pass
+    return QSize()
 
 
 def load_wic_hdr_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
@@ -934,11 +948,12 @@ UI_TEXT_EN = {
     "全般": "General",
     "画像調整": "Image Adjustment",
     "AI彩色(β)": "AI Colorize (beta)",
-    "NovelAI生成(β)": "NovelAI Generation (beta)",
+    "NovelAI生成": "NovelAI Generation",
     "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
     "倍率": "Scale",
+    "倍率を自動で決定する": "Choose scale automatically",
     "ノイズ": "Denoise",
     "Real-ESRGANモデル": "Real-ESRGAN model",
     "ノイズ: Real-CUGAN専用。-1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。": "Denoise: Real-CUGAN only. -1 disables denoising. 0/1/2/3 remove noise more strongly as the value increases.",
@@ -955,8 +970,10 @@ UI_TEXT_EN = {
     "縦サイズが閾値以上なら拡大処理しない": "Skip processing when height is at or above threshold",
     "縦サイズ閾値(px)": "Height threshold (px)",
     "モニタ解像度以上の画像をさらに拡大しても表示上の効果は小さく、処理時間とメモリ使用量が増えます。普段使うモニタの縦解像度に合わせる設定が目安です。": "Upscaling images already above monitor resolution often has little visible benefit and increases processing time and memory usage. Set this near your usual monitor height.",
+    "画像ごとに、縦サイズ閾値へ届く最小倍率を2倍/3倍/4倍から選びます。4倍でも届かない場合は4倍を使います。": "For each image, chooses the smallest 2x/3x/4x scale that reaches the height threshold. If even 4x does not reach it, 4x is used.",
     "拡大結果を倍率フォルダに保存": "Save processed results to scale folder",
     "倍率フォルダがあれば表示に使う": "Use scale folder when available",
+    "現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。": "Only the scale folder that exactly matches the current engine, model, and scale is used for display. Results from another engine or scale are not used as fallback.",
     "アーカイブ表示中は保存先フォルダがないため、倍率フォルダ保存と倍率フォルダ読み込みは無効です。": "Scale-folder saving/loading is disabled while viewing archives because there is no output folder.",
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
@@ -972,6 +989,7 @@ UI_TEXT_EN = {
     "フォルダ履歴保存件数": "Folder history limit",
     "0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。": "0 means unlimited. History is saved to folder_history.json, not setting.json.",
     "削除時、拡大結果も削除する": "Also delete processed results when deleting",
+    "削除時に確認メッセージを出す": "Show confirmation before deleting",
     "バージョン": "Version",
     "アップデートを確認": "Check for updates",
     "表示言語": "Language",
@@ -1072,6 +1090,8 @@ UI_TEXT_EN = {
     "強調": "Emphasize",
     "抑制": "Suppress",
     "削除": "Delete",
+    "連続生成中": "Continuous generation",
+    "停止中": "Stopping",
     "サイズ": "Size",
     "プロンプト": "Prompt",
     "除外したい要素": "Undesired Content",
@@ -1105,6 +1125,7 @@ UI_TEXT_EN = {
     "生成後に拡大処理キューへ投入": "Enqueue upscaling after generation",
     "生成設定をJSONサイドカーに保存": "Save settings as JSON sidecar",
     "生成": "Generate",
+    "生成中": "Generating",
     "メタデータをインポート": "Import metadata",
     "NovelAIメタデータを読み込めませんでした。": "Could not load NovelAI metadata.",
     "NovelAIメタデータをインポートしました。": "Imported NovelAI metadata.",
@@ -1230,6 +1251,8 @@ class AppConfig:
     novelai_split_prompts: bool = False
     novelai_prompt_items: list[dict[str, object]] = field(default_factory=list)
     novelai_negative_prompt_items: list[dict[str, object]] = field(default_factory=list)
+    novelai_prompt_editor_height: int = 260
+    novelai_negative_prompt_editor_height: int = 220
     novelai_enter_to_generate: bool = True
     novelai_quality_tags: bool = True
     novelai_uc_preset: str = "strong"
@@ -1256,6 +1279,7 @@ class AppConfig:
     use_scale_folder_cache: bool = True
     skip_realcugan_for_tall_images: bool = True
     skip_realcugan_height_threshold: int = 2160
+    auto_realcugan_scale: bool = False
     background_color: str = "#000000"
     cpu_resample_cache_enabled: bool = True
     cpu_resample_algorithm: str = DEFAULT_RESAMPLE_ALGORITHM
@@ -1313,6 +1337,7 @@ class AppConfig:
     hide_colorize_tab: bool = False
     hide_novelai_tab: bool = False
     hide_keyconfig_tab: bool = False
+    confirm_delete_current_image: bool = True
     delete_processed_with_source: bool = True
     splitter_sizes: list[int] | None = None
     last_dir: str = ""
@@ -1458,7 +1483,19 @@ def load_config() -> AppConfig:
         return AppConfig()
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8-sig"))
-        config = AppConfig(**{**asdict(AppConfig()), **data})
+        defaults = asdict(AppConfig())
+        legacy_prompt_splitter_sizes = data.get("novelai_prompt_splitter_sizes") if isinstance(data, dict) else None
+        filtered_data = {key: value for key, value in data.items() if key in defaults} if isinstance(data, dict) else {}
+        config = AppConfig(**{**defaults, **filtered_data})
+        if (
+            "novelai_prompt_editor_height" not in filtered_data
+            and "novelai_negative_prompt_editor_height" not in filtered_data
+            and isinstance(legacy_prompt_splitter_sizes, list)
+            and len(legacy_prompt_splitter_sizes) == 2
+            and all(isinstance(size, int) and size > 0 for size in legacy_prompt_splitter_sizes)
+        ):
+            config.novelai_prompt_editor_height = legacy_prompt_splitter_sizes[0]
+            config.novelai_negative_prompt_editor_height = legacy_prompt_splitter_sizes[1]
         if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
             config.command_template = DEFAULT_REALCUGAN_TEMPLATE
         if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
@@ -1481,6 +1518,8 @@ def load_config() -> AppConfig:
             config.novelai_uc_preset = "strong"
         if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
             config.novelai_dataset_mode = "anime"
+        config.novelai_prompt_editor_height = max(160, min(720, int(config.novelai_prompt_editor_height)))
+        config.novelai_negative_prompt_editor_height = max(160, min(720, int(config.novelai_negative_prompt_editor_height)))
         if not config.novelai_model or config.novelai_model not in NOVELAI_MODEL_OPTIONS:
             config.novelai_model = DEFAULT_NOVELAI_MODEL
         if not config.novelai_sampler or config.novelai_sampler not in NOVELAI_SAMPLER_OPTIONS:
@@ -2133,6 +2172,44 @@ class PromptSubmitTextEdit(QTextEdit):
         super().keyPressEvent(event)
 
 
+class VerticalResizeHandle(QFrame):
+    resized = Signal(int)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._drag_y: int | None = None
+        self.setCursor(Qt.SizeVerCursor)
+        self.setFixedHeight(10)
+        self.setFrameShape(QFrame.HLine)
+        self.setFrameShadow(QFrame.Sunken)
+        self.setToolTip("ドラッグして高さを調整")
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_y = event.globalPosition().toPoint().y()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_y is not None:
+            y = event.globalPosition().toPoint().y()
+            delta = y - self._drag_y
+            if delta:
+                self._drag_y = y
+                self.resized.emit(delta)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._drag_y is not None:
+            self._drag_y = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
 class NovelAIPromptTagRow(QWidget):
     changed = Signal()
     deleteRequested = Signal(object)
@@ -2143,6 +2220,7 @@ class NovelAIPromptTagRow(QWidget):
         super().__init__(parent)
         self.tag = tag.strip()
         self.active = active
+        self.setFocusPolicy(Qt.NoFocus)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
@@ -2152,25 +2230,30 @@ class NovelAIPromptTagRow(QWidget):
         layout.addWidget(self.handle_label)
         self.up_button = QPushButton("🔼")
         self.up_button.setFixedWidth(34)
+        self.up_button.setFocusPolicy(Qt.NoFocus)
         self.up_button.setToolTip("上へ")
         self.up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
         layout.addWidget(self.up_button)
         self.down_button = QPushButton("🔽")
         self.down_button.setFixedWidth(34)
+        self.down_button.setFocusPolicy(Qt.NoFocus)
         self.down_button.setToolTip("下へ")
         self.down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
         layout.addWidget(self.down_button)
         self.active_button = QPushButton("👁")
         self.active_button.setFixedWidth(34)
+        self.active_button.setFocusPolicy(Qt.NoFocus)
         self.active_button.setToolTip("有効 / 無効")
         self.active_button.clicked.connect(self.toggle_active)
         layout.addWidget(self.active_button)
         self.emphasis_button = QPushButton("強調")
         self.emphasis_button.setFixedWidth(54)
+        self.emphasis_button.setFocusPolicy(Qt.NoFocus)
         self.emphasis_button.clicked.connect(self.increase_emphasis)
         layout.addWidget(self.emphasis_button)
         self.suppress_button = QPushButton("抑制")
         self.suppress_button.setFixedWidth(54)
+        self.suppress_button.setFocusPolicy(Qt.NoFocus)
         self.suppress_button.clicked.connect(self.increase_suppression)
         layout.addWidget(self.suppress_button)
         self.text_edit = QLineEdit(self.tag)
@@ -2178,6 +2261,7 @@ class NovelAIPromptTagRow(QWidget):
         layout.addWidget(self.text_edit, 1)
         self.delete_button = QPushButton("❌")
         self.delete_button.setFixedWidth(34)
+        self.delete_button.setFocusPolicy(Qt.NoFocus)
         self.delete_button.setToolTip("削除")
         self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self))
         layout.addWidget(self.delete_button)
@@ -2238,10 +2322,15 @@ class NovelAIPromptListEditor(QWidget):
         input_row.addWidget(self.add_button)
         layout.addLayout(input_row)
         self.list_widget = QListWidget()
+        self.list_widget.setFocusPolicy(Qt.NoFocus)
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
         self.list_widget.setDefaultDropAction(Qt.MoveAction)
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_widget.setAlternatingRowColors(True)
+        self.list_widget.setStyleSheet(
+            "QListWidget::item:selected { background: transparent; color: palette(text); }"
+            "QListWidget::item:focus { outline: none; }"
+        )
         self.list_widget.model().rowsMoved.connect(lambda *_args: self.emit_changed())
         self.list_widget.setMinimumHeight(118)
         layout.addWidget(self.list_widget)
@@ -3238,6 +3327,7 @@ class MainWindow(QMainWindow):
         self.folder_list_loading = False
         self.deferred_page_steps = 0
         self.original_cache: OrderedDict[Path, QImage] = OrderedDict()
+        self.image_height_cache: OrderedDict[Path, int] = OrderedDict()
         self.processed_cache: OrderedDict[tuple[str, str, int, int, int, str], QImage] = OrderedDict()
         self.processing_paths: set[Path] = set()
         self.queued_paths: set[Path] = set()
@@ -3287,6 +3377,10 @@ class MainWindow(QMainWindow):
         self.colorize_done_paths: set[Path] = set()
         self.colorized_session_paths: dict[Path, Path] = {}
         self.novelai_generation_running = False
+        self.novelai_continuous_generation_enabled = False
+        self.novelai_continuous_generation_stopping = False
+        self.novelai_generate_click_pending = False
+        self.ignore_next_novelai_generate_release = False
         self.novelai_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
         self.archive_temp_dir: Path | None = None
         self.retired_archive_temp_dirs: list[Path] = []
@@ -3315,6 +3409,7 @@ class MainWindow(QMainWindow):
         self.side_panel_overlay = False
         self.borderless_fullscreen = False
         self.before_fullscreen_geometry = QRect()
+        self.before_fullscreen_native_geometry = QRect()
         self.before_fullscreen_flags = self.windowFlags()
         self.before_fullscreen_state = Qt.WindowNoState
         self.before_fullscreen_native_style: int | None = None
@@ -3523,7 +3618,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(general_tab, "全般")
         tabs.addTab(image_adjust_tab, "画像調整")
         tabs.addTab(colorize_tab, "AI彩色(β)")
-        tabs.addTab(novelai_tab, "NovelAI生成(β)")
+        tabs.addTab(novelai_tab, "NovelAI生成")
         tabs.addTab(other_tab, "その他")
         tabs.addTab(keyconfig_tab, "キーコンフィグ")
         tabs.currentChanged.connect(self.on_settings_tab_changed)
@@ -3590,6 +3685,11 @@ class MainWindow(QMainWindow):
         form3.addRow(self.skip_tall_check)
         form3.addRow("縦サイズ閾値(px)", self.skip_height_spin)
         form3.addRow(self.help_label("モニタ解像度以上の画像をさらに拡大しても表示上の効果は小さく、処理時間とメモリ使用量が増えます。普段使うモニタの縦解像度に合わせる設定が目安です。"))
+        self.auto_scale_check = QCheckBox("倍率を自動で決定する")
+        self.auto_scale_check.setChecked(self.config_data.auto_realcugan_scale)
+        self.auto_scale_check.stateChanged.connect(self.on_processing_settings_changed)
+        form3.addRow(self.auto_scale_check)
+        form3.addRow(self.help_label("画像ごとに、縦サイズ閾値へ届く最小倍率を2倍/3倍/4倍から選びます。4倍でも届かない場合は4倍を使います。"))
         realcugan_layout.addLayout(form3)
 
         self.save_scale_check = QCheckBox("拡大結果を倍率フォルダに保存")
@@ -3600,6 +3700,7 @@ class MainWindow(QMainWindow):
         self.use_scale_cache_check.stateChanged.connect(self.on_processing_settings_changed)
         realcugan_layout.addWidget(self.save_scale_check)
         realcugan_layout.addWidget(self.use_scale_cache_check)
+        realcugan_layout.addWidget(self.help_label("現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。"))
         self.archive_help = self.help_label("アーカイブ表示中は保存先フォルダがないため、倍率フォルダ保存と倍率フォルダ読み込みは無効です。")
         self.archive_help.hide()
         realcugan_layout.addWidget(self.archive_help)
@@ -4144,6 +4245,10 @@ class MainWindow(QMainWindow):
         folder_history_form.addRow("フォルダ履歴保存件数", self.folder_history_limit_spin)
         other_layout.addLayout(folder_history_form)
         other_layout.addWidget(self.help_label("0 は無制限。履歴は setting.json ではなく folder_history.json に保存します。"))
+        self.confirm_delete_check = QCheckBox("削除時に確認メッセージを出す")
+        self.confirm_delete_check.setChecked(self.config_data.confirm_delete_current_image)
+        self.confirm_delete_check.stateChanged.connect(self.on_general_settings_changed)
+        other_layout.addWidget(self.confirm_delete_check)
         self.delete_processed_check = QCheckBox("削除時、拡大結果も削除する")
         self.delete_processed_check.setChecked(self.config_data.delete_processed_with_source)
         self.delete_processed_check.stateChanged.connect(self.on_general_settings_changed)
@@ -4234,7 +4339,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("プロンプト"))
         self.novelai_prompt_edit = PromptSubmitTextEdit(self.config_data.novelai_prompt)
-        self.novelai_prompt_edit.setFixedHeight(90)
+        self.novelai_prompt_edit.setMinimumHeight(80)
         self.novelai_prompt_edit.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_prompt_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_prompt_edit)
@@ -4243,9 +4348,14 @@ class MainWindow(QMainWindow):
         self.novelai_prompt_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_prompt_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_prompt_list_edit)
+        self.novelai_prompt_resize_handle = VerticalResizeHandle()
+        self.novelai_prompt_resize_handle.resized.connect(
+            lambda delta: self.resize_novelai_prompt_editor("prompt", delta)
+        )
+        layout.addWidget(self.novelai_prompt_resize_handle)
         layout.addWidget(QLabel("除外したい要素"))
         self.novelai_negative_edit = PromptSubmitTextEdit(self.config_data.novelai_negative_prompt)
-        self.novelai_negative_edit.setFixedHeight(70)
+        self.novelai_negative_edit.setMinimumHeight(70)
         self.novelai_negative_edit.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_negative_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_edit)
@@ -4254,6 +4364,12 @@ class MainWindow(QMainWindow):
         self.novelai_negative_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_negative_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_list_edit)
+        self.novelai_negative_resize_handle = VerticalResizeHandle()
+        self.novelai_negative_resize_handle.resized.connect(
+            lambda delta: self.resize_novelai_prompt_editor("negative", delta)
+        )
+        layout.addWidget(self.novelai_negative_resize_handle)
+        self.apply_novelai_prompt_editor_heights()
         self.novelai_enter_generate_check = QCheckBox("Enterで生成する（改行はShift+Enter）")
         self.novelai_enter_generate_check.setChecked(self.config_data.novelai_enter_to_generate)
         self.novelai_enter_generate_check.stateChanged.connect(self.on_novelai_enter_generate_changed)
@@ -4427,7 +4543,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.novelai_anlas_label)
         run_row = QHBoxLayout()
         self.novelai_generate_button = QPushButton("生成")
-        self.novelai_generate_button.clicked.connect(self.generate_novelai_images)
+        self.novelai_generate_button.installEventFilter(self)
         run_row.addWidget(self.novelai_generate_button)
         self.novelai_import_button = QPushButton("メタデータをインポート")
         self.novelai_import_button.clicked.connect(self.import_novelai_metadata_dialog)
@@ -4672,6 +4788,29 @@ class MainWindow(QMainWindow):
         if folded.startswith(f"{tag},"):
             return stripped[len(tag) + 1 :].lstrip(), "furry"
         return prompt, "anime"
+
+    def clamp_novelai_prompt_editor_height(self, height: int) -> int:
+        return max(160, min(720, int(height)))
+
+    def apply_novelai_prompt_editor_heights(self) -> None:
+        prompt_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
+        negative_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_negative_prompt_editor_height)
+        for widget in (self.novelai_prompt_edit, self.novelai_prompt_list_edit):
+            widget.setFixedHeight(prompt_height)
+        for widget in (self.novelai_negative_edit, self.novelai_negative_list_edit):
+            widget.setFixedHeight(negative_height)
+
+    def resize_novelai_prompt_editor(self, target: str, delta: int) -> None:
+        if target == "prompt":
+            self.config_data.novelai_prompt_editor_height = self.clamp_novelai_prompt_editor_height(
+                self.config_data.novelai_prompt_editor_height + delta
+            )
+        else:
+            self.config_data.novelai_negative_prompt_editor_height = self.clamp_novelai_prompt_editor_height(
+                self.config_data.novelai_negative_prompt_editor_height + delta
+            )
+        self.apply_novelai_prompt_editor_heights()
+        self.on_novelai_settings_changed()
 
     def update_novelai_prompt_editor_visibility(self) -> None:
         if not hasattr(self, "novelai_prompt_list_edit"):
@@ -4963,6 +5102,7 @@ class MainWindow(QMainWindow):
                 self.novelai_uc_preset_combo.addItem(self.tr_ui(label), key)
             self.set_combo_by_data(self.novelai_uc_preset_combo, current)
             self.novelai_uc_preset_combo.blockSignals(False)
+        self.update_novelai_generate_button_text()
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
         self.update_hdr_tonemap_controls()
@@ -5314,16 +5454,97 @@ class MainWindow(QMainWindow):
         else:
             self.comfyui_status_label.setText(f"推奨ファイルのダウンロードに失敗しました: {result.get('message', '')}")
 
+    def update_novelai_generate_button_text(self) -> None:
+        if hasattr(self, "novelai_generate_button"):
+            if self.novelai_continuous_generation_stopping:
+                text = "停止中"
+                enabled = False
+            elif self.novelai_continuous_generation_enabled:
+                text = "連続生成中"
+                enabled = True
+            elif self.novelai_generation_running:
+                text = "生成中"
+                enabled = False
+            else:
+                text = "生成"
+                enabled = True
+            self.novelai_generate_button.setText(self.tr_ui(text))
+            self.novelai_generate_button.setEnabled(enabled)
+
+    def set_novelai_continuous_generation_enabled(self, enabled: bool) -> None:
+        self.novelai_continuous_generation_enabled = bool(enabled)
+        if enabled:
+            self.novelai_continuous_generation_stopping = False
+        self.update_novelai_generate_button_text()
+
+    def request_stop_novelai_continuous_generation(self) -> None:
+        self.novelai_continuous_generation_enabled = False
+        self.novelai_continuous_generation_stopping = bool(self.novelai_generation_running)
+        self.update_novelai_generate_button_text()
+        if self.novelai_generation_running:
+            self.novelai_status_label.setText("連続生成を停止します。実行中の生成は完了まで続きます。")
+        else:
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
+
+    def toggle_novelai_continuous_generation(self) -> None:
+        if self.novelai_continuous_generation_enabled:
+            self.request_stop_novelai_continuous_generation()
+            return
+        self.set_novelai_continuous_generation_enabled(not self.novelai_continuous_generation_enabled)
+        if self.novelai_continuous_generation_enabled:
+            self.novelai_status_label.setText("連続生成を開始しました。停止するには生成ボタンをもう一度ダブルクリックしてください。連続生成中は常にランダムシードで生成します。")
+            if not self.novelai_generation_running:
+                self.generate_novelai_images()
+        else:
+            self.request_stop_novelai_continuous_generation()
+
+    def on_novelai_generate_button_clicked(self) -> None:
+        if self.novelai_continuous_generation_enabled:
+            self.request_stop_novelai_continuous_generation()
+            return
+        if self.novelai_generation_running or self.novelai_continuous_generation_stopping:
+            return
+        self.novelai_generate_click_pending = True
+        QTimer.singleShot(QApplication.doubleClickInterval(), self.run_pending_novelai_generate_click)
+
+    def run_pending_novelai_generate_click(self) -> None:
+        if not self.novelai_generate_click_pending:
+            return
+        self.novelai_generate_click_pending = False
+        if self.novelai_generation_running or self.novelai_continuous_generation_enabled or self.novelai_continuous_generation_stopping:
+            return
+        self.generate_novelai_images()
+
+    def continue_novelai_generation_if_needed(self) -> None:
+        if (
+            self.novelai_continuous_generation_enabled
+            and not self.novelai_continuous_generation_stopping
+            and not getattr(self, "closing", False)
+        ):
+            delay_ms = random.randint(100, 1000)
+            QTimer.singleShot(delay_ms, self.generate_novelai_images)
+        else:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
+
     def generate_novelai_images(self) -> None:
         if self.novelai_generation_running:
             self.novelai_status_label.setText("NovelAI生成は実行中です。")
             return
         token = self.novelai_token_edit.text().strip()
         if not token:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
             QMessageBox.information(self, APP_NAME, "NovelAI Persistent API Tokenを入力してください。")
             return
         prompt = self.novelai_prompt_text()
         if not prompt:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
             QMessageBox.information(self, APP_NAME, "Promptを入力してください。")
             return
         output_dir = Path(self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR))
@@ -5333,7 +5554,7 @@ class MainWindow(QMainWindow):
             "date_subfolders": self.novelai_date_subfolders_check.isChecked(),
             "filename_mode": self.novelai_filename_combo.currentData() or "seed",
             "request": self.current_novelai_request(),
-            "random_seed": self.novelai_random_seed_check.isChecked(),
+            "random_seed": bool(self.novelai_continuous_generation_enabled or self.novelai_random_seed_check.isChecked()),
             "save_metadata_json": self.novelai_metadata_check.isChecked(),
             "auto_open": self.novelai_auto_open_check.isChecked(),
             "auto_upscale": self.novelai_auto_upscale_check.isChecked(),
@@ -5341,7 +5562,7 @@ class MainWindow(QMainWindow):
         }
         self.persist_config()
         self.novelai_generation_running = True
-        self.novelai_generate_button.setEnabled(False)
+        self.update_novelai_generate_button_text()
         self.novelai_status_label.setText("NovelAI生成キューへ追加しました。")
         self.novelai_queue.put(task)
 
@@ -5415,9 +5636,10 @@ class MainWindow(QMainWindow):
 
     def on_novelai_generation_done(self, result: object) -> None:
         self.novelai_generation_running = False
-        if hasattr(self, "novelai_generate_button"):
-            self.novelai_generate_button.setEnabled(True)
         if not isinstance(result, dict) or not result.get("ok"):
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
             message = str(result.get("message", "unknown error")) if isinstance(result, dict) else "unknown error"
             self.append_log_if_visible(f"NovelAI generation failed: {message}")
             if hasattr(self, "novelai_status_label"):
@@ -5430,6 +5652,7 @@ class MainWindow(QMainWindow):
         if not paths:
             if hasattr(self, "novelai_status_label"):
                 self.novelai_status_label.setText("NovelAI生成は完了しましたが、画像がありません。")
+            self.continue_novelai_generation_if_needed()
             return
         self.record_profile("NovelAI生成", float(result.get("elapsed_ms", 0.0)))
         self.append_log_if_visible(f"NovelAI generation done: {len(paths)} image(s)")
@@ -5439,6 +5662,7 @@ class MainWindow(QMainWindow):
             self.open_path_deferred(paths[-1])
         if result.get("auto_upscale", True):
             QTimer.singleShot(200, lambda generated=paths: self.enqueue_generated_upscales(generated))
+        self.continue_novelai_generation_if_needed()
 
     def enqueue_generated_upscales(self, paths: list[Path]) -> None:
         for index, path in enumerate(paths):
@@ -5770,11 +5994,14 @@ class MainWindow(QMainWindow):
                 self.processed_cache.pop(self.processing_key(normalized_source), None)
                 self.original_cache.pop(normalized_source, None)
                 self.original_cache.pop(self.normalized_path(path), None)
+                self.image_height_cache.pop(normalized_source, None)
+                self.image_height_cache.pop(self.normalized_path(path), None)
                 self.viewer.pixmap_cache.clear()
                 self.viewer.clear_pixmap_prefetch_state()
                 colorized = load_image(path, self.config_data.hdr_tonemap_brightness)
                 if not colorized.isNull():
                     self.original_cache[self.normalized_path(path)] = colorized
+                    self.remember_image_height(path, colorized.height())
                 if self.current_index >= 0 and normalized_source in {
                     self.normalized_path(self.image_paths[self.current_index]),
                     self.normalized_path(self.image_paths[self.secondary_page_index()]) if self.secondary_page_index() is not None else Path(),
@@ -5883,6 +6110,7 @@ class MainWindow(QMainWindow):
             self.config_data.use_scale_folder_cache = self.use_scale_cache_check.isChecked()
         self.config_data.skip_realcugan_for_tall_images = self.skip_tall_check.isChecked()
         self.config_data.skip_realcugan_height_threshold = self.skip_height_spin.value()
+        self.config_data.auto_realcugan_scale = self.auto_scale_check.isChecked()
         self.config_data.background_color = self.background_edit.text().strip() or "#000000"
         self.config_data.cpu_resample_cache_enabled = self.cpu_resample_check.isChecked()
         self.config_data.cpu_resample_algorithm = self.current_resample_algorithm()
@@ -5921,6 +6149,7 @@ class MainWindow(QMainWindow):
         self.config_data.restore_last_image_on_start = self.restore_last_image_check.isChecked()
         self.config_data.remember_last_image_per_folder = self.folder_history_check.isChecked()
         self.config_data.folder_history_limit = self.folder_history_limit_spin.value()
+        self.config_data.confirm_delete_current_image = self.confirm_delete_check.isChecked()
         self.config_data.delete_processed_with_source = self.delete_processed_check.isChecked()
         self.config_data.hide_colorize_tab = self.hide_colorize_tab_check.isChecked()
         self.config_data.hide_novelai_tab = self.hide_novelai_tab_check.isChecked()
@@ -5952,6 +6181,8 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
             self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
             self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
+            self.config_data.novelai_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
+            self.config_data.novelai_negative_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_negative_prompt_editor_height)
             self.config_data.novelai_enter_to_generate = self.novelai_enter_generate_check.isChecked()
             self.config_data.novelai_quality_tags = self.novelai_quality_tags_check.isChecked()
             self.config_data.novelai_uc_preset = self.novelai_uc_preset_combo.currentData() or "strong"
@@ -6343,8 +6574,55 @@ class MainWindow(QMainWindow):
     def engine_label(self) -> str:
         return ENGINE_LABELS.get(self.current_engine(), ENGINE_LABELS[ENGINE_REALCUGAN])
 
-    def effective_scale(self) -> int:
-        return REALESRGAN_FIXED_SCALE if self.current_engine() == ENGINE_REALESRGAN else int(self.scale_combo.currentText())
+    def auto_realcugan_scale_for_height(self, height: int) -> int:
+        threshold = max(1, int(self.skip_height_spin.value() if hasattr(self, "skip_height_spin") else self.config_data.skip_realcugan_height_threshold))
+        height = max(1, int(height))
+        for scale in (2, 3, 4):
+            if height * scale >= threshold:
+                return scale
+        return 4
+
+    def remember_image_height(self, source: Path, height: int) -> None:
+        if height <= 0:
+            return
+        source_path = self.normalized_path(source)
+        self.image_height_cache[source_path] = int(height)
+        self.image_height_cache.move_to_end(source_path)
+        while len(self.image_height_cache) > max(64, self.config_data.viewer_prefetch_count * 4 + 16):
+            self.image_height_cache.popitem(last=False)
+
+    def image_height_for_scale(self, source: Path) -> int:
+        source_path = self.normalized_path(self.display_source_path(source))
+        cached_image = self.original_cache.get(source_path)
+        if cached_image is not None and not cached_image.isNull():
+            self.remember_image_height(source_path, cached_image.height())
+            return cached_image.height()
+        cached_height = self.image_height_cache.get(source_path)
+        if cached_height is not None:
+            self.image_height_cache.move_to_end(source_path)
+            return cached_height
+        size = read_image_size(source_path)
+        if size.isValid() and size.height() > 0:
+            self.remember_image_height(source_path, size.height())
+            return size.height()
+        image = load_image(source_path, self.config_data.hdr_tonemap_brightness)
+        if image.isNull():
+            return 0
+        self.remember_image_height(source_path, image.height())
+        return image.height()
+
+    def effective_scale(self, source: Path | None = None) -> int:
+        if self.current_engine() == ENGINE_REALESRGAN:
+            return REALESRGAN_FIXED_SCALE
+        if (
+            source is not None
+            and hasattr(self, "auto_scale_check")
+            and self.auto_scale_check.isChecked()
+        ):
+            height = self.image_height_for_scale(source)
+            if height > 0:
+                return self.auto_realcugan_scale_for_height(height)
+        return int(self.scale_combo.currentText())
 
     def save_active_command_template(self) -> None:
         if not hasattr(self, "command_edit"):
@@ -6359,7 +6637,10 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "engine_combo"):
             return
         engine = self.current_engine()
-        self.scale_combo.setEnabled(engine == ENGINE_REALCUGAN)
+        auto_scale = bool(getattr(self, "auto_scale_check", None) and self.auto_scale_check.isChecked())
+        self.scale_combo.setEnabled(engine == ENGINE_REALCUGAN and not auto_scale)
+        if hasattr(self, "auto_scale_check"):
+            self.auto_scale_check.setEnabled(engine == ENGINE_REALCUGAN)
         self.denoise_combo.setEnabled(engine == ENGINE_REALCUGAN)
         self.denoise_help.setEnabled(engine == ENGINE_REALCUGAN)
         self.realesrgan_model_combo.setEnabled(engine == ENGINE_REALESRGAN)
@@ -6455,7 +6736,7 @@ class MainWindow(QMainWindow):
             kind,
             self.normalized_path_text(path),
             self.current_engine(),
-            self.effective_scale(),
+            self.effective_scale(path),
             int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
             self.tile_spin.value(),
             self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
@@ -6565,6 +6846,7 @@ class MainWindow(QMainWindow):
         self.folder_list_loading = False
         self.deferred_page_steps = 0
         self.original_cache.clear()
+        self.image_height_cache.clear()
         self.processed_cache.clear()
         self.colorized_session_paths.clear()
         self.viewer.pixmap_cache.clear()
@@ -6596,6 +6878,7 @@ class MainWindow(QMainWindow):
         self.folder_list_loading = False
         self.deferred_page_steps = 0
         self.original_cache.clear()
+        self.image_height_cache.clear()
         self.processed_cache.clear()
         self.colorized_session_paths.clear()
         self.viewer.pixmap_cache.clear()
@@ -6848,6 +7131,8 @@ class MainWindow(QMainWindow):
         image = load_image(path, self.config_data.hdr_tonemap_brightness)
         self.record_profile("元画像読込(UI)", (time.perf_counter() - started) * 1000)
         self.original_cache[path] = image
+        if not image.isNull():
+            self.remember_image_height(path, image.height())
         while len(self.original_cache) > max(6, self.config_data.viewer_prefetch_count * 2 + 3):
             self.original_cache.popitem(last=False)
         return image
@@ -6856,7 +7141,9 @@ class MainWindow(QMainWindow):
         source_path = self.display_source_path(path)
         if is_hdr_image_path(source_path):
             return True
-        return self.skip_tall_check.isChecked() and self.load_original(source_path).height() >= self.skip_height_spin.value()
+        if not self.skip_tall_check.isChecked():
+            return False
+        return self.image_height_for_scale(path) >= self.skip_height_spin.value()
 
     def dual_page_reversed(self) -> bool:
         check = getattr(self, "invert_page_position_check", None)
@@ -7230,6 +7517,7 @@ class MainWindow(QMainWindow):
         if not self.current_display_has_hdr_image():
             return
         self.original_cache.clear()
+        self.image_height_cache.clear()
         self.prefetching_original_paths.clear()
         self.prefetch_generation += 1
         self.clear_prefetch_io_queue()
@@ -7627,6 +7915,7 @@ class MainWindow(QMainWindow):
                 self.detach_side_panel_for_overlay(visible=False)
         else:
             self.before_fullscreen_geometry = self.normalGeometry() if self.isMaximized() else self.geometry()
+            self.before_fullscreen_native_geometry = self.native_window_rect()
             self.before_fullscreen_flags = self.windowFlags()
             self.before_fullscreen_state = self.windowState() & ~Qt.WindowFullScreen
             pinned = self.pin_button.isChecked()
@@ -7696,6 +7985,20 @@ class MainWindow(QMainWindow):
             SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED | SWP_SHOWWINDOW | flags,
         ))
 
+    def native_window_rect(self) -> QRect:
+        hwnd = self.window_handle_int()
+        if os.name != "nt" or not hwnd:
+            return QRect()
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rect)):
+            return QRect()
+        return QRect(
+            int(rect.left),
+            int(rect.top),
+            int(rect.right - rect.left),
+            int(rect.bottom - rect.top),
+        )
+
     def native_borderless_fullscreen_rect(self) -> QRect:
         hwnd = self.window_handle_int()
         if not hwnd:
@@ -7757,6 +8060,8 @@ class MainWindow(QMainWindow):
         self.before_fullscreen_native_style = None
         if self.before_fullscreen_state & Qt.WindowMaximized:
             return self.set_native_window_rect(self.geometry(), SWP_NOMOVE | SWP_NOSIZE)
+        if self.before_fullscreen_native_geometry.isValid():
+            return self.set_native_window_rect(self.before_fullscreen_native_geometry)
         if self.before_fullscreen_geometry.isValid():
             native_geometry = self.native_rect_from_qt_rect(self.before_fullscreen_geometry)
             return self.set_native_window_rect(native_geometry if native_geometry.isValid() else self.before_fullscreen_geometry)
@@ -7810,6 +8115,27 @@ class MainWindow(QMainWindow):
             self.position_overlay_side_panel()
 
     def eventFilter(self, watched, event) -> bool:
+        if watched is getattr(self, "novelai_generate_button", None):
+            if event.type() in {QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick}:
+                if not self.novelai_generate_button.isEnabled():
+                    self.novelai_generate_click_pending = False
+                    self.ignore_next_novelai_generate_release = False
+                    return True
+                if event.button() != Qt.LeftButton:
+                    return super().eventFilter(watched, event)
+                if event.type() == QEvent.MouseButtonPress:
+                    return True
+                if event.type() == QEvent.MouseButtonRelease:
+                    if self.ignore_next_novelai_generate_release:
+                        self.ignore_next_novelai_generate_release = False
+                        return True
+                    self.on_novelai_generate_button_clicked()
+                    return True
+            if event.type() == QEvent.MouseButtonDblClick and event.button() == Qt.LeftButton:
+                self.novelai_generate_click_pending = False
+                self.ignore_next_novelai_generate_release = True
+                self.toggle_novelai_continuous_generation()
+                return True
         if watched is getattr(self, "viewer_host", None):
             if event.type() == QEvent.Resize:
                 self.layout_viewer_host()
@@ -8172,6 +8498,7 @@ class MainWindow(QMainWindow):
             )
 
     def on_processing_settings_changed(self) -> None:
+        self.apply_engine_ui()
         self.persist_config()
         self.processed_cache.clear()
         self.prefetching_processed_keys.clear()
@@ -8197,6 +8524,7 @@ class MainWindow(QMainWindow):
     def on_colorized_cache_settings_changed(self) -> None:
         self.persist_config()
         self.original_cache.clear()
+        self.image_height_cache.clear()
         self.processed_cache.clear()
         self.viewer.pixmap_cache.clear()
         self.viewer.clear_pixmap_prefetch_state()
@@ -8395,6 +8723,8 @@ class MainWindow(QMainWindow):
         for path, image in originals.items():
             if path in current_paths and path not in self.original_cache:
                 self.original_cache[path] = image
+                if not image.isNull():
+                    self.remember_image_height(path, image.height())
                 added_originals += 1
         while len(self.original_cache) > max(6, self.config_data.viewer_prefetch_count * 2 + 3):
             self.original_cache.popitem(last=False)
@@ -8435,7 +8765,7 @@ class MainWindow(QMainWindow):
         return (
             key[0] in current_paths
             and key[1] == self.current_engine()
-            and key[2] == self.effective_scale()
+            and key[2] == self.effective_scale(Path(key[0]))
             and key[3] == (int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0)
             and key[4] == self.tile_spin.value()
             and key[5] == (self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "")
@@ -8524,6 +8854,9 @@ class MainWindow(QMainWindow):
             return True
         if not self.config_data.skip_realcugan_for_tall_images:
             return False
+        size = read_image_size(source_path)
+        if size.isValid() and size.height() > 0:
+            return size.height() >= self.config_data.skip_realcugan_height_threshold
         image = load_image(source_path, self.config_data.hdr_tonemap_brightness)
         return not image.isNull() and image.height() >= self.config_data.skip_realcugan_height_threshold
 
@@ -8533,7 +8866,7 @@ class MainWindow(QMainWindow):
         values = {
             "input": str(engine_input),
             "output": str(output_path),
-            "scale": self.effective_scale(),
+            "scale": self.effective_scale(source),
             "denoise": self.denoise_combo.currentText(),
             "tile": self.tile_spin.value(),
             "model": self.realesrgan_model_combo.currentText(),
@@ -8632,7 +8965,7 @@ class MainWindow(QMainWindow):
 
     def cache_output_path(self, source: Path, create_dir: bool) -> Path:
         engine_model = self.cache_model_name()
-        folder_name = f"{engine_model}_x{self.effective_scale()}"
+        folder_name = f"{engine_model}_x{self.effective_scale(source)}"
         folder = source.parent / folder_name
         if create_dir:
             folder.mkdir(parents=True, exist_ok=True)
@@ -8642,7 +8975,7 @@ class MainWindow(QMainWindow):
         return (
             self.normalized_path_text(source),
             self.current_engine(),
-            self.effective_scale(),
+            self.effective_scale(source),
             int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
             self.tile_spin.value(),
             self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
@@ -8886,6 +9219,21 @@ class MainWindow(QMainWindow):
         delete_paths = [source]
         if self.delete_processed_check.isChecked():
             delete_paths.extend(self.processed_result_paths_for_delete(source))
+        if self.confirm_delete_check.isChecked():
+            if self.ui_language() == "en":
+                message = f"Delete this image?\n\n{source}"
+            else:
+                message = f"この画像を削除しますか？\n\n{source}"
+            extra_count = len(delete_paths) - 1
+            if extra_count > 0:
+                if self.ui_language() == "en":
+                    message += f"\n\n{extra_count} processed result(s) will also be deleted."
+                else:
+                    message += f"\n\n拡大結果 {extra_count} 件も削除されます。"
+            answer = QMessageBox.question(self, APP_NAME, message)
+            if answer != QMessageBox.Yes:
+                return
+        deleted_processing_key = self.processing_key(source)
         next_index = self.current_index
         if not self.send_paths_to_recycle_bin(delete_paths):
             QMessageBox.warning(self, APP_NAME, self.tr_ui("画像を削除できませんでした。"))
@@ -8894,7 +9242,8 @@ class MainWindow(QMainWindow):
         self.image_paths.pop(self.current_index)
         self.refresh_image_path_sets()
         self.original_cache.pop(source, None)
-        self.processed_cache.pop(self.processing_key(source), None)
+        self.image_height_cache.pop(source, None)
+        self.processed_cache.pop(deleted_processing_key, None)
         self.viewer.pixmap_cache.clear()
         self.viewer.clear_pixmap_prefetch_state()
         self.rebuild_thumbnail_items()

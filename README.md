@@ -106,8 +106,9 @@ Real-ESRGAN モデル:
 - 倍率、ノイズ、tile
 - エンジン先読み枚数
 - 指定縦解像度以上の画像を拡大処理しない設定
+- 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
 - 拡大結果を倍率フォルダへ保存
-- 倍率フォルダがあれば表示に使う
+- 倍率フォルダがあれば表示に使う（現在のエンジン、モデル、倍率に完全一致するフォルダのみ使用）
 
 全般:
 
@@ -386,8 +387,9 @@ Engine settings:
 - Scale, denoise, tile
 - Engine prefetch count
 - Skip processing for images above a specified vertical resolution
+- Automatically choose the smallest per-image scale that reaches the vertical threshold
 - Save processed images to a scale folder
-- Use an existing scale folder as display cache
+- Use an existing scale folder as display cache (only when it exactly matches the current engine, model, and scale)
 
 General:
 
