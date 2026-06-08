@@ -5,6 +5,22 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
+## Unreleased
+
+## v1.1.3 - 2026-06-08
+
+### 改善 / Improved
+
+- NovelAIプロンプト分解モードで、`||...|...||` のランダム選択構文と `1.2::tagA, tagB::` などの数値重み指定構文を1つのタグとして扱うように変更。
+- NovelAIプロンプト分解モードで、単独の `::` を未閉じの強調/抑制括弧を閉じる区切りとして扱うように変更。
+- プロンプト分解モードで無効化したタグを、通常モードへ切り替えてもRAIV専用マーカーで保持し、NovelAI送信時には除外するように変更。
+- NovelAI生成画像のファイル名設定で、従来の時刻形式を「日付_時刻.png」として明示し、新たに時刻のみの形式を追加。
+- 英語UIのプロンプト分解モードで、強調/抑制ボタンの文字が見切れないよう表示を調整。
+
+### 修正 / Fixed
+
+- アップデート確認で版種に合わないZIP URLを案内しないよう、GitHub Releases一覧への案内に変更。
+
 ## v1.1.2 - 2026-06-08
 
 ### 改善 / Improved

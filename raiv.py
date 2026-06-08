@@ -98,7 +98,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.1.2"
+APP_VERSION = "1.1.3"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -106,6 +106,7 @@ FOLDER_HISTORY_PATH = APP_DIR / "folder_history.json"
 NOVELAI_PROMPT_PRESETS_PATH = APP_DIR / "novelai_prompt_presets.json"
 NOVELAI_TOKEN_PATH = APP_DIR / "novelai_token.dat"
 LATEST_RELEASE_API_URL = "https://api.github.com/repos/nalltama/RAIV/releases/latest"
+RELEASES_PAGE_URL = "https://github.com/nalltama/RAIV/releases"
 DEFAULT_COMFYUI_API_URL = "http://127.0.0.1:8000"
 COMFYUI_RECOMMENDED_MODEL_NAME = "animagine-xl-4.0-opt.safetensors"
 COMFYUI_RECOMMENDED_MODEL_URL = "https://huggingface.co/cagliostrolab/animagine-xl-4.0/resolve/main/animagine-xl-4.0-opt.safetensors"
@@ -153,6 +154,8 @@ NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL = {
         ", best quality, amazing quality, very aesthetic, absurdres",
     ],
 }
+RAIV_DISABLED_PROMPT_START = "<<RAIV_DISABLED_PROMPT>>"
+RAIV_DISABLED_PROMPT_END = "<</RAIV_DISABLED_PROMPT>>"
 NOVELAI_UC_PRESET_OPTIONS = [
     ("strong", "強い"),
     ("light", "弱い"),
@@ -677,19 +680,7 @@ def latest_release_info() -> dict[str, str]:
     with urllib.request.urlopen(request, timeout=12) as response:
         data = json.loads(response.read().decode("utf-8"))
     tag_name = str(data.get("tag_name") or "").strip()
-    html_url = str(data.get("html_url") or "").strip()
-    assets = data.get("assets") if isinstance(data, dict) else []
-    zip_url = ""
-    if isinstance(assets, list):
-        for asset in assets:
-            if not isinstance(asset, dict):
-                continue
-            name = str(asset.get("name") or "")
-            if name.lower().endswith(".zip"):
-                zip_url = str(asset.get("browser_download_url") or "").strip()
-                if name == f"RAIV-{tag_name}.zip":
-                    break
-    return {"tag_name": tag_name, "html_url": html_url, "download_url": zip_url}
+    return {"tag_name": tag_name, "html_url": RELEASES_PAGE_URL}
 
 
 def comfyui_api_url(base_url: str, path: str) -> str:
@@ -943,7 +934,7 @@ UI_TEXT_EN = {
     "固定中": "Pinned",
     "自動表示": "Auto",
     "左へ移動する": "Move left",
-    "右に表示する": "Show right",
+    "右へ移動する": "Move right",
     "エンジン設定": "Engine",
     "全般": "General",
     "画像調整": "Image Adjustment",
@@ -1078,7 +1069,8 @@ UI_TEXT_EN = {
     "日付ごとにサブフォルダを生成する": "Create subfolder for each date",
     "ファイル名": "Filename",
     "シード値.png": "Seed.png",
-    "時刻.png": "Time.png",
+    "日付_時刻.png": "Date_Time.png",
+    "時刻.png": "Time only.png",
     "プロンプトを分解する": "Split prompts into tags",
     "タグプリセット": "Tag preset",
     "読込": "Load",
@@ -1087,8 +1079,8 @@ UI_TEXT_EN = {
     "有効 / 無効": "Enable / Disable",
     "上へ": "Move up",
     "下へ": "Move down",
-    "強調": "Emphasize",
-    "抑制": "Suppress",
+    "強調": "Boost",
+    "抑制": "Weak",
     "削除": "Delete",
     "連続生成中": "Continuous generation",
     "停止中": "Stopping",
@@ -1512,7 +1504,7 @@ def load_config() -> AppConfig:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
         if not config.novelai_output_dir:
             config.novelai_output_dir = str(DEFAULT_NOVELAI_GENERATED_DIR)
-        if config.novelai_filename_mode not in {"seed", "time"}:
+        if config.novelai_filename_mode not in {"seed", "time", "time_only"}:
             config.novelai_filename_mode = "seed"
         if config.novelai_uc_preset not in {key for key, _label in NOVELAI_UC_PRESET_OPTIONS}:
             config.novelai_uc_preset = "strong"
@@ -2247,12 +2239,12 @@ class NovelAIPromptTagRow(QWidget):
         self.active_button.clicked.connect(self.toggle_active)
         layout.addWidget(self.active_button)
         self.emphasis_button = QPushButton("強調")
-        self.emphasis_button.setFixedWidth(54)
+        self.emphasis_button.setFixedWidth(58)
         self.emphasis_button.setFocusPolicy(Qt.NoFocus)
         self.emphasis_button.clicked.connect(self.increase_emphasis)
         layout.addWidget(self.emphasis_button)
         self.suppress_button = QPushButton("抑制")
-        self.suppress_button.setFixedWidth(54)
+        self.suppress_button.setFixedWidth(58)
         self.suppress_button.setFocusPolicy(Qt.NoFocus)
         self.suppress_button.clicked.connect(self.increase_suppression)
         layout.addWidget(self.suppress_button)
@@ -2266,6 +2258,15 @@ class NovelAIPromptTagRow(QWidget):
         self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self))
         layout.addWidget(self.delete_button)
         self.refresh()
+
+    def apply_language(self, language: str) -> None:
+        labels = UI_TEXT_EN if language == "en" else UI_TEXT_JA
+        self.up_button.setToolTip(labels.get("上へ", "上へ"))
+        self.down_button.setToolTip(labels.get("下へ", "下へ"))
+        self.active_button.setToolTip(labels.get("有効 / 無効", "有効 / 無効"))
+        self.emphasis_button.setText(labels.get("強調", "強調"))
+        self.suppress_button.setText(labels.get("抑制", "抑制"))
+        self.delete_button.setToolTip(labels.get("削除", "削除"))
 
     def toggle_active(self) -> None:
         self.active = not self.active
@@ -2309,6 +2310,7 @@ class NovelAIPromptListEditor(QWidget):
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(parent)
         self.updating = False
+        self.language = "ja"
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -2346,27 +2348,67 @@ class NovelAIPromptListEditor(QWidget):
         self.emit_changed()
 
     def split_prompt_text(self, text: str) -> list[str]:
-        parts: list[str] = []
+        return [tag for tag, _active in self.split_prompt_items(text)]
+
+    def split_prompt_items(self, text: str) -> list[tuple[str, bool]]:
+        items: list[tuple[str, bool]] = []
         current: list[str] = []
+        current_active = True
         curly_depth = 0
         square_depth = 0
+        random_depth = 0
+        weighted_depth = 0
+        disabled_depth = 0
         text = text.replace("\n", ", ")
         index = 0
         while index < len(text):
+            if current_active and disabled_depth == 0 and text.startswith(RAIV_DISABLED_PROMPT_START, index) and not "".join(current).strip():
+                current_active = False
+                disabled_depth = 1
+                index += len(RAIV_DISABLED_PROMPT_START)
+                continue
+            if disabled_depth > 0 and text.startswith(RAIV_DISABLED_PROMPT_END, index):
+                disabled_depth = 0
+                index += len(RAIV_DISABLED_PROMPT_END)
+                continue
+            if disabled_depth == 0 and current_active and weighted_depth > 0 and text.startswith("::", index):
+                weighted_depth = 0
+                current.append("::")
+                index += 2
+                continue
+            if disabled_depth == 0 and current_active and weighted_depth == 0 and random_depth == 0 and text.startswith("::", index):
+                curly_depth = 0
+                square_depth = 0
+                current.append("::")
+                index += 2
+                continue
+            weight_match = re.match(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)::", text[index:]) if disabled_depth == 0 and current_active and weighted_depth == 0 and random_depth == 0 else None
+            if weight_match is not None and not "".join(current).strip():
+                token = weight_match.group(0)
+                weighted_depth = 1
+                current.append(token)
+                index += len(token)
+                continue
+            if disabled_depth == 0 and current_active and weighted_depth == 0 and text.startswith("||", index):
+                random_depth = 0 if random_depth else 1
+                current.append("||")
+                index += 2
+                continue
             char = text[index]
-            if char == "{":
+            if disabled_depth == 0 and current_active and random_depth == 0 and weighted_depth == 0 and char == "{":
                 curly_depth += 1
-            elif char == "}" and curly_depth > 0:
+            elif disabled_depth == 0 and current_active and random_depth == 0 and weighted_depth == 0 and char == "}" and curly_depth > 0:
                 curly_depth -= 1
-            elif char == "[":
+            elif disabled_depth == 0 and current_active and random_depth == 0 and weighted_depth == 0 and char == "[":
                 square_depth += 1
-            elif char == "]" and square_depth > 0:
+            elif disabled_depth == 0 and current_active and random_depth == 0 and weighted_depth == 0 and char == "]" and square_depth > 0:
                 square_depth -= 1
-            if char == "," and curly_depth == 0 and square_depth == 0 and index + 1 < len(text) and text[index + 1].isspace():
+            if disabled_depth == 0 and char == "," and curly_depth == 0 and square_depth == 0 and random_depth == 0 and weighted_depth == 0 and index + 1 < len(text) and text[index + 1].isspace():
                 part = "".join(current).strip()
                 if part:
-                    parts.append(part)
+                    items.append((part, current_active))
                 current = []
+                current_active = True
                 while index + 1 < len(text) and text[index + 1].isspace():
                     index += 1
             else:
@@ -2374,12 +2416,13 @@ class NovelAIPromptListEditor(QWidget):
             index += 1
         part = "".join(current).strip()
         if part:
-            parts.append(part)
-        return parts
+            items.append((part, current_active))
+        return items
 
     def add_tag(self, tag: str, active: bool = True) -> None:
         item = QListWidgetItem()
         row = NovelAIPromptTagRow(tag, active)
+        row.apply_language(self.language)
         row.changed.connect(self.emit_changed)
         row.deleteRequested.connect(self.delete_row)
         row.moveUpRequested.connect(self.move_row_up)
@@ -2420,8 +2463,8 @@ class NovelAIPromptListEditor(QWidget):
     def set_text(self, text: str) -> None:
         self.updating = True
         self.list_widget.clear()
-        for tag in self.split_prompt_text(text):
-            self.add_tag(tag, True)
+        for tag, active in self.split_prompt_items(text):
+            self.add_tag(tag, active)
         self.updating = False
 
     def set_items(self, items: list[dict[str, object]], fallback_text: str = "") -> None:
@@ -2434,8 +2477,8 @@ class NovelAIPromptListEditor(QWidget):
             if tag:
                 self.add_tag(tag, bool(item.get("active", True)))
         if self.list_widget.count() == 0 and fallback_text:
-            for tag in self.split_prompt_text(fallback_text):
-                self.add_tag(tag, True)
+            for tag, active in self.split_prompt_items(fallback_text):
+                self.add_tag(tag, active)
         self.updating = False
 
     def to_items(self) -> list[dict[str, object]]:
@@ -2446,18 +2489,29 @@ class NovelAIPromptListEditor(QWidget):
                 items.append({"tag": row.tag.strip(), "active": bool(row.active)})
         return items
 
-    def to_text(self, active_only: bool = True) -> str:
+    def disabled_prompt_text(self, tag: str) -> str:
+        return f"{RAIV_DISABLED_PROMPT_START}{tag}{RAIV_DISABLED_PROMPT_END}"
+
+    def to_text(self, active_only: bool = True, preserve_inactive: bool = False) -> str:
         tags: list[str] = []
         for index in range(self.list_widget.count()):
             row = self.list_widget.itemWidget(self.list_widget.item(index))
             if isinstance(row, NovelAIPromptTagRow) and (row.active or not active_only):
                 if row.tag.strip():
-                    tags.append(row.tag.strip())
+                    tag = row.tag.strip()
+                    tags.append(tag if row.active or not preserve_inactive else self.disabled_prompt_text(tag))
         return ", ".join(tags)
 
     def emit_changed(self) -> None:
         if not self.updating:
             self.changed.emit()
+
+    def apply_language(self, language: str) -> None:
+        self.language = language
+        for index in range(self.list_widget.count()):
+            row = self.list_widget.itemWidget(self.list_widget.item(index))
+            if isinstance(row, NovelAIPromptTagRow):
+                row.apply_language(language)
 
 
 class GLImageView(QOpenGLWidget):
@@ -4314,7 +4368,8 @@ class MainWindow(QMainWindow):
         output_options_row.addWidget(QLabel("ファイル名"))
         self.novelai_filename_combo = QComboBox()
         self.novelai_filename_combo.addItem("シード値.png", "seed")
-        self.novelai_filename_combo.addItem("時刻.png", "time")
+        self.novelai_filename_combo.addItem("日付_時刻.png", "time")
+        self.novelai_filename_combo.addItem("時刻.png", "time_only")
         self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_filename_mode)
         self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
         output_options_row.addWidget(self.novelai_filename_combo)
@@ -4633,7 +4688,7 @@ class MainWindow(QMainWindow):
     def novelai_prompt_items_for_preset(self, editor: NovelAIPromptListEditor, text_edit: PromptSubmitTextEdit) -> list[dict[str, object]]:
         if self.novelai_split_prompts_enabled():
             return editor.to_items()
-        return [{"tag": tag, "active": True} for tag in editor.split_prompt_text(text_edit.toPlainText())]
+        return [{"tag": tag, "active": active} for tag, active in editor.split_prompt_items(text_edit.toPlainText())]
 
     def current_novelai_prompt_preset_payload(self, name: str) -> dict[str, object]:
         return {
@@ -4757,15 +4812,28 @@ class MainWindow(QMainWindow):
     def novelai_split_prompts_enabled(self) -> bool:
         return bool(getattr(self, "novelai_split_prompts_check", None) and self.novelai_split_prompts_check.isChecked())
 
+    def active_novelai_text_from_editor(self, editor: NovelAIPromptListEditor, text: str) -> str:
+        return ", ".join(tag for tag, active in editor.split_prompt_items(text) if active and tag.strip())
+
+    def novelai_prompt_storage_text(self) -> str:
+        if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_prompt_list_edit"):
+            return self.novelai_prompt_list_edit.to_text(active_only=False, preserve_inactive=True)
+        return self.novelai_prompt_edit.toPlainText().strip()
+
+    def novelai_negative_prompt_storage_text(self) -> str:
+        if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_negative_list_edit"):
+            return self.novelai_negative_list_edit.to_text(active_only=False, preserve_inactive=True)
+        return self.novelai_negative_edit.toPlainText().strip()
+
     def novelai_prompt_text(self) -> str:
         if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_prompt_list_edit"):
             return self.novelai_prompt_list_edit.to_text()
-        return self.novelai_prompt_edit.toPlainText().strip()
+        return self.active_novelai_text_from_editor(self.novelai_prompt_list_edit, self.novelai_prompt_edit.toPlainText())
 
     def novelai_negative_prompt_text(self) -> str:
         if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_negative_list_edit"):
             return self.novelai_negative_list_edit.to_text()
-        return self.novelai_negative_edit.toPlainText().strip()
+        return self.active_novelai_text_from_editor(self.novelai_negative_list_edit, self.novelai_negative_edit.toPlainText())
 
     def novelai_dataset_mode(self) -> str:
         combo = getattr(self, "novelai_dataset_mode_combo", None)
@@ -4849,8 +4917,8 @@ class MainWindow(QMainWindow):
     def sync_novelai_text_from_lists(self) -> None:
         self.novelai_prompt_edit.blockSignals(True)
         self.novelai_negative_edit.blockSignals(True)
-        self.novelai_prompt_edit.setPlainText(self.novelai_prompt_list_edit.to_text())
-        self.novelai_negative_edit.setPlainText(self.novelai_negative_list_edit.to_text())
+        self.novelai_prompt_edit.setPlainText(self.novelai_prompt_list_edit.to_text(active_only=False, preserve_inactive=True))
+        self.novelai_negative_edit.setPlainText(self.novelai_negative_list_edit.to_text(active_only=False, preserve_inactive=True))
         self.novelai_prompt_edit.blockSignals(False)
         self.novelai_negative_edit.blockSignals(False)
 
@@ -5105,6 +5173,19 @@ class MainWindow(QMainWindow):
                 self.novelai_uc_preset_combo.addItem(self.tr_ui(label), key)
             self.set_combo_by_data(self.novelai_uc_preset_combo, current)
             self.novelai_uc_preset_combo.blockSignals(False)
+        if hasattr(self, "novelai_filename_combo"):
+            current = self.novelai_filename_combo.currentData() or "seed"
+            self.novelai_filename_combo.blockSignals(True)
+            self.novelai_filename_combo.clear()
+            self.novelai_filename_combo.addItem(self.tr_ui("シード値.png"), "seed")
+            self.novelai_filename_combo.addItem(self.tr_ui("日付_時刻.png"), "time")
+            self.novelai_filename_combo.addItem(self.tr_ui("時刻.png"), "time_only")
+            self.set_combo_by_data(self.novelai_filename_combo, current)
+            self.novelai_filename_combo.blockSignals(False)
+        for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
+            editor = getattr(self, editor_name, None)
+            if isinstance(editor, NovelAIPromptListEditor):
+                editor.apply_language(self.ui_language())
         self.update_novelai_generate_button_text()
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
@@ -5144,11 +5225,11 @@ class MainWindow(QMainWindow):
             )
         elif status == "available":
             tag = result.get("tag_name", "")
-            url = result.get("download_url") or result.get("html_url") or ""
+            url = result.get("html_url") or RELEASES_PAGE_URL
             if english:
-                self.update_status_label.setText(f"A new version is available: {tag}\nDownload URL: {url}")
+                self.update_status_label.setText(f"A new version is available: {tag}\nReleases: {url}")
             else:
-                self.update_status_label.setText(f"新しいバージョンがあります: {tag}\nダウンロード先URL: {url}")
+                self.update_status_label.setText(f"新しいバージョンがあります: {tag}\nReleases: {url}")
         elif status == "error":
             message = result.get("message", "")
             self.update_status_label.setText(
@@ -5622,7 +5703,12 @@ class MainWindow(QMainWindow):
         }
 
     def unique_novelai_output_path(self, output_dir: Path, timestamp: str, seed: int, filename_mode: str = "seed", image_index: int | None = None) -> Path:
-        base = str(seed) if filename_mode == "seed" else timestamp
+        if filename_mode == "seed":
+            base = str(seed)
+        elif filename_mode == "time_only":
+            base = timestamp.split("_", 1)[1] if "_" in timestamp else timestamp
+        else:
+            base = timestamp
         if image_index is not None:
             base = f"{base}_{image_index:02d}"
         path = output_dir / f"{base}.png"
@@ -6179,8 +6265,8 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_output_dir = self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR)
             self.config_data.novelai_date_subfolders = self.novelai_date_subfolders_check.isChecked()
             self.config_data.novelai_filename_mode = self.novelai_filename_combo.currentData() or "seed"
-            self.config_data.novelai_prompt = self.novelai_prompt_text()
-            self.config_data.novelai_negative_prompt = self.novelai_negative_prompt_text()
+            self.config_data.novelai_prompt = self.novelai_prompt_storage_text()
+            self.config_data.novelai_negative_prompt = self.novelai_negative_prompt_storage_text()
             self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
             self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
             self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
@@ -7720,7 +7806,7 @@ class MainWindow(QMainWindow):
 
     def update_side_panel_side_button(self) -> None:
         if hasattr(self, "side_panel_side_button"):
-            self.side_panel_side_button.setText(self.tr_ui("右に表示する" if self.side_panel_on_left() else "左へ移動する"))
+            self.side_panel_side_button.setText(self.tr_ui("右へ移動する" if self.side_panel_on_left() else "左へ移動する"))
 
     def toggle_side_panel_side(self) -> None:
         if not hasattr(self, "splitter"):

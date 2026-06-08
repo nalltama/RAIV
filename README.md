@@ -157,11 +157,12 @@ NovelAI生成:
 
 - 永続APIトークンを使ったNovelAIのテキストから画像生成
 - 保存先フォルダ指定（既定は `RAIV_generated`）
-- 保存ファイル名をシード値または時刻から選択（既定はシード値）
+- 保存ファイル名をシード値、日付_時刻、時刻のみから選択（既定はシード値）
 - プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定
 - APIトークン、品質タグ、モデル、サンプラー、自動処理などを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
 - アニメモード / ケモノモード切替（ケモノモードでは生成時に `fur dataset` をプロンプト先頭へ追加）
-- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード（入力欄からの追加は1行扱い。既存テキストの分解時は括弧外の`, `を区切りとして扱います）
+- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード（入力欄からの追加は1行扱い。既存テキストの分解時は括弧、`||...|...||` のランダム選択構文、`1.2::tagA, tagB::` や `-1::tag::` などの数値重み指定構文の外側にある`, `を区切りとして扱います。単独の `::` は未閉じの強調/抑制括弧を閉じるものとして扱います）
+- プロンプト分解モードで無効化したタグは、通常モードではRAIV専用マーカー `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>` で保持されます。このマーカー内の内容はNovelAI送信時には除外されます。
 - タグプリセットの保存、読込、削除（`setting.json` とは別の `novelai_prompt_presets.json` に保存）
 - 品質タグ追加と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定
 - Enterで生成、Shift+Enterで改行する入力オプション
@@ -438,11 +439,12 @@ NovelAI Generation:
 
 - NovelAI text2img generation using a Persistent API Token
 - Configurable output folder (default: `RAIV_generated`)
-- Select generated filename style from seed or timestamp (default: seed)
+- Select generated filename style from seed, date_time, or time only (default: seed)
 - Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings
 - API token, quality tags, model/sampler, and automatic processing settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
 - Anime / Furry mode switch. Furry mode adds `fur dataset` to the beginning of the generation prompt.
-- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Text entered in the add field is kept as one row; decomposing existing text splits on `, ` outside brackets.
+- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Text entered in the add field is kept as one row; decomposing existing text splits on `, ` outside brackets, `||...|...||` random-choice syntax, and numeric weight syntax such as `1.2::tagA, tagB::` or `-1::tag::`. A standalone `::` is treated as closing unbalanced emphasis/suppression brackets.
+- Tags disabled in prompt decomposition mode are preserved in normal mode with RAIV-specific markers: `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>`. Content inside those markers is excluded when sending prompts to NovelAI.
 - Save, load, and delete tag presets. Presets are stored in `novelai_prompt_presets.json`, separate from `setting.json`.
 - Add Quality Tags and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None)
 - Enter-to-generate option, with Shift+Enter inserting a line break
