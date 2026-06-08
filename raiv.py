@@ -98,7 +98,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"

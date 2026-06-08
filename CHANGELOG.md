@@ -5,7 +5,7 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
-## Unreleased
+## v1.1.2 - 2026-06-08
 
 ### 改善 / Improved
 
