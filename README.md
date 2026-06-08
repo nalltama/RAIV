@@ -103,7 +103,7 @@ Real-ESRGAN モデル:
 
 エンジン設定:
 
-- 倍率、ノイズ、tile
+- 倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
 - エンジン先読み枚数
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
@@ -384,7 +384,7 @@ Real-ESRGAN models:
 
 Engine settings:
 
-- Scale, denoise, tile
+- Scale, denoise, tile (0 is automatic; smaller values can be set for low-memory GPUs)
 - Engine prefetch count
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold

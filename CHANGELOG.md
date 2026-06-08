@@ -5,6 +5,12 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
+## Unreleased
+
+### 改善 / Improved
+
+- エンジン設定の tile を、0〜16 のスピンボックスからプリセット付きの任意入力へ変更。内蔵GPUなどでメモリ不足になる場合に 128 や 256 などを指定しやすくしました。
+
 ## v1.1.1 - 2026-06-08
 
 ### 追加 / Added

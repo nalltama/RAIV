@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 
 try:
     from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QKeySequence, QPainter, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
@@ -959,7 +959,7 @@ UI_TEXT_EN = {
     "ノイズ: Real-CUGAN専用。-1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。": "Denoise: Real-CUGAN only. -1 disables denoising. 0/1/2/3 remove noise more strongly as the value increases.",
     "Real-ESRGANはノイズ値を使わず、モデルで画風や復元傾向を選びます。": "Real-ESRGAN does not use the denoise value. Choose a model to change image style and restoration behavior.",
     "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。 realesrgan-x4plus: 写真や一般画像向け。 realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。 RAIVではReal-ESRGAN選択中、倍率は4倍固定として処理します。": "realesr-animevideov3: lightweight standard model for anime/illustration. realesrgan-x4plus: for photos and general images. realesrgan-x4plus-anime: x4plus-derived model for anime/illustration. In RAIV, Real-ESRGAN is processed at fixed 4x scale.",
-    "tile: 0 は自動。小さめの値はGPUメモリ使用量を抑えますが、遅くなることがあります。": "tile: 0 is automatic. Smaller values can reduce GPU memory usage but may be slower.",
+    "tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。": "tile: 0 is automatic. If an integrated GPU runs out of memory, smaller values such as 128 or 256 can improve stability, but processing may be slower.",
     "エンジン先読み": "Engine prefetch",
     "選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Number of images to process ahead with the selected engine. Higher values reduce waiting but increase GPU load and temporary files.",
     "AI彩色を先行処理する": "Prefetch AI colorization",
@@ -3648,11 +3648,14 @@ class MainWindow(QMainWindow):
         self.realesrgan_model_combo.setCurrentText(self.config_data.realesrgan_model)
         self.realesrgan_model_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("Real-ESRGANモデル", self.realesrgan_model_combo)
-        self.tile_spin = QSpinBox()
-        self.tile_spin.setRange(0, 16)
-        self.tile_spin.setValue(self.config_data.tile)
-        self.tile_spin.valueChanged.connect(self.on_processing_settings_changed)
-        form.addRow("tile", self.tile_spin)
+        self.tile_combo = QComboBox()
+        self.tile_combo.setEditable(True)
+        self.tile_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.tile_combo.addItems(["0", "32", "64", "96", "128", "160", "192", "256", "320", "384", "512", "640", "768", "1024"])
+        self.tile_combo.lineEdit().setValidator(QIntValidator(0, 99999, self.tile_combo))
+        self.tile_combo.setCurrentText(str(max(0, int(self.config_data.tile))))
+        self.tile_combo.currentTextChanged.connect(self.on_processing_settings_changed)
+        form.addRow("tile", self.tile_combo)
         realcugan_layout.addLayout(form)
         self.denoise_help = self.help_label("ノイズ: Real-CUGAN専用。-1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。")
         realcugan_layout.addWidget(self.denoise_help)
@@ -3666,7 +3669,7 @@ class MainWindow(QMainWindow):
         )
         realcugan_layout.addWidget(self.realesrgan_model_detail)
 
-        realcugan_layout.addWidget(self.help_label("tile: 0 は自動。小さめの値はGPUメモリ使用量を抑えますが、遅くなることがあります。"))
+        realcugan_layout.addWidget(self.help_label("tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。"))
 
         form3 = QFormLayout()
         self.realcugan_prefetch_spin = QSpinBox()
@@ -6097,7 +6100,7 @@ class MainWindow(QMainWindow):
         self.config_data.command_template = self.config_data.realcugan_command_template
         self.config_data.scale = int(self.scale_combo.currentText())
         self.config_data.denoise = int(self.denoise_combo.currentText())
-        self.config_data.tile = self.tile_spin.value()
+        self.config_data.tile = self.current_tile_size()
         self.config_data.realesrgan_model = self.realesrgan_model_combo.currentText()
         self.config_data.realcugan_prefetch_count = self.realcugan_prefetch_spin.value()
         self.config_data.save_colorized_to_folder = self.save_colorized_check.isChecked()
@@ -6624,6 +6627,16 @@ class MainWindow(QMainWindow):
                 return self.auto_realcugan_scale_for_height(height)
         return int(self.scale_combo.currentText())
 
+    def current_tile_size(self) -> int:
+        combo = getattr(self, "tile_combo", None)
+        if combo is None:
+            return max(0, int(self.config_data.tile))
+        text = combo.currentText().strip()
+        try:
+            return max(0, int(text))
+        except ValueError:
+            return 0
+
     def save_active_command_template(self) -> None:
         if not hasattr(self, "command_edit"):
             return
@@ -6738,7 +6751,7 @@ class MainWindow(QMainWindow):
             self.current_engine(),
             self.effective_scale(path),
             int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
-            self.tile_spin.value(),
+            self.current_tile_size(),
             self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
             self.viewer.display_rotation % 360,
             self.viewer.display_flip_horizontal,
@@ -8767,7 +8780,7 @@ class MainWindow(QMainWindow):
             and key[1] == self.current_engine()
             and key[2] == self.effective_scale(Path(key[0]))
             and key[3] == (int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0)
-            and key[4] == self.tile_spin.value()
+            and key[4] == self.current_tile_size()
             and key[5] == (self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "")
         )
 
@@ -8868,7 +8881,7 @@ class MainWindow(QMainWindow):
             "output": str(output_path),
             "scale": self.effective_scale(source),
             "denoise": self.denoise_combo.currentText(),
-            "tile": self.tile_spin.value(),
+            "tile": self.current_tile_size(),
             "model": self.realesrgan_model_combo.currentText(),
         }
         command = self.active_command_template().format(**values)
@@ -8977,7 +8990,7 @@ class MainWindow(QMainWindow):
             self.current_engine(),
             self.effective_scale(source),
             int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
-            self.tile_spin.value(),
+            self.current_tile_size(),
             self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
         )
 
