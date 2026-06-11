@@ -1,6 +1,6 @@
 ﻿# Realtime AI Image Viewer (RAIV)
 
-RAIV は、Real-CUGAN / Real-ESRGAN による画像の超解像・復元処理を自動で行いながら閲覧できる Windows 向け画像ビューアーです。画像を開くだけで処理済み画像を表示し、処理前後の比較、ページ送り、ズーム、パン、サムネイル移動などを行えます。高速なページ送りと先読みを重視しており、大量の画像を快適に閲覧することを目指しています。`RAIV` の開発は Codex を用いた完全AIコーディングで行われています。
+RAIV は、Real-CUGAN / Real-ESRGAN、または別途導入したTopaz Gigapixel AIによる画像の超解像・復元処理を自動で行いながら閲覧できる Windows 向け画像ビューアーです。画像を開くだけで処理済み画像を表示し、処理前後の比較、ページ送り、ズーム、パン、サムネイル移動などを行えます。高速なページ送りと先読みを重視しており、大量の画像を快適に閲覧することを目指しています。`RAIV` の開発は Codex を用いた完全AIコーディングで行われています。
 
 English version is below the Japanese section.
 
@@ -70,12 +70,12 @@ python .\raiv.py
 
 画像ファイルを開いた場合は、まずその画像を表示し、同じフォルダ内の画像一覧はあとから取得します。
 
-JPEG XR / HD Photo 系の `.jxr`、`.wdp`、`.hdp` も表示できます。これらのHDR画像は、アプリやモニタへHDR信号として出力するのではなく、白飛びや黒つぶれを抑えるためにSDR表示用の色域・階調へトーンマッピングして互換表示します。HDR画像は表示互換を目的とするため、Real-CUGAN / Real-ESRGAN の拡大処理対象外です。
+JPEG XR / HD Photo 系の `.jxr`、`.wdp`、`.hdp` も表示できます。これらのHDR画像は、アプリやモニタへHDR信号として出力するのではなく、白飛びや黒つぶれを抑えるためにSDR表示用の色域・階調へトーンマッピングして互換表示します。HDR画像は表示互換を目的とするため、拡大エンジンの処理対象外です。
 HDR画像を表示している時は、画像調整タブの `HDR互換表示の明るさ` でSDR互換表示へ変換する時の明るさを調整できます。100%が自動トーンマップの基準値で、`100%に戻す` でリセットできます。
 
 ## 画像処理エンジン
 
-右ペインのエンジン設定タブで、Real-CUGAN と Real-ESRGAN を切り替えられます。
+右ペインのエンジン設定タブで、Real-CUGAN、Real-ESRGAN、Gigapixel AIを切り替えられます。
 
 Real-CUGAN:
 
@@ -89,7 +89,9 @@ Real-ESRGAN:
 tools\realesrgan-ncnn-vulkan\realesrgan-ncnn-vulkan.exe
 ```
 
-Real-ESRGAN は x4 モデルのため、RAIV では Real-ESRGAN 選択中の倍率を 4 倍固定として扱います。倍率欄は無効化されますが、Real-CUGAN に戻した時の値は保持されます。
+Gigapixel AIはRAIVへ同梱されません。利用にはTopaz Gigapixel AIのインストールと、コマンドライン機能を利用できるProライセンスが必要です。既定の場所で検出できない場合は、`エンジンexeを選択`から`gigapixel.exe`を指定してください。
+
+開発者はGigapixel AIを保有していないため、この連携機能は公式ドキュメントで確認できる仕様に基づいて実装しており、実機での動作は未確認です。
 
 Real-CUGAN はアニメ/イラスト画像向けに学習・調整された超解像モデルです。写真や一般画像では Real-ESRGAN が適する場合がありますが、アニメ、イラスト、漫画調の画像では、線や塗りの質感を保ちやすい Real-CUGAN の方が自然で高品質な結果になる可能性があります。まず Real-CUGAN を試し、必要に応じて Real-ESRGAN のアニメ向けモデルと比較してください。
 
@@ -99,11 +101,14 @@ Real-ESRGAN モデル:
 - `realesrgan-x4plus`: 写真や一般画像向け
 - `realesrgan-x4plus-anime`: アニメ/イラスト向けの x4plus 系モデル
 
+`realesr-animevideov3`では2倍/3倍/4倍、x4plus系モデルでは4倍を選択できます。Gigapixel AIではStandard、High Fidelity、Low Resolution、Text & Shapes、Art & CGのCore Modelsと2倍/3倍/4倍/6倍を選択できます。
+
 ## 主な設定
 
 エンジン設定:
 
-- 倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
+- エンジンに応じたモデル、倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
+- Gigapixel AIのDenoise、Sharpen、Fix Compression、Face Recovery
 - エンジン先読み枚数
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
@@ -169,7 +174,7 @@ NovelAI生成:
 - 日付ごとのサブフォルダ保存
 - NovelAI標準に近いサイズプリセットと自由な幅 / 高さ入力
 - `novelai-sdk` による推定消費Anlas表示（実際の消費量と完全一致する保証はありません）
-- 生成後の自動表示とReal-CUGAN / Real-ESRGAN処理キュー投入
+- 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入
 - 生成設定を画像ごとのJSONサイドカーに保存
 - NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映
 
@@ -278,13 +283,15 @@ RAIV 本体は MIT License です。詳細は `LICENSE` を参照してくださ
 - Real-ESRGAN ncnn Vulkan / Real-ESRGAN: BSD 3-Clause License  
   付属ファイル: `tools\realesrgan-ncnn-vulkan\LICENSE`, `tools\realesrgan-ncnn-vulkan\README_windows.md`
 
+Topaz Gigapixel AIは同梱物ではありません。利用者が別途導入した製品を、その製品ライセンスに従って外部CLIとして呼び出します。
+
 配布時は `tools` 配下の exe、DLL、モデル、README、LICENSE を欠落させないようにしてください。
 
 ---
 
 # Realtime AI Image Viewer (RAIV)
 
-RAIV is a Windows image viewer that automatically displays images processed with Real-CUGAN or Real-ESRGAN super-resolution/restoration. Open an image and RAIV can show the processed result, compare before/after images, browse pages, zoom, pan, and navigate with thumbnails. RAIV focuses on fast page navigation and prefetching so large image folders can be browsed comfortably. Development of `RAIV` is done through fully AI-assisted coding with Codex.
+RAIV is a Windows image viewer that automatically displays images processed with Real-CUGAN, Real-ESRGAN, or a separately installed copy of Topaz Gigapixel AI. Open an image and RAIV can show the processed result, compare before/after images, browse pages, zoom, pan, and navigate with thumbnails. RAIV focuses on fast page navigation and prefetching so large image folders can be browsed comfortably. Development of `RAIV` is done through fully AI-assisted coding with Codex.
 
 ## Download
 
@@ -352,12 +359,12 @@ Logs can be shown or hidden from `Show log` in the General tab.
 
 When an image file is opened, RAIV displays it first and then collects the rest of the images in the same folder.
 
-RAIV can also display JPEG XR / HD Photo files: `.jxr`, `.wdp`, and `.hdp`. HDR images are not output as an HDR signal by the application; they are tone-mapped into an SDR-compatible color and tonal range to avoid harsh clipping and crushed shadows. HDR image support is intended for compatible viewing, so these files are excluded from Real-CUGAN / Real-ESRGAN upscaling.
+RAIV can also display JPEG XR / HD Photo files: `.jxr`, `.wdp`, and `.hdp`. HDR images are not output as an HDR signal by the application; they are tone-mapped into an SDR-compatible color and tonal range to avoid harsh clipping and crushed shadows. HDR image support is intended for compatible viewing, so these files are excluded from processing by the upscaling engines.
 While an HDR image is displayed, the Image Adjustment tab enables `HDR compatible brightness` so you can adjust the brightness used during SDR-compatible conversion. 100% is the baseline for the automatic tone map, and `Reset to 100%` restores it.
 
 ## Processing Engines
 
-Use the Engine Settings tab in the right panel to switch between Real-CUGAN and Real-ESRGAN.
+Use the Engine Settings tab in the right panel to switch between Real-CUGAN, Real-ESRGAN, and Gigapixel AI.
 
 Real-CUGAN:
 
@@ -371,7 +378,9 @@ Real-ESRGAN:
 tools\realesrgan-ncnn-vulkan\realesrgan-ncnn-vulkan.exe
 ```
 
-Real-ESRGAN uses x4 models, so RAIV treats the scale as fixed to 4x while Real-ESRGAN is selected. The scale field is disabled in that mode, but the Real-CUGAN scale value is preserved.
+Gigapixel AI is not bundled with RAIV. It requires an installed copy of Topaz Gigapixel AI and a Pro license that enables command-line use. If RAIV cannot detect it in the default location, select `gigapixel.exe` with `Select engine exe`.
+
+The developer does not own Gigapixel AI. This integration is implemented from specifications available in the official documentation and has not been verified with an installed copy of the product.
 
 Real-CUGAN is trained and tuned for anime/illustration images. Real-ESRGAN may be better for photos and general images, but for anime, illustration, and manga-like artwork, Real-CUGAN is more likely to preserve linework and flat-color texture naturally. Try Real-CUGAN first for those images, then compare it with Real-ESRGAN's anime-oriented models if needed.
 
@@ -381,11 +390,14 @@ Real-ESRGAN models:
 - `realesrgan-x4plus`: model for photos and general images
 - `realesrgan-x4plus-anime`: x4plus-style model for anime/illustration images
 
+`realesr-animevideov3` supports 2x/3x/4x, while the x4plus models support 4x. Gigapixel AI provides the Standard, High Fidelity, Low Resolution, Text & Shapes, and Art & CG Core Models with 2x/3x/4x/6x choices.
+
 ## Main Settings
 
 Engine settings:
 
-- Scale, denoise, tile (0 is automatic; smaller values can be set for low-memory GPUs)
+- Engine-specific model, scale, denoise, and tile options (0 is automatic; smaller tile values can be set for low-memory GPUs)
+- Gigapixel AI Denoise, Sharpen, Fix Compression, and Face Recovery
 - Engine prefetch count
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold
@@ -451,7 +463,7 @@ NovelAI Generation:
 - Date-based output subfolders
 - NovelAI-like size presets plus custom width / height input
 - Estimated Anlas cost using `novelai-sdk` (not guaranteed to exactly match the actual charge)
-- Automatically display generated images and enqueue them for Real-CUGAN / Real-ESRGAN processing
+- Automatically display generated images and enqueue them for the selected upscaling engine
 - Save generation settings as a JSON sidecar for each generated image
 - Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings
 
@@ -559,6 +571,8 @@ Bundled external tools:
   Included files: `tools\realcugan-ncnn-vulkan\LICENSE`, `tools\realcugan-ncnn-vulkan\README.md`
 - Real-ESRGAN ncnn Vulkan / Real-ESRGAN: BSD 3-Clause License  
   Included files: `tools\realesrgan-ncnn-vulkan\LICENSE`, `tools\realesrgan-ncnn-vulkan\README_windows.md`
+
+Topaz Gigapixel AI is not bundled. RAIV invokes a separately installed copy through its external CLI, subject to the product's own license.
 
 When redistributing RAIV, keep the exe, DLL, model, README, and LICENSE files under `tools` intact.
 

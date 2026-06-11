@@ -5,7 +5,17 @@
 
 This file summarizes notable changes for each release. It focuses on user-visible features, improvements, and fixes rather than listing every internal change.
 
-## Unreleased
+## v1.2.0 - 2026-06-12
+
+### 追加 / Added
+
+- Topaz Gigapixel AIのPro向けCLIを外部拡大エンジンとして追加。モデル、倍率、Denoise、Sharpen、Fix Compression、Face Recoveryを指定可能。開発者はGigapixel AIを保有していないため、公式ドキュメントに基づく実装のみで実機動作は未確認。
+
+### 改善 / Improved
+
+- 拡大エンジンごとに必要な設定項目だけを表示し、各設定項目を選択中のエンジン・モデルに応じて切り替えるように変更。
+- NovelAI生成のプロンプト欄と除外したい要素欄について、高さ調整の上下限を撤廃し、中央にグリップを表示したドラッグハンドルへ変更。
+- NovelAI生成後の自動表示をオフにしている場合でも、生成先が現在表示中のフォルダならファイルリストを更新し、ページ送りで新しい生成画像へ移動できるように変更。
 
 ## v1.1.3 - 2026-06-08
 

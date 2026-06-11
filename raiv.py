@@ -98,7 +98,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.1.3"
+APP_VERSION = "1.2.0"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -125,7 +125,7 @@ DEFAULT_COLORIZE_NEGATIVE_PROMPT = (
     "monochrome, grayscale, muddy colors, oversaturated, neon colors, "
     "low quality, blurry, broken lineart, warped text, unreadable text, watermark, logo"
 )
-DEFAULT_NOVELAI_MODEL = "nai-diffusion-4-5-full"
+DEFAULT_NOVELAI_MODEL = "nai-diffusion-4-5-curated"
 DEFAULT_NOVELAI_SAMPLER = "k_euler_ancestral"
 DEFAULT_NOVELAI_SCHEDULER = "karras"
 DEFAULT_NOVELAI_GENERATED_DIR = APP_DIR / "RAIV_generated"
@@ -251,6 +251,11 @@ CURVE_DIR = APP_DIR / "cur"
 REALESRGAN_FIXED_SCALE = 4
 BUNDLED_REALCUGAN_EXE = APP_DIR / "tools" / "realcugan-ncnn-vulkan" / "realcugan-ncnn-vulkan.exe"
 BUNDLED_REALESRGAN_EXE = APP_DIR / "tools" / "realesrgan-ncnn-vulkan" / "realesrgan-ncnn-vulkan.exe"
+GIGAPIXEL_EXE_CANDIDATES = [
+    Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Topaz Labs LLC" / product / "bin" / "gigapixel.exe"
+    for product in ("Topaz Gigapixel AI", "Topaz Gigapixel")
+]
+DEFAULT_GIGAPIXEL_EXE = next((path for path in GIGAPIXEL_EXE_CANDIDATES if path.exists()), GIGAPIXEL_EXE_CANDIDATES[0])
 LEGACY_REALCUGAN_TEMPLATE = 'realcugan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -n {denoise} -t {tile}'
 DEFAULT_REALCUGAN_TEMPLATE = (
     f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}'
@@ -263,13 +268,40 @@ DEFAULT_REALESRGAN_TEMPLATE = (
     if BUNDLED_REALESRGAN_EXE.exists()
     else LEGACY_REALESRGAN_TEMPLATE
 )
+DEFAULT_GIGAPIXEL_TEMPLATE = (
+    f'"{DEFAULT_GIGAPIXEL_EXE}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
+    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
+    if DEFAULT_GIGAPIXEL_EXE.exists()
+    else 'gigapixel.exe -i "{input}" -o "{output_dir}" --scale {scale} --model "{model}" '
+    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
+)
+LEGACY_GIGAPIXEL_TEMPLATE = (
+    'gigapixel.exe -i "{input}" -o "{output}" --scale {scale} --model "{model}" '
+    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery}'
+)
 ENGINE_REALCUGAN = "realcugan"
 ENGINE_REALESRGAN = "realesrgan"
+ENGINE_GIGAPIXEL = "gigapixel"
 ENGINE_LABELS = {
     ENGINE_REALCUGAN: "Real-CUGAN",
     ENGINE_REALESRGAN: "Real-ESRGAN",
+    ENGINE_GIGAPIXEL: "Gigapixel AI",
 }
 REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
+REALCUGAN_SCALES = [2, 3, 4]
+REALESRGAN_MODEL_SCALES = {
+    "realesr-animevideov3": [2, 3, 4],
+    "realesrgan-x4plus": [4],
+    "realesrgan-x4plus-anime": [4],
+}
+GIGAPIXEL_MODELS = [
+    ("Standard", "standard"),
+    ("High Fidelity", "high_fidelity"),
+    ("Low Resolution", "low_resolution"),
+    ("Text & Shapes", "text_and_shapes"),
+    ("Art & CG", "art_and_cg"),
+]
+GIGAPIXEL_MODEL_SCALES = {model: [2, 3, 4, 6] for _label, model in GIGAPIXEL_MODELS}
 HDR_IMAGE_EXTENSIONS = {".jxr", ".wdp", ".hdp"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"} | HDR_IMAGE_EXTENSIONS
 ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
@@ -943,13 +975,15 @@ UI_TEXT_EN = {
     "その他": "Other",
     "キーコンフィグ": "Key Config",
     "エンジン": "Engine",
+    "モデル": "Model",
     "倍率": "Scale",
     "倍率を自動で決定する": "Choose scale automatically",
     "ノイズ": "Denoise",
     "Real-ESRGANモデル": "Real-ESRGAN model",
-    "ノイズ: Real-CUGAN専用。-1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。": "Denoise: Real-CUGAN only. -1 disables denoising. 0/1/2/3 remove noise more strongly as the value increases.",
+    "ノイズ: -1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。": "Denoise: -1 disables denoising. 0/1/2/3 remove noise more strongly as the value increases.",
     "Real-ESRGANはノイズ値を使わず、モデルで画風や復元傾向を選びます。": "Real-ESRGAN does not use the denoise value. Choose a model to change image style and restoration behavior.",
-    "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。 realesrgan-x4plus: 写真や一般画像向け。 realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。 RAIVではReal-ESRGAN選択中、倍率は4倍固定として処理します。": "realesr-animevideov3: lightweight standard model for anime/illustration. realesrgan-x4plus: for photos and general images. realesrgan-x4plus-anime: x4plus-derived model for anime/illustration. In RAIV, Real-ESRGAN is processed at fixed 4x scale.",
+    "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。 realesrgan-x4plus: 写真や一般画像向け。 realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。 realesr-animevideov3は2倍/3倍/4倍、x4plus系は4倍に対応します。": "realesr-animevideov3: lightweight standard model for anime/illustration. realesrgan-x4plus: for photos and general images. realesrgan-x4plus-anime: x4plus-derived model for anime/illustration. realesr-animevideov3 supports 2x/3x/4x; x4plus models support 4x.",
+    "Gigapixel AI CLIはProライセンスが必要です。各補正は0で無効、1～100で強度を指定します。": "Gigapixel AI CLI requires a Pro license. Set each adjustment to 0 to disable it, or 1-100 for its strength.",
     "tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。": "tile: 0 is automatic. If an integrated GPU runs out of memory, smaller values such as 128 or 256 can improve stability, but processing may be slower.",
     "エンジン先読み": "Engine prefetch",
     "選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Number of images to process ahead with the selected engine. Higher values reduce waiting but increase GPU load and temporary files.",
@@ -961,7 +995,7 @@ UI_TEXT_EN = {
     "縦サイズが閾値以上なら拡大処理しない": "Skip processing when height is at or above threshold",
     "縦サイズ閾値(px)": "Height threshold (px)",
     "モニタ解像度以上の画像をさらに拡大しても表示上の効果は小さく、処理時間とメモリ使用量が増えます。普段使うモニタの縦解像度に合わせる設定が目安です。": "Upscaling images already above monitor resolution often has little visible benefit and increases processing time and memory usage. Set this near your usual monitor height.",
-    "画像ごとに、縦サイズ閾値へ届く最小倍率を2倍/3倍/4倍から選びます。4倍でも届かない場合は4倍を使います。": "For each image, chooses the smallest 2x/3x/4x scale that reaches the height threshold. If even 4x does not reach it, 4x is used.",
+    "画像ごとに、現在のエンジンとモデルで選択可能な倍率から、縦サイズ閾値へ届く最小倍率を選びます。届かない場合は最大倍率を使います。": "For each image, chooses the smallest scale available for the current engine and model that reaches the height threshold. If none reaches it, the maximum scale is used.",
     "拡大結果を倍率フォルダに保存": "Save processed results to scale folder",
     "倍率フォルダがあれば表示に使う": "Use scale folder when available",
     "現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。": "Only the scale folder that exactly matches the current engine, model, and scale is used for display. Results from another engine or scale are not used as fallback.",
@@ -969,7 +1003,7 @@ UI_TEXT_EN = {
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
     "エンジンexeを選択": "Select engine exe",
-    "使用できる置換: {input} {output} {scale} {denoise} {tile} {model}": "Available placeholders: {input} {output} {scale} {denoise} {tile} {model}",
+    "使用できる置換: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}": "Available placeholders: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "アプリの二重起動を禁止する": "Prevent multiple app instances",
     "AI彩色を表示しない": "Hide AI Colorize tab",
@@ -1084,6 +1118,8 @@ UI_TEXT_EN = {
     "削除": "Delete",
     "連続生成中": "Continuous generation",
     "停止中": "Stopping",
+    "連続生成間隔": "Continuous interval",
+    "秒": "sec",
     "サイズ": "Size",
     "プロンプト": "Prompt",
     "除外したい要素": "Undesired Content",
@@ -1218,10 +1254,18 @@ class AppConfig:
     command_template: str = DEFAULT_REALCUGAN_TEMPLATE
     realcugan_command_template: str = DEFAULT_REALCUGAN_TEMPLATE
     realesrgan_command_template: str = DEFAULT_REALESRGAN_TEMPLATE
+    gigapixel_command_template: str = DEFAULT_GIGAPIXEL_TEMPLATE
     scale: int = 2
+    realesrgan_scale: int = 4
+    gigapixel_scale: int = 2
     denoise: int = 0
     tile: int = 0
     realesrgan_model: str = "realesr-animevideov3"
+    gigapixel_model: str = "standard"
+    gigapixel_denoise: int = 0
+    gigapixel_sharpen: int = 0
+    gigapixel_compression: int = 0
+    gigapixel_face_recovery: int = 0
     realcugan_prefetch_count: int = 10
     save_colorized_to_folder: bool = True
     use_colorized_folder_cache: bool = True
@@ -1266,6 +1310,7 @@ class AppConfig:
     novelai_auto_upscale: bool = True
     novelai_save_metadata_json: bool = False
     novelai_detail_expanded: bool = True
+    novelai_continuous_delay_seconds: float = 3.0
     viewer_prefetch_count: int = 20
     save_upscaled_to_scale_folder: bool = False
     use_scale_folder_cache: bool = True
@@ -1494,12 +1539,26 @@ def load_config() -> AppConfig:
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
         if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
+        if not config.gigapixel_command_template or config.gigapixel_command_template == LEGACY_GIGAPIXEL_TEMPLATE:
+            config.gigapixel_command_template = DEFAULT_GIGAPIXEL_TEMPLATE
         if "realcugan_command_template" not in data:
             config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
         if config.engine not in ENGINE_LABELS:
             config.engine = ENGINE_REALCUGAN
         if config.realesrgan_model not in REALESRGAN_MODELS:
             config.realesrgan_model = REALESRGAN_MODELS[0]
+        gigapixel_model_ids = {model for _label, model in GIGAPIXEL_MODELS}
+        if config.gigapixel_model not in gigapixel_model_ids:
+            config.gigapixel_model = GIGAPIXEL_MODELS[0][1]
+        config.scale = min(REALCUGAN_SCALES, key=lambda value: abs(value - int(config.scale)))
+        realesrgan_scales = REALESRGAN_MODEL_SCALES[config.realesrgan_model]
+        config.realesrgan_scale = min(realesrgan_scales, key=lambda value: abs(value - int(config.realesrgan_scale)))
+        gigapixel_scales = GIGAPIXEL_MODEL_SCALES[config.gigapixel_model]
+        config.gigapixel_scale = min(gigapixel_scales, key=lambda value: abs(value - int(config.gigapixel_scale)))
+        config.gigapixel_denoise = max(0, min(100, int(config.gigapixel_denoise)))
+        config.gigapixel_sharpen = max(0, min(100, int(config.gigapixel_sharpen)))
+        config.gigapixel_compression = max(0, min(100, int(config.gigapixel_compression)))
+        config.gigapixel_face_recovery = max(0, min(100, int(config.gigapixel_face_recovery)))
         if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
         if not config.novelai_output_dir:
@@ -1510,8 +1569,8 @@ def load_config() -> AppConfig:
             config.novelai_uc_preset = "strong"
         if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
             config.novelai_dataset_mode = "anime"
-        config.novelai_prompt_editor_height = max(160, min(720, int(config.novelai_prompt_editor_height)))
-        config.novelai_negative_prompt_editor_height = max(160, min(720, int(config.novelai_negative_prompt_editor_height)))
+        config.novelai_prompt_editor_height = max(0, int(config.novelai_prompt_editor_height))
+        config.novelai_negative_prompt_editor_height = max(0, int(config.novelai_negative_prompt_editor_height))
         if not config.novelai_model or config.novelai_model not in NOVELAI_MODEL_OPTIONS:
             config.novelai_model = DEFAULT_NOVELAI_MODEL
         if not config.novelai_sampler or config.novelai_sampler not in NOVELAI_SAMPLER_OPTIONS:
@@ -1525,6 +1584,7 @@ def load_config() -> AppConfig:
         config.novelai_scale = max(0.0, min(30.0, float(config.novelai_scale)))
         config.novelai_cfg_rescale = max(0.0, min(1.0, float(config.novelai_cfg_rescale)))
         config.novelai_batch_count = max(1, min(8, int(config.novelai_batch_count)))
+        config.novelai_continuous_delay_seconds = max(0.1, min(3600.0, float(config.novelai_continuous_delay_seconds)))
         config.display_brightness = max(-100.0, min(100.0, float(config.display_brightness)))
         config.display_contrast = max(0.0, min(3.0, float(config.display_contrast)))
         config.display_gamma = max(0.1, min(5.0, float(config.display_gamma)))
@@ -1537,6 +1597,8 @@ def load_config() -> AppConfig:
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
         if BUNDLED_REALESRGAN_EXE.exists() and not command_executable_exists(config.realesrgan_command_template):
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
+        if DEFAULT_GIGAPIXEL_EXE.exists() and not command_executable_exists(config.gigapixel_command_template):
+            config.gigapixel_command_template = DEFAULT_GIGAPIXEL_TEMPLATE
         if "compare_split" in data and 0 <= int(data.get("compare_split", 500)) <= 100:
             config.compare_split = int(data["compare_split"]) * 10
         legacy_token = str(config.novelai_api_token or "").strip()
@@ -2170,15 +2232,42 @@ class VerticalResizeHandle(QFrame):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._drag_y: int | None = None
+        self._hovered = False
         self.setCursor(Qt.SizeVerCursor)
-        self.setFixedHeight(10)
-        self.setFrameShape(QFrame.HLine)
-        self.setFrameShadow(QFrame.Sunken)
+        self.setFixedHeight(18)
+        self.setMouseTracking(True)
         self.setToolTip("ドラッグして高さを調整")
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        center_y = self.height() // 2
+        separator_color = self.palette().mid().color()
+        separator_color.setAlpha(90)
+        painter.setPen(QPen(separator_color, 1))
+        painter.drawLine(0, center_y, self.width(), center_y)
+
+        grip_color = self.palette().highlight().color() if self._hovered or self._drag_y is not None else self.palette().text().color()
+        grip_color.setAlpha(220 if self._hovered or self._drag_y is not None else 150)
+        painter.setPen(QPen(grip_color, 2, Qt.SolidLine, Qt.RoundCap))
+        center_x = self.width() // 2
+        for offset, half_width in ((-4, 8), (0, 11), (4, 8)):
+            painter.drawLine(center_x - half_width, center_y + offset, center_x + half_width, center_y + offset)
+
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.LeftButton:
             self._drag_y = event.globalPosition().toPoint().y()
+            self.update()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -2197,6 +2286,7 @@ class VerticalResizeHandle(QFrame):
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and self._drag_y is not None:
             self._drag_y = None
+            self.update()
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -3382,7 +3472,7 @@ class MainWindow(QMainWindow):
         self.deferred_page_steps = 0
         self.original_cache: OrderedDict[Path, QImage] = OrderedDict()
         self.image_height_cache: OrderedDict[Path, int] = OrderedDict()
-        self.processed_cache: OrderedDict[tuple[str, str, int, int, int, str], QImage] = OrderedDict()
+        self.processed_cache: OrderedDict[tuple, QImage] = OrderedDict()
         self.processing_paths: set[Path] = set()
         self.queued_paths: set[Path] = set()
         self.work_queue: queue.Queue[Path | None] = queue.Queue()
@@ -3452,7 +3542,7 @@ class MainWindow(QMainWindow):
         self.prefetch_timer.timeout.connect(self.schedule_prefetch)
         self.prefetch_generation = 0
         self.prefetching_original_paths: set[Path] = set()
-        self.prefetching_processed_keys: set[tuple[str, str, int, int, int, str]] = set()
+        self.prefetching_processed_keys: set[tuple] = set()
         self.prefetch_viewer_plan: list[Path] = []
         self.prefetch_engine_plan: list[Path] = []
         self.prefetch_engine_done_paths: set[Path] = set()
@@ -3686,9 +3776,11 @@ class MainWindow(QMainWindow):
         self.engine_combo.setCurrentText(ENGINE_LABELS.get(self.config_data.engine, ENGINE_LABELS[ENGINE_REALCUGAN]))
         self.engine_combo.currentTextChanged.connect(self.on_engine_changed)
         form.addRow("エンジン", self.engine_combo)
+        self.engine_form = form
+        self.realesrgan_model_combo = QComboBox()
+        self.realesrgan_model_combo.currentIndexChanged.connect(self.on_engine_model_changed)
+        form.addRow("モデル", self.realesrgan_model_combo)
         self.scale_combo = QComboBox()
-        self.scale_combo.addItems(["2", "3", "4"])
-        self.scale_combo.setCurrentText(str(self.config_data.scale))
         self.scale_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("倍率", self.scale_combo)
 
@@ -3697,11 +3789,6 @@ class MainWindow(QMainWindow):
         self.denoise_combo.setCurrentText(str(self.config_data.denoise))
         self.denoise_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("ノイズ", self.denoise_combo)
-        self.realesrgan_model_combo = QComboBox()
-        self.realesrgan_model_combo.addItems(REALESRGAN_MODELS)
-        self.realesrgan_model_combo.setCurrentText(self.config_data.realesrgan_model)
-        self.realesrgan_model_combo.currentTextChanged.connect(self.on_processing_settings_changed)
-        form.addRow("Real-ESRGANモデル", self.realesrgan_model_combo)
         self.tile_combo = QComboBox()
         self.tile_combo.setEditable(True)
         self.tile_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
@@ -3711,7 +3798,7 @@ class MainWindow(QMainWindow):
         self.tile_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("tile", self.tile_combo)
         realcugan_layout.addLayout(form)
-        self.denoise_help = self.help_label("ノイズ: Real-CUGAN専用。-1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。")
+        self.denoise_help = self.help_label("ノイズ: -1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。")
         realcugan_layout.addWidget(self.denoise_help)
         self.realesrgan_model_help = self.help_label("Real-ESRGANはノイズ値を使わず、モデルで画風や復元傾向を選びます。")
         realcugan_layout.addWidget(self.realesrgan_model_help)
@@ -3719,11 +3806,40 @@ class MainWindow(QMainWindow):
             "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。"
             " realesrgan-x4plus: 写真や一般画像向け。"
             " realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。"
-            " RAIVではReal-ESRGAN選択中、倍率は4倍固定として処理します。"
+            " realesr-animevideov3は2倍/3倍/4倍、x4plus系は4倍に対応します。"
         )
         realcugan_layout.addWidget(self.realesrgan_model_detail)
 
-        realcugan_layout.addWidget(self.help_label("tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。"))
+        self.gigapixel_denoise_spin = QSpinBox()
+        self.gigapixel_denoise_spin.setRange(0, 100)
+        self.gigapixel_denoise_spin.setSpecialValueText("0 (オフ)")
+        self.gigapixel_denoise_spin.setValue(self.config_data.gigapixel_denoise)
+        self.gigapixel_denoise_spin.valueChanged.connect(self.on_processing_settings_changed)
+        form.addRow("ノイズ", self.gigapixel_denoise_spin)
+        self.gigapixel_sharpen_spin = QSpinBox()
+        self.gigapixel_sharpen_spin.setRange(0, 100)
+        self.gigapixel_sharpen_spin.setSpecialValueText("0 (オフ)")
+        self.gigapixel_sharpen_spin.setValue(self.config_data.gigapixel_sharpen)
+        self.gigapixel_sharpen_spin.valueChanged.connect(self.on_processing_settings_changed)
+        form.addRow("Sharpen", self.gigapixel_sharpen_spin)
+        self.gigapixel_compression_spin = QSpinBox()
+        self.gigapixel_compression_spin.setRange(0, 100)
+        self.gigapixel_compression_spin.setSpecialValueText("0 (オフ)")
+        self.gigapixel_compression_spin.setValue(self.config_data.gigapixel_compression)
+        self.gigapixel_compression_spin.valueChanged.connect(self.on_processing_settings_changed)
+        form.addRow("Fix Compression", self.gigapixel_compression_spin)
+        self.gigapixel_face_recovery_spin = QSpinBox()
+        self.gigapixel_face_recovery_spin.setRange(0, 100)
+        self.gigapixel_face_recovery_spin.setSpecialValueText("0 (オフ)")
+        self.gigapixel_face_recovery_spin.setValue(self.config_data.gigapixel_face_recovery)
+        self.gigapixel_face_recovery_spin.valueChanged.connect(self.on_processing_settings_changed)
+        form.addRow("Face Recovery", self.gigapixel_face_recovery_spin)
+        self.gigapixel_help = self.help_label("Gigapixel AI CLIはProライセンスが必要です。各補正は0で無効、1～100で強度を指定します。")
+        realcugan_layout.addWidget(self.gigapixel_help)
+
+        self.tile_help = self.help_label("tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。")
+        realcugan_layout.addWidget(self.tile_help)
+        realcugan_layout.addWidget(self.separator())
 
         form3 = QFormLayout()
         self.realcugan_prefetch_spin = QSpinBox()
@@ -3746,7 +3862,7 @@ class MainWindow(QMainWindow):
         self.auto_scale_check.setChecked(self.config_data.auto_realcugan_scale)
         self.auto_scale_check.stateChanged.connect(self.on_processing_settings_changed)
         form3.addRow(self.auto_scale_check)
-        form3.addRow(self.help_label("画像ごとに、縦サイズ閾値へ届く最小倍率を2倍/3倍/4倍から選びます。4倍でも届かない場合は4倍を使います。"))
+        form3.addRow(self.help_label("画像ごとに、現在のエンジンとモデルで選択可能な倍率から、縦サイズ閾値へ届く最小倍率を選びます。届かない場合は最大倍率を使います。"))
         realcugan_layout.addLayout(form3)
 
         self.save_scale_check = QCheckBox("拡大結果を倍率フォルダに保存")
@@ -3772,7 +3888,7 @@ class MainWindow(QMainWindow):
         exe_button = QPushButton("エンジンexeを選択")
         exe_button.clicked.connect(self.choose_engine_exe)
         realcugan_layout.addWidget(exe_button)
-        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {scale} {denoise} {tile} {model}"))
+        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}"))
         realcugan_layout.addStretch(1)
         realcugan_tab.setWidget(realcugan_content)
 
@@ -4397,7 +4513,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("プロンプト"))
         self.novelai_prompt_edit = PromptSubmitTextEdit(self.config_data.novelai_prompt)
-        self.novelai_prompt_edit.setMinimumHeight(80)
+        self.novelai_prompt_edit.setMinimumHeight(0)
         self.novelai_prompt_edit.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_prompt_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_prompt_edit)
@@ -4413,7 +4529,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.novelai_prompt_resize_handle)
         layout.addWidget(QLabel("除外したい要素"))
         self.novelai_negative_edit = PromptSubmitTextEdit(self.config_data.novelai_negative_prompt)
-        self.novelai_negative_edit.setMinimumHeight(70)
+        self.novelai_negative_edit.setMinimumHeight(0)
         self.novelai_negative_edit.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_negative_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_edit)
@@ -4603,6 +4719,21 @@ class MainWindow(QMainWindow):
         self.novelai_generate_button = QPushButton("生成")
         self.novelai_generate_button.installEventFilter(self)
         run_row.addWidget(self.novelai_generate_button)
+        self.novelai_continuous_delay_widget = QWidget()
+        delay_layout = QHBoxLayout(self.novelai_continuous_delay_widget)
+        delay_layout.setContentsMargins(0, 0, 0, 0)
+        delay_layout.setAlignment(Qt.AlignLeft)
+        delay_layout.addWidget(QLabel("連続生成間隔"))
+        self.novelai_continuous_delay_spin = QDoubleSpinBox()
+        self.novelai_continuous_delay_spin.setRange(0.1, 3600.0)
+        self.novelai_continuous_delay_spin.setDecimals(1)
+        self.novelai_continuous_delay_spin.setSingleStep(0.5)
+        self.novelai_continuous_delay_spin.setFixedWidth(92)
+        self.novelai_continuous_delay_spin.setSuffix(f" {self.tr_ui('秒')}")
+        self.novelai_continuous_delay_spin.setValue(max(0.1, min(3600.0, float(self.config_data.novelai_continuous_delay_seconds))))
+        self.novelai_continuous_delay_spin.valueChanged.connect(self.on_novelai_settings_changed)
+        delay_layout.addWidget(self.novelai_continuous_delay_spin)
+        run_row.addWidget(self.novelai_continuous_delay_widget)
         self.novelai_import_button = QPushButton("メタデータをインポート")
         self.novelai_import_button.clicked.connect(self.import_novelai_metadata_dialog)
         run_row.addWidget(self.novelai_import_button)
@@ -4614,6 +4745,7 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         self.sync_novelai_size_preset()
         self.update_novelai_anlas_preview()
+        self.update_novelai_continuous_delay_visibility()
         return content
 
     def build_keyconfig_tab(self) -> QWidget:
@@ -4861,7 +4993,7 @@ class MainWindow(QMainWindow):
         return prompt, "anime"
 
     def clamp_novelai_prompt_editor_height(self, height: int) -> int:
-        return max(160, min(720, int(height)))
+        return max(0, int(height))
 
     def apply_novelai_prompt_editor_heights(self) -> None:
         prompt_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
@@ -5186,6 +5318,18 @@ class MainWindow(QMainWindow):
             editor = getattr(self, editor_name, None)
             if isinstance(editor, NovelAIPromptListEditor):
                 editor.apply_language(self.ui_language())
+        if hasattr(self, "novelai_continuous_delay_spin"):
+            self.novelai_continuous_delay_spin.setSuffix(f" {self.tr_ui('秒')}")
+        off_text = "0 (Off)" if self.ui_language() == "en" else "0 (オフ)"
+        for name in (
+            "gigapixel_denoise_spin",
+            "gigapixel_sharpen_spin",
+            "gigapixel_compression_spin",
+            "gigapixel_face_recovery_spin",
+        ):
+            spin = getattr(self, name, None)
+            if isinstance(spin, QSpinBox):
+                spin.setSpecialValueText(off_text)
         self.update_novelai_generate_button_text()
         self.update_zoom_label(self.viewer.current_scale() if hasattr(self, "viewer") else 1.0)
         self.update_page_position_slider()
@@ -5555,16 +5699,29 @@ class MainWindow(QMainWindow):
             self.novelai_generate_button.setText(self.tr_ui(text))
             self.novelai_generate_button.setEnabled(enabled)
 
+    def update_novelai_continuous_delay_visibility(self) -> None:
+        if hasattr(self, "novelai_continuous_delay_widget"):
+            self.novelai_continuous_delay_widget.setVisible(bool(self.novelai_continuous_generation_enabled))
+
+    def novelai_continuous_delay_ms(self) -> int:
+        if hasattr(self, "novelai_continuous_delay_spin"):
+            seconds = self.novelai_continuous_delay_spin.value()
+        else:
+            seconds = self.config_data.novelai_continuous_delay_seconds
+        return max(100, int(round(float(seconds) * 1000)))
+
     def set_novelai_continuous_generation_enabled(self, enabled: bool) -> None:
         self.novelai_continuous_generation_enabled = bool(enabled)
         if enabled:
             self.novelai_continuous_generation_stopping = False
         self.update_novelai_generate_button_text()
+        self.update_novelai_continuous_delay_visibility()
 
     def request_stop_novelai_continuous_generation(self) -> None:
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = bool(self.novelai_generation_running)
         self.update_novelai_generate_button_text()
+        self.update_novelai_continuous_delay_visibility()
         if self.novelai_generation_running:
             self.novelai_status_label.setText("連続生成を停止します。実行中の生成は完了まで続きます。")
         else:
@@ -5606,8 +5763,7 @@ class MainWindow(QMainWindow):
             and not self.novelai_continuous_generation_stopping
             and not getattr(self, "closing", False)
         ):
-            delay_ms = random.randint(100, 1000)
-            QTimer.singleShot(delay_ms, self.generate_novelai_images)
+            QTimer.singleShot(self.novelai_continuous_delay_ms(), self.generate_novelai_images)
         else:
             self.set_novelai_continuous_generation_enabled(False)
             self.novelai_continuous_generation_stopping = False
@@ -5749,9 +5905,26 @@ class MainWindow(QMainWindow):
             self.novelai_status_label.setText(f"NovelAI生成完了: {len(paths)}枚")
         if result.get("auto_open", True):
             self.open_path_deferred(paths[-1])
+        else:
+            self.refresh_current_folder_after_novelai_generation(paths)
         if result.get("auto_upscale", True):
             QTimer.singleShot(200, lambda generated=paths: self.enqueue_generated_upscales(generated))
         self.continue_novelai_generation_if_needed()
+
+    def refresh_current_folder_after_novelai_generation(self, paths: list[Path]) -> None:
+        if self.archive_mode_active() or not self.image_paths or self.current_index < 0:
+            return
+        try:
+            current_path = self.image_paths[self.current_index].resolve()
+            current_folder = self.current_real_folder()
+            generated_folders = {path.resolve().parent for path in paths}
+        except OSError:
+            return
+        if current_folder is None or current_folder.resolve() not in generated_folders:
+            return
+        self.folder_list_loading = True
+        self.deferred_page_steps = 0
+        self.collect_folder_images_async(current_folder, current_path)
 
     def enqueue_generated_upscales(self, paths: list[Path]) -> None:
         for index, path in enumerate(paths):
@@ -6184,10 +6357,8 @@ class MainWindow(QMainWindow):
         self.save_active_command_template()
         self.config_data.engine = self.current_engine()
         self.config_data.command_template = self.config_data.realcugan_command_template
-        self.config_data.scale = int(self.scale_combo.currentText())
-        self.config_data.denoise = int(self.denoise_combo.currentText())
+        self.save_engine_controls(self.current_engine())
         self.config_data.tile = self.current_tile_size()
-        self.config_data.realesrgan_model = self.realesrgan_model_combo.currentText()
         self.config_data.realcugan_prefetch_count = self.realcugan_prefetch_spin.value()
         self.config_data.save_colorized_to_folder = self.save_colorized_check.isChecked()
         self.config_data.use_colorized_folder_cache = self.use_colorized_cache_check.isChecked()
@@ -6293,6 +6464,7 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_auto_upscale = self.novelai_auto_upscale_check.isChecked()
             self.config_data.novelai_save_metadata_json = self.novelai_metadata_check.isChecked()
             self.config_data.novelai_detail_expanded = self.novelai_detail_button.isChecked()
+            self.config_data.novelai_continuous_delay_seconds = self.novelai_continuous_delay_spin.value()
         self.config_data.cleanup_temp_on_start = self.cleanup_check.isChecked()
         self.config_data.settings_tab = SETTINGS_TAB_IDS[max(0, min(len(SETTINGS_TAB_IDS) - 1, self.tabs.currentIndex()))]
         if not self.is_app_fullscreen():
@@ -6655,21 +6827,93 @@ class MainWindow(QMainWindow):
         return ENGINE_REALCUGAN
 
     def default_template_for_engine(self, engine: str) -> str:
-        return DEFAULT_REALESRGAN_TEMPLATE if engine == ENGINE_REALESRGAN else DEFAULT_REALCUGAN_TEMPLATE
+        if engine == ENGINE_REALESRGAN:
+            return DEFAULT_REALESRGAN_TEMPLATE
+        if engine == ENGINE_GIGAPIXEL:
+            return DEFAULT_GIGAPIXEL_TEMPLATE
+        return DEFAULT_REALCUGAN_TEMPLATE
 
     def active_command_template(self) -> str:
-        return self.config_data.realesrgan_command_template if self.current_engine() == ENGINE_REALESRGAN else self.config_data.realcugan_command_template
+        engine = self.current_engine()
+        if engine == ENGINE_REALESRGAN:
+            return self.config_data.realesrgan_command_template
+        if engine == ENGINE_GIGAPIXEL:
+            return self.config_data.gigapixel_command_template
+        return self.config_data.realcugan_command_template
 
     def engine_label(self) -> str:
         return ENGINE_LABELS.get(self.current_engine(), ENGINE_LABELS[ENGINE_REALCUGAN])
 
+    def engine_model_options(self, engine: str) -> list[tuple[str, str]]:
+        if engine == ENGINE_REALESRGAN:
+            return [(model, model) for model in REALESRGAN_MODELS]
+        if engine == ENGINE_GIGAPIXEL:
+            return GIGAPIXEL_MODELS
+        return [("-", "")]
+
+    def configured_model_for_engine(self, engine: str) -> str:
+        if engine == ENGINE_REALESRGAN:
+            return self.config_data.realesrgan_model
+        if engine == ENGINE_GIGAPIXEL:
+            return self.config_data.gigapixel_model
+        return ""
+
+    def current_engine_model(self) -> str:
+        data = self.realesrgan_model_combo.currentData() if hasattr(self, "realesrgan_model_combo") else None
+        return str(data or "")
+
+    def available_scales(self, engine: str | None = None, model: str | None = None) -> list[int]:
+        engine = engine or self.current_engine()
+        model = self.current_engine_model() if model is None else model
+        if engine == ENGINE_REALESRGAN:
+            return list(REALESRGAN_MODEL_SCALES.get(model, [REALESRGAN_FIXED_SCALE]))
+        if engine == ENGINE_GIGAPIXEL:
+            return list(GIGAPIXEL_MODEL_SCALES.get(model, [2, 3, 4, 6]))
+        return list(REALCUGAN_SCALES)
+
+    def configured_scale_for_engine(self, engine: str) -> int:
+        if engine == ENGINE_REALESRGAN:
+            return self.config_data.realesrgan_scale
+        if engine == ENGINE_GIGAPIXEL:
+            return self.config_data.gigapixel_scale
+        return self.config_data.scale
+
+    def populate_engine_model_combo(self, engine: str) -> None:
+        options = self.engine_model_options(engine)
+        current_options = [str(self.realesrgan_model_combo.itemData(index) or "") for index in range(self.realesrgan_model_combo.count())]
+        target_options = [value for _label, value in options]
+        if current_options == target_options:
+            return
+        selected = self.configured_model_for_engine(engine)
+        self.realesrgan_model_combo.blockSignals(True)
+        self.realesrgan_model_combo.clear()
+        for label, value in options:
+            self.realesrgan_model_combo.addItem(label, value)
+        selected_index = self.realesrgan_model_combo.findData(selected)
+        self.realesrgan_model_combo.setCurrentIndex(max(0, selected_index))
+        self.realesrgan_model_combo.blockSignals(False)
+
+    def populate_scale_combo(self, engine: str) -> None:
+        scales = self.available_scales(engine)
+        current_scales = [int(self.scale_combo.itemText(index)) for index in range(self.scale_combo.count())]
+        if current_scales == scales:
+            return
+        preferred = self.configured_scale_for_engine(engine)
+        selected = min(scales, key=lambda value: abs(value - preferred))
+        self.scale_combo.blockSignals(True)
+        self.scale_combo.clear()
+        self.scale_combo.addItems([str(value) for value in scales])
+        self.scale_combo.setCurrentText(str(selected))
+        self.scale_combo.blockSignals(False)
+
     def auto_realcugan_scale_for_height(self, height: int) -> int:
         threshold = max(1, int(self.skip_height_spin.value() if hasattr(self, "skip_height_spin") else self.config_data.skip_realcugan_height_threshold))
         height = max(1, int(height))
-        for scale in (2, 3, 4):
+        scales = self.available_scales()
+        for scale in scales:
             if height * scale >= threshold:
                 return scale
-        return 4
+        return scales[-1]
 
     def remember_image_height(self, source: Path, height: int) -> None:
         if height <= 0:
@@ -6701,12 +6945,11 @@ class MainWindow(QMainWindow):
         return image.height()
 
     def effective_scale(self, source: Path | None = None) -> int:
-        if self.current_engine() == ENGINE_REALESRGAN:
-            return REALESRGAN_FIXED_SCALE
         if (
             source is not None
             and hasattr(self, "auto_scale_check")
             and self.auto_scale_check.isChecked()
+            and len(self.available_scales()) > 1
         ):
             height = self.image_height_for_scale(source)
             if height > 0:
@@ -6723,28 +6966,98 @@ class MainWindow(QMainWindow):
         except ValueError:
             return 0
 
+    def current_engine_tile_size(self) -> int:
+        return self.current_tile_size() if self.current_engine() in {ENGINE_REALCUGAN, ENGINE_REALESRGAN} else 0
+
+    def current_engine_denoise(self) -> int:
+        if self.current_engine() == ENGINE_REALCUGAN:
+            return int(self.denoise_combo.currentText())
+        if self.current_engine() == ENGINE_GIGAPIXEL:
+            return self.gigapixel_denoise_spin.value()
+        return 0
+
+    def current_gigapixel_adjustments(self) -> tuple[int, int, int]:
+        if self.current_engine() != ENGINE_GIGAPIXEL:
+            return 0, 0, 0
+        return (
+            self.gigapixel_sharpen_spin.value(),
+            self.gigapixel_compression_spin.value(),
+            self.gigapixel_face_recovery_spin.value(),
+        )
+
+    def processing_settings_tuple(self, source: Path) -> tuple:
+        sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+        return (
+            self.normalized_path_text(source),
+            self.current_engine(),
+            self.effective_scale(source),
+            self.current_engine_denoise(),
+            self.current_engine_tile_size(),
+            self.current_engine_model(),
+            sharpen,
+            compression,
+            face_recovery,
+        )
+
     def save_active_command_template(self) -> None:
         if not hasattr(self, "command_edit"):
             return
         text = self.command_edit.text().strip() or self.default_template_for_engine(self.current_engine())
         if self.current_engine() == ENGINE_REALESRGAN:
             self.config_data.realesrgan_command_template = text
+        elif self.current_engine() == ENGINE_GIGAPIXEL:
+            self.config_data.gigapixel_command_template = text
         else:
             self.config_data.realcugan_command_template = text
+
+    def save_engine_controls(self, engine: str) -> None:
+        if not hasattr(self, "scale_combo") or not self.scale_combo.currentText():
+            return
+        scale = int(self.scale_combo.currentText())
+        if engine == ENGINE_REALESRGAN:
+            model = self.current_engine_model()
+            if model in REALESRGAN_MODELS:
+                self.config_data.realesrgan_model = model
+            self.config_data.realesrgan_scale = scale
+        elif engine == ENGINE_GIGAPIXEL:
+            model = self.current_engine_model()
+            if model in {value for _label, value in GIGAPIXEL_MODELS}:
+                self.config_data.gigapixel_model = model
+            self.config_data.gigapixel_scale = scale
+            self.config_data.gigapixel_denoise = self.gigapixel_denoise_spin.value()
+            self.config_data.gigapixel_sharpen = self.gigapixel_sharpen_spin.value()
+            self.config_data.gigapixel_compression = self.gigapixel_compression_spin.value()
+            self.config_data.gigapixel_face_recovery = self.gigapixel_face_recovery_spin.value()
+        else:
+            self.config_data.scale = scale
+            self.config_data.denoise = int(self.denoise_combo.currentText())
 
     def apply_engine_ui(self) -> None:
         if not hasattr(self, "engine_combo"):
             return
         engine = self.current_engine()
+        self.populate_engine_model_combo(engine)
+        self.populate_scale_combo(engine)
+        scales = self.available_scales(engine)
         auto_scale = bool(getattr(self, "auto_scale_check", None) and self.auto_scale_check.isChecked())
-        self.scale_combo.setEnabled(engine == ENGINE_REALCUGAN and not auto_scale)
+        self.scale_combo.setEnabled(len(scales) > 1 and not auto_scale)
         if hasattr(self, "auto_scale_check"):
-            self.auto_scale_check.setEnabled(engine == ENGINE_REALCUGAN)
-        self.denoise_combo.setEnabled(engine == ENGINE_REALCUGAN)
-        self.denoise_help.setEnabled(engine == ENGINE_REALCUGAN)
-        self.realesrgan_model_combo.setEnabled(engine == ENGINE_REALESRGAN)
-        self.realesrgan_model_help.setEnabled(engine == ENGINE_REALESRGAN)
-        self.realesrgan_model_detail.setEnabled(engine == ENGINE_REALESRGAN)
+            self.auto_scale_check.setEnabled(len(scales) > 1)
+        self.engine_form.setRowVisible(self.realesrgan_model_combo, engine != ENGINE_REALCUGAN)
+        self.engine_form.setRowVisible(self.denoise_combo, engine == ENGINE_REALCUGAN)
+        self.engine_form.setRowVisible(self.tile_combo, engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
+        self.tile_help.setVisible(engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
+        self.denoise_help.setVisible(engine == ENGINE_REALCUGAN)
+        self.realesrgan_model_help.setVisible(engine == ENGINE_REALESRGAN)
+        self.realesrgan_model_detail.setVisible(engine == ENGINE_REALESRGAN)
+        for control in (
+            self.gigapixel_denoise_spin,
+            self.gigapixel_sharpen_spin,
+            self.gigapixel_compression_spin,
+            self.gigapixel_face_recovery_spin,
+        ):
+            self.engine_form.setRowVisible(control, engine == ENGINE_GIGAPIXEL)
+        self.gigapixel_help.setVisible(engine == ENGINE_GIGAPIXEL)
         self.command_edit.blockSignals(True)
         self.command_edit.setText(self.active_command_template())
         self.command_edit.blockSignals(False)
@@ -6836,9 +7149,10 @@ class MainWindow(QMainWindow):
             self.normalized_path_text(path),
             self.current_engine(),
             self.effective_scale(path),
-            int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
-            self.current_tile_size(),
-            self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
+            self.current_engine_denoise(),
+            self.current_engine_tile_size(),
+            self.current_engine_model(),
+            *self.current_gigapixel_adjustments(),
             self.viewer.display_rotation % 360,
             self.viewer.display_flip_horizontal,
             self.viewer.display_flip_vertical,
@@ -7685,6 +7999,8 @@ class MainWindow(QMainWindow):
         if re.fullmatch(r"realcugan(?:_[a-z0-9_.-]+)?_x\d+", name):
             return True
         if re.fullmatch(r"realesrgan_[a-z0-9_.-]+_x\d+", name):
+            return True
+        if re.fullmatch(r"gigapixel_[a-z0-9_.-]+_x\d+", name):
             return True
         return False
 
@@ -8580,10 +8896,23 @@ class MainWindow(QMainWindow):
         previous_text = self.command_edit.text().strip()
         if previous_engine == ENGINE_REALESRGAN:
             self.config_data.realesrgan_command_template = previous_text or DEFAULT_REALESRGAN_TEMPLATE
+        elif previous_engine == ENGINE_GIGAPIXEL:
+            self.config_data.gigapixel_command_template = previous_text or DEFAULT_GIGAPIXEL_TEMPLATE
         else:
             self.config_data.realcugan_command_template = previous_text or DEFAULT_REALCUGAN_TEMPLATE
+        self.save_engine_controls(previous_engine)
         self.config_data.engine = self.current_engine()
         self.apply_engine_ui()
+        self.on_processing_settings_changed()
+
+    def on_engine_model_changed(self, *_args) -> None:
+        engine = self.current_engine()
+        model = self.current_engine_model()
+        if engine == ENGINE_REALESRGAN and model in REALESRGAN_MODELS:
+            self.config_data.realesrgan_model = model
+        elif engine == ENGINE_GIGAPIXEL and model in {value for _label, value in GIGAPIXEL_MODELS}:
+            self.config_data.gigapixel_model = model
+        self.populate_scale_combo(engine)
         self.on_processing_settings_changed()
 
     def on_cleanup_changed(self) -> None:
@@ -8640,6 +8969,11 @@ class MainWindow(QMainWindow):
         if path:
             if engine == ENGINE_REALESRGAN:
                 self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}}')
+            elif engine == ENGINE_GIGAPIXEL:
+                self.command_edit.setText(
+                    f'"{path}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
+                    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
+                )
             else:
                 self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}')
             self.persist_config()
@@ -8679,9 +9013,9 @@ class MainWindow(QMainWindow):
                 continue
             started = time.perf_counter()
             originals: dict[Path, QImage] = {}
-            processed: dict[tuple[str, str, int, int, int, str], QImage] = {}
+            processed: dict[tuple, QImage] = {}
             attempted_originals: list[Path] = []
-            attempted_processed: list[tuple[str, str, int, int, int, str]] = []
+            attempted_processed: list[tuple] = []
             if kind == "original":
                 path = self.normalized_path(Path(source))
                 attempted_originals.append(path)
@@ -8757,7 +9091,7 @@ class MainWindow(QMainWindow):
             resolved = self.normalized_path(path)
             if resolved not in self.original_cache and resolved not in self.prefetching_original_paths:
                 original_paths.append(resolved)
-        processed_candidates: list[tuple[tuple[str, str, int, int, int, str], Path]] = []
+        processed_candidates: list[tuple[tuple, Path]] = []
         for path in viewer_plan:
             key = self.processing_key(path)
             if key in self.processed_cache or key in self.prefetching_processed_keys:
@@ -8805,9 +9139,9 @@ class MainWindow(QMainWindow):
         self,
         generation: int,
         originals: dict[Path, QImage],
-        processed: dict[tuple[str, str, int, int, int, str], QImage],
+        processed: dict[tuple, QImage],
         attempted_originals: list[Path],
-        attempted_processed: list[tuple[str, str, int, int, int, str]],
+        attempted_processed: list[tuple],
     ) -> None:
         for path in attempted_originals:
             self.prefetching_original_paths.discard(path)
@@ -8857,18 +9191,11 @@ class MainWindow(QMainWindow):
             )
         self.record_profile("先読み反映(UI)", (time.perf_counter() - started) * 1000)
 
-    def is_current_processing_key(self, key: tuple[str, str, int, int, int, str], current_paths: set[str] | None = None) -> bool:
-        if len(key) != 6:
+    def is_current_processing_key(self, key: tuple, current_paths: set[str] | None = None) -> bool:
+        if len(key) != 9:
             return False
         current_paths = current_paths or self.image_path_string_set
-        return (
-            key[0] in current_paths
-            and key[1] == self.current_engine()
-            and key[2] == self.effective_scale(Path(key[0]))
-            and key[3] == (int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0)
-            and key[4] == self.current_tile_size()
-            and key[5] == (self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "")
-        )
+        return key[0] in current_paths and key == self.processing_settings_tuple(Path(key[0]))
 
     def make_plan(self, count: int) -> list[Path]:
         plan = [self.image_paths[self.current_index]]
@@ -8960,19 +9287,27 @@ class MainWindow(QMainWindow):
         return not image.isNull() and image.height() >= self.config_data.skip_realcugan_height_threshold
 
     def run_upscale_engine(self, source: Path) -> dict:
+        engine = self.current_engine()
+        processing_key = self.processing_key(source)
         engine_input = self.display_source_path(source)
         output_path, temporary_output = self.prepare_output_path(engine_input)
+        sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
         values = {
             "input": str(engine_input),
             "output": str(output_path),
+            "output_dir": str(output_path.parent),
             "scale": self.effective_scale(source),
-            "denoise": self.denoise_combo.currentText(),
-            "tile": self.current_tile_size(),
-            "model": self.realesrgan_model_combo.currentText(),
+            "denoise": self.current_engine_denoise(),
+            "tile": self.current_engine_tile_size(),
+            "model": self.current_engine_model(),
+            "sharpen": sharpen,
+            "compression": compression,
+            "face_recovery": face_recovery,
         }
         command = self.active_command_template().format(**values)
         try:
             started = time.perf_counter()
+            started_wall_time = time.time()
             completed = subprocess.run(
                 command,
                 stdout=subprocess.PIPE,
@@ -8985,6 +9320,10 @@ class MainWindow(QMainWindow):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 check=False,
             )
+            if completed.returncode == 0 and engine == ENGINE_GIGAPIXEL and not output_path.exists():
+                generated_output = self.find_gigapixel_output(engine_input, output_path.parent, started_wall_time)
+                if generated_output is not None:
+                    shutil.move(str(generated_output), str(output_path))
             image = load_image(output_path, self.config_data.hdr_tonemap_brightness) if completed.returncode == 0 and output_path.exists() else QImage()
             if temporary_output and output_path.exists():
                 output_path.unlink(missing_ok=True)
@@ -8993,10 +9332,31 @@ class MainWindow(QMainWindow):
                 "code": completed.returncode,
                 "output": completed.stdout.strip(),
                 "image": image,
+                "key": processing_key,
                 "elapsed_ms": (time.perf_counter() - started) * 1000,
             }
         except Exception as exc:
-            return {"path": source, "code": 1, "output": str(exc), "image": QImage()}
+            return {"path": source, "code": 1, "output": str(exc), "image": QImage(), "key": processing_key}
+
+    def find_gigapixel_output(self, source: Path, output_dir: Path, started: float) -> Path | None:
+        source_stem = source.stem.casefold()
+        candidates: list[Path] = []
+        try:
+            for path in output_dir.iterdir():
+                if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+                    continue
+                try:
+                    if path.stat().st_mtime < started - 1.0:
+                        continue
+                except OSError:
+                    continue
+                if path.stem.casefold().startswith(source_stem):
+                    candidates.append(path)
+        except OSError:
+            return None
+        if not candidates:
+            return None
+        return max(candidates, key=lambda path: path.stat().st_mtime)
 
     def on_process_started(self, path_text: str) -> None:
         path = Path(path_text)
@@ -9011,11 +9371,15 @@ class MainWindow(QMainWindow):
         if result["code"] == 0 and not result["image"].isNull():
             self.record_profile(f"{self.engine_label()}処理", float(result.get("elapsed_ms", 0.0)))
             self.append_log(f"Done: {self.display_name(path)}")
-            key = self.processing_key(path)
+            key = result.get("key")
+            if not isinstance(key, tuple):
+                key = self.processing_key(path)
             self.processed_cache[key] = result["image"]
-            self.prefetch_engine_done_paths.add(self.normalized_path(path))
+            current_result = self.is_current_processing_key(key)
+            if current_result:
+                self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
-            if self.current_index >= 0:
+            if current_result and self.current_index >= 0:
                 normalized = self.normalized_path(path)
                 current_normalized = self.normalized_path(self.image_paths[self.current_index])
                 secondary_index = self.secondary_page_index()
@@ -9068,21 +9432,21 @@ class MainWindow(QMainWindow):
         folder = source.parent / folder_name
         if create_dir:
             folder.mkdir(parents=True, exist_ok=True)
-        return folder / source.name
+        output_name = source.with_suffix(".png").name if self.current_engine() == ENGINE_GIGAPIXEL else source.name
+        return folder / output_name
 
-    def processing_key(self, source: Path) -> tuple[str, str, int, int, int, str]:
-        return (
-            self.normalized_path_text(source),
-            self.current_engine(),
-            self.effective_scale(source),
-            int(self.denoise_combo.currentText()) if self.current_engine() == ENGINE_REALCUGAN else 0,
-            self.current_tile_size(),
-            self.realesrgan_model_combo.currentText() if self.current_engine() == ENGINE_REALESRGAN else "",
-        )
+    def processing_key(self, source: Path) -> tuple:
+        return self.processing_settings_tuple(source)
 
     def cache_model_name(self) -> str:
         if self.current_engine() == ENGINE_REALESRGAN:
-            raw = f"realesrgan_{self.realesrgan_model_combo.currentText()}"
+            raw = f"realesrgan_{self.current_engine_model()}"
+        elif self.current_engine() == ENGINE_GIGAPIXEL:
+            sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+            raw = (
+                f"gigapixel_{self.current_engine_model()}_d{self.current_engine_denoise()}"
+                f"_s{sharpen}_c{compression}_f{face_recovery}"
+            )
         else:
             raw = "realcugan"
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)
