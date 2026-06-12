@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import base64
 import ctypes
 import io
 import json
@@ -28,20 +29,21 @@ from pathlib import Path, PurePosixPath
 
 try:
     from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractItemView,
         QButtonGroup,
         QCheckBox,
-        QComboBox,
+        QComboBox as QtComboBox,
         QDialog,
         QDialogButtonBox,
-        QDoubleSpinBox,
+        QDoubleSpinBox as QtDoubleSpinBox,
         QFileDialog,
         QFormLayout,
         QFrame,
+        QGraphicsOpacityEffect,
         QGridLayout,
         QHBoxLayout,
         QInputDialog,
@@ -57,10 +59,13 @@ try:
         QScrollArea,
         QSizePolicy,
         QSlider,
-        QSpinBox,
+        QSpinBox as QtSpinBox,
         QSplitter,
+        QSplitterHandle,
         QTabWidget,
         QTextEdit,
+        QTreeWidget,
+        QTreeWidgetItem,
         QVBoxLayout,
         QWidget,
     )
@@ -98,7 +103,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -126,6 +131,14 @@ DEFAULT_COLORIZE_NEGATIVE_PROMPT = (
     "low quality, blurry, broken lineart, warped text, unreadable text, watermark, logo"
 )
 DEFAULT_NOVELAI_MODEL = "nai-diffusion-4-5-curated"
+THEME_SYSTEM = "system"
+THEME_LIGHT = "light"
+THEME_DARK = "dark"
+THEME_OPTIONS = [
+    (THEME_SYSTEM, "Windowsの設定に同期"),
+    (THEME_LIGHT, "ライトテーマ"),
+    (THEME_DARK, "ダークテーマ"),
+]
 DEFAULT_NOVELAI_SAMPLER = "k_euler_ancestral"
 DEFAULT_NOVELAI_SCHEDULER = "karras"
 DEFAULT_NOVELAI_GENERATED_DIR = APP_DIR / "RAIV_generated"
@@ -156,6 +169,9 @@ NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL = {
 }
 RAIV_DISABLED_PROMPT_START = "<<RAIV_DISABLED_PROMPT>>"
 RAIV_DISABLED_PROMPT_END = "<</RAIV_DISABLED_PROMPT>>"
+RAIV_PROMPT_FOLDER_START = "<<RAIV_PROMPT_FOLDER:"
+RAIV_PROMPT_RANDOM_FOLDER_START = "<<RAIV_PROMPT_RANDOM_FOLDER:"
+RAIV_PROMPT_FOLDER_END = "<</RAIV_PROMPT_FOLDER>>"
 NOVELAI_UC_PRESET_OPTIONS = [
     ("strong", "強い"),
     ("light", "弱い"),
@@ -1018,6 +1034,10 @@ UI_TEXT_EN = {
     "バージョン": "Version",
     "アップデートを確認": "Check for updates",
     "表示言語": "Language",
+    "テーマ": "Theme",
+    "Windowsの設定に同期": "Follow Windows settings",
+    "ライトテーマ": "Light theme",
+    "ダークテーマ": "Dark theme",
     "ビューアー先読み": "Viewer prefetch",
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
     "拡大縮小を高品質に補完する": "Use high-quality scaling",
@@ -1055,6 +1075,7 @@ UI_TEXT_EN = {
     "マウス横スクロールでページ送り": "Use horizontal mouse wheel for page navigation",
     "横スクロールのページ送り方向を反転": "Reverse horizontal wheel direction",
     "全画面表示時にマウスカーソルを非表示": "Hide mouse cursor in fullscreen",
+    "ドラッグして設定ペインの幅を調整": "Drag to resize the settings pane",
     "画像またはフォルダ/アーカイブをドロップしてください": "Drop an image, folder, or archive",
     "トーンカーブ補正を使う": "Use tone curve adjustment",
     "表示操作": "Display controls",
@@ -1109,12 +1130,21 @@ UI_TEXT_EN = {
     "タグプリセット": "Tag preset",
     "読込": "Load",
     "追加": "Add",
+    "フォルダ追加": "Add folder",
+    "フォルダ名": "Folder name",
+    "新しいフォルダ": "New folder",
+    "開く / 閉じる": "Expand / Collapse",
+    "ランダム": "Random",
+    "フォルダ内からランダムに選択": "Randomly select from this folder",
     "タグプリセット名": "Tag preset name",
     "有効 / 無効": "Enable / Disable",
+    "移動": "Move",
     "上へ": "Move up",
     "下へ": "Move down",
     "強調": "Boost",
+    "強調：全体を{ }で囲み、強度を1.05倍（重ね掛け可）": "Boost: Wraps the entire prompt in { } and multiplies strength by 1.05 (stackable)",
     "抑制": "Weak",
+    "抑制：全体を[ ]で囲み、強度を1/1.05倍（重ね掛け可）": "Suppress: Wraps the entire prompt in [ ] and multiplies strength by 1/1.05 (stackable)",
     "削除": "Delete",
     "連続生成中": "Continuous generation",
     "停止中": "Stopping",
@@ -1122,6 +1152,7 @@ UI_TEXT_EN = {
     "秒": "sec",
     "サイズ": "Size",
     "プロンプト": "Prompt",
+    "先頭に追加する": "Add at top",
     "除外したい要素": "Undesired Content",
     "モデル": "Model",
     "サンプラー": "Sampler",
@@ -1136,6 +1167,7 @@ UI_TEXT_EN = {
     "ランダムシード": "Random Seed",
     "シード値": "Seed",
     "Enterで生成する（改行はShift+Enter）": "Generate with Enter (Shift+Enter inserts a line break)",
+    "フォルダ削除時、中身ごと消す": "Delete folder contents with folder",
     "品質タグを追加する": "Add quality tags",
     "除外プリセット": "Undesired Content preset",
     "モード": "Mode",
@@ -1285,11 +1317,13 @@ class AppConfig:
     novelai_prompt: str = ""
     novelai_negative_prompt: str = ""
     novelai_split_prompts: bool = False
+    novelai_add_prompt_items_at_top: bool = False
     novelai_prompt_items: list[dict[str, object]] = field(default_factory=list)
     novelai_negative_prompt_items: list[dict[str, object]] = field(default_factory=list)
     novelai_prompt_editor_height: int = 260
     novelai_negative_prompt_editor_height: int = 220
     novelai_enter_to_generate: bool = True
+    novelai_delete_folder_contents: bool = False
     novelai_quality_tags: bool = True
     novelai_uc_preset: str = "strong"
     novelai_dataset_mode: str = "anime"
@@ -1339,6 +1373,7 @@ class AppConfig:
     show_log_panel: bool = False
     show_profile_panel: bool = False
     ui_language: str = "ja"
+    ui_theme: str = THEME_SYSTEM
     thumbnail_enabled: bool = True
     thumbnail_pinned: bool = False
     thumbnail_size: int = 96
@@ -1463,6 +1498,57 @@ def enable_high_dpi_awareness() -> None:
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
+
+
+def apply_application_color_scheme(theme: str) -> None:
+    app = QApplication.instance()
+    if app is None:
+        return
+    style_hints = app.styleHints()
+    if theme == THEME_LIGHT:
+        style_hints.setColorScheme(Qt.ColorScheme.Light)
+    elif theme == THEME_DARK:
+        style_hints.setColorScheme(Qt.ColorScheme.Dark)
+    else:
+        style_hints.unsetColorScheme()
+    QTimer.singleShot(0, refresh_application_style)
+
+
+def refresh_application_style() -> None:
+    app = QApplication.instance()
+    if app is None:
+        return
+    for widget in app.allWidgets():
+        style = widget.style()
+        style.unpolish(widget)
+        style.polish(widget)
+        widget.update()
+
+
+class WheelRequiresFocusMixin:
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event) -> None:
+        focus_widget = QApplication.focusWidget()
+        has_focus = focus_widget is self or (focus_widget is not None and self.isAncestorOf(focus_widget))
+        if self.window().isActiveWindow() and has_focus:
+            super().wheelEvent(event)
+            return
+        event.ignore()
+
+
+class QComboBox(WheelRequiresFocusMixin, QtComboBox):
+    pass
+
+
+class QSpinBox(WheelRequiresFocusMixin, QtSpinBox):
+    pass
+
+
+class QDoubleSpinBox(WheelRequiresFocusMixin, QtDoubleSpinBox):
+    pass
 
 
 def command_executable_exists(command: str) -> bool:
@@ -1592,6 +1678,8 @@ def load_config() -> AppConfig:
         config.hdr_tonemap_brightness = max(0.25, min(2.0, float(config.hdr_tonemap_brightness)))
         if config.ui_language not in {"ja", "en"}:
             config.ui_language = "ja"
+        if config.ui_theme not in {key for key, _label in THEME_OPTIONS}:
+            config.ui_theme = THEME_SYSTEM
         config.key_bindings = normalize_key_bindings(getattr(config, "key_bindings", None))
         if BUNDLED_REALCUGAN_EXE.exists() and not command_executable_exists(config.realcugan_command_template):
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
@@ -2292,8 +2380,152 @@ class VerticalResizeHandle(QFrame):
         super().mouseReleaseEvent(event)
 
 
+class SidePanelSplitterHandle(QSplitterHandle):
+    def __init__(self, orientation: Qt.Orientation, parent: QSplitter) -> None:
+        super().__init__(orientation, parent)
+        self._hovered = False
+        self._pressed = False
+        self.setMouseTracking(True)
+        self.setToolTip("ドラッグして設定ペインの幅を調整")
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        center_x = self.width() // 2
+        separator_color = self.palette().mid().color()
+        separator_color.setAlpha(90)
+        painter.setPen(QPen(separator_color, 1))
+        painter.drawLine(center_x, 0, center_x, self.height())
+
+        grip_color = self.palette().highlight().color() if self._hovered or self._pressed else self.palette().text().color()
+        grip_color.setAlpha(220 if self._hovered or self._pressed else 150)
+        painter.setPen(QPen(grip_color, 2, Qt.SolidLine, Qt.RoundCap))
+        center_y = self.height() // 2
+        for offset, half_height in ((-4, 8), (0, 11), (4, 8)):
+            painter.drawLine(center_x + offset, center_y - half_height, center_x + offset, center_y + half_height)
+
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._pressed = True
+            self.update()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._pressed = False
+            self.update()
+        super().mouseReleaseEvent(event)
+
+
+class SidePanelSplitter(QSplitter):
+    def createHandle(self) -> QSplitterHandle:
+        return SidePanelSplitterHandle(self.orientation(), self)
+
+
+class SidePanelOverlayResizeHandle(QFrame):
+    resized = Signal(int)
+    resizeFinished = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._drag_x: int | None = None
+        self._hovered = False
+        self.setCursor(Qt.SizeHorCursor)
+        self.setMouseTracking(True)
+        self.setToolTip("ドラッグして設定ペインの幅を調整")
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        center_x = self.width() // 2
+        separator_color = self.palette().mid().color()
+        separator_color.setAlpha(90)
+        painter.setPen(QPen(separator_color, 1))
+        painter.drawLine(center_x, 0, center_x, self.height())
+
+        grip_color = self.palette().highlight().color() if self._hovered or self._drag_x is not None else self.palette().text().color()
+        grip_color.setAlpha(220 if self._hovered or self._drag_x is not None else 150)
+        painter.setPen(QPen(grip_color, 2, Qt.SolidLine, Qt.RoundCap))
+        center_y = self.height() // 2
+        for offset, half_height in ((-4, 8), (0, 11), (4, 8)):
+            painter.drawLine(center_x + offset, center_y - half_height, center_x + offset, center_y + half_height)
+
+    def enterEvent(self, event) -> None:
+        self._hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hovered = False
+        self.update()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton:
+            self._drag_x = event.globalPosition().toPoint().x()
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_x is not None:
+            x = event.globalPosition().toPoint().x()
+            delta = x - self._drag_x
+            if delta:
+                self._drag_x = x
+                self.resized.emit(delta)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.LeftButton and self._drag_x is not None:
+            self._drag_x = None
+            self.update()
+            self.resizeFinished.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class InactiveEditablePromptLineEdit(QLineEdit):
+    def __init__(self, text: str = "", parent=None) -> None:
+        super().__init__(text, parent)
+        self.prompt_active = True
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+
+    def set_prompt_active(self, active: bool) -> None:
+        self.prompt_active = active
+        self.setReadOnly(not active)
+        self.opacity_effect.setOpacity(1.0 if active else 0.55)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        if not self.prompt_active:
+            self.setReadOnly(False)
+        super().mouseDoubleClickEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        if not self.prompt_active:
+            self.setReadOnly(True)
+        super().focusOutEvent(event)
+
+
 class NovelAIPromptTagRow(QWidget):
     changed = Signal()
+    hoverEntered = Signal(object)
+    hoverLeft = Signal(object)
     deleteRequested = Signal(object)
     moveUpRequested = Signal(object)
     moveDownRequested = Signal(object)
@@ -2303,59 +2535,107 @@ class NovelAIPromptTagRow(QWidget):
         self.tag = tag.strip()
         self.active = active
         self.setFocusPolicy(Qt.NoFocus)
-        layout = QHBoxLayout(self)
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        self.indent_spacer = QWidget()
+        self.indent_spacer.setFixedWidth(0)
+        outer_layout.addWidget(self.indent_spacer)
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("novelaiPromptTagContent")
+        outer_layout.addWidget(self.content_widget, 1)
+        layout = QHBoxLayout(self.content_widget)
         layout.setContentsMargins(2, 2, 2, 2)
         layout.setSpacing(4)
+        self.active_button = QPushButton("👁")
+        self.active_button.setFixedWidth(28)
+        self.active_button.setFlat(True)
+        self.apply_icon_button_style(self.active_button)
+        self.active_button.setFocusPolicy(Qt.NoFocus)
+        self.active_button.setToolTip("有効 / 無効")
+        self.active_button.clicked.connect(self.toggle_active)
+        layout.addWidget(self.active_button)
         self.handle_label = QLabel("☰")
         self.handle_label.setFixedWidth(22)
         self.handle_label.setAlignment(Qt.AlignCenter)
+        self.handle_label.setToolTip("移動")
         layout.addWidget(self.handle_label)
         self.up_button = QPushButton("🔼")
-        self.up_button.setFixedWidth(34)
+        self.up_button.setFixedWidth(28)
+        self.up_button.setFlat(True)
+        self.apply_icon_button_style(self.up_button)
         self.up_button.setFocusPolicy(Qt.NoFocus)
         self.up_button.setToolTip("上へ")
         self.up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
         layout.addWidget(self.up_button)
         self.down_button = QPushButton("🔽")
-        self.down_button.setFixedWidth(34)
+        self.down_button.setFixedWidth(28)
+        self.down_button.setFlat(True)
+        self.apply_icon_button_style(self.down_button)
         self.down_button.setFocusPolicy(Qt.NoFocus)
         self.down_button.setToolTip("下へ")
         self.down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
         layout.addWidget(self.down_button)
-        self.active_button = QPushButton("👁")
-        self.active_button.setFixedWidth(34)
-        self.active_button.setFocusPolicy(Qt.NoFocus)
-        self.active_button.setToolTip("有効 / 無効")
-        self.active_button.clicked.connect(self.toggle_active)
-        layout.addWidget(self.active_button)
         self.emphasis_button = QPushButton("強調")
         self.emphasis_button.setFixedWidth(58)
         self.emphasis_button.setFocusPolicy(Qt.NoFocus)
+        self.emphasis_button.setToolTip("強調：全体を{ }で囲み、強度を1.05倍（重ね掛け可）")
         self.emphasis_button.clicked.connect(self.increase_emphasis)
         layout.addWidget(self.emphasis_button)
         self.suppress_button = QPushButton("抑制")
         self.suppress_button.setFixedWidth(58)
         self.suppress_button.setFocusPolicy(Qt.NoFocus)
+        self.suppress_button.setToolTip("抑制：全体を[ ]で囲み、強度を1/1.05倍（重ね掛け可）")
         self.suppress_button.clicked.connect(self.increase_suppression)
         layout.addWidget(self.suppress_button)
-        self.text_edit = QLineEdit(self.tag)
+        self.text_edit = InactiveEditablePromptLineEdit(self.tag)
         self.text_edit.textChanged.connect(self.on_text_changed)
         layout.addWidget(self.text_edit, 1)
         self.delete_button = QPushButton("❌")
-        self.delete_button.setFixedWidth(34)
+        self.delete_button.setFixedWidth(28)
+        self.delete_button.setFlat(True)
+        self.apply_icon_button_style(self.delete_button)
         self.delete_button.setFocusPolicy(Qt.NoFocus)
         self.delete_button.setToolTip("削除")
         self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self))
         layout.addWidget(self.delete_button)
         self.refresh()
 
+    def set_depth(self, depth: int) -> None:
+        self.indent_spacer.setFixedWidth(max(0, depth) * 20)
+
+    def set_highlight_style(self, style: str) -> None:
+        self.content_widget.setStyleSheet(
+            f"#novelaiPromptTagContent {{ {style} }}" if style else ""
+        )
+
+    @staticmethod
+    def apply_icon_button_style(button: QPushButton) -> None:
+        button.setStyleSheet(
+            "QPushButton { border: none; background: transparent; padding: 0; }"
+            "QPushButton:hover { border: none; background: transparent; }"
+            "QPushButton:pressed { background: palette(highlight); }"
+            "QPushButton:disabled { border: none; background: transparent; }"
+        )
+
+    def enterEvent(self, event) -> None:
+        self.hoverEntered.emit(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.hoverLeft.emit(self)
+        super().leaveEvent(event)
+
     def apply_language(self, language: str) -> None:
         labels = UI_TEXT_EN if language == "en" else UI_TEXT_JA
         self.up_button.setToolTip(labels.get("上へ", "上へ"))
         self.down_button.setToolTip(labels.get("下へ", "下へ"))
         self.active_button.setToolTip(labels.get("有効 / 無効", "有効 / 無効"))
+        self.handle_label.setToolTip(labels.get("移動", "移動"))
         self.emphasis_button.setText(labels.get("強調", "強調"))
+        self.emphasis_button.setToolTip(labels.get("強調：全体を{ }で囲み、強度を1.05倍（重ね掛け可）", "強調：全体を{ }で囲み、強度を1.05倍（重ね掛け可）"))
         self.suppress_button.setText(labels.get("抑制", "抑制"))
+        self.suppress_button.setToolTip(labels.get("抑制：全体を[ ]で囲み、強度を1/1.05倍（重ね掛け可）", "抑制：全体を[ ]で囲み、強度を1/1.05倍（重ね掛け可）"))
         self.delete_button.setToolTip(labels.get("削除", "削除"))
 
     def toggle_active(self) -> None:
@@ -2388,9 +2668,244 @@ class NovelAIPromptTagRow(QWidget):
         self.text_edit.blockSignals(True)
         self.text_edit.setText(self.tag)
         self.text_edit.blockSignals(False)
-        self.text_edit.setEnabled(self.active)
+        self.text_edit.set_prompt_active(self.active)
         self.emphasis_button.setEnabled(self.active)
         self.suppress_button.setEnabled(self.active)
+
+
+class NovelAIPromptFolderRow(QWidget):
+    changed = Signal()
+    hoverEntered = Signal(object)
+    hoverLeft = Signal(object)
+    toggleRequested = Signal(object)
+    deleteRequested = Signal(object)
+    moveUpRequested = Signal(object)
+    moveDownRequested = Signal(object)
+
+    def __init__(self, name: str, random_enabled: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.name = name.strip()
+        self.random_enabled = bool(random_enabled)
+        self.setFocusPolicy(Qt.NoFocus)
+        outer_layout = QHBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        self.indent_spacer = QWidget()
+        self.indent_spacer.setFixedWidth(0)
+        outer_layout.addWidget(self.indent_spacer)
+        self.content_widget = QWidget()
+        self.content_widget.setObjectName("novelaiPromptFolderContent")
+        outer_layout.addWidget(self.content_widget, 1)
+        layout = QHBoxLayout(self.content_widget)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+        self.toggle_button = QPushButton("▼")
+        self.toggle_button.setFixedWidth(28)
+        self.toggle_button.setFlat(True)
+        NovelAIPromptTagRow.apply_icon_button_style(self.toggle_button)
+        self.toggle_button.setFocusPolicy(Qt.NoFocus)
+        self.toggle_button.clicked.connect(lambda: self.toggleRequested.emit(self))
+        layout.addWidget(self.toggle_button)
+        self.handle_label = QLabel("☰")
+        self.handle_label.setFixedWidth(22)
+        self.handle_label.setAlignment(Qt.AlignCenter)
+        self.handle_label.setToolTip("移動")
+        layout.addWidget(self.handle_label)
+        self.up_button = QPushButton("🔼")
+        self.up_button.setFixedWidth(28)
+        self.up_button.setFlat(True)
+        NovelAIPromptTagRow.apply_icon_button_style(self.up_button)
+        self.up_button.setFocusPolicy(Qt.NoFocus)
+        self.up_button.clicked.connect(lambda: self.moveUpRequested.emit(self))
+        layout.addWidget(self.up_button)
+        self.down_button = QPushButton("🔽")
+        self.down_button.setFixedWidth(28)
+        self.down_button.setFlat(True)
+        NovelAIPromptTagRow.apply_icon_button_style(self.down_button)
+        self.down_button.setFocusPolicy(Qt.NoFocus)
+        self.down_button.clicked.connect(lambda: self.moveDownRequested.emit(self))
+        layout.addWidget(self.down_button)
+        self.random_button = QPushButton("ランダム")
+        self.random_button.setFixedWidth(72)
+        self.random_button.setCheckable(True)
+        self.random_button.setChecked(self.random_enabled)
+        self.random_button.setFocusPolicy(Qt.NoFocus)
+        self.random_button.setToolTip("フォルダ内からランダムに選択")
+        self.random_button.setStyleSheet(
+            "QPushButton:checked { background: palette(highlight); color: palette(highlighted-text); }"
+        )
+        self.random_button.toggled.connect(self.on_random_toggled)
+        layout.addWidget(self.random_button)
+        self.name_edit = QLineEdit(self.name)
+        self.name_edit.textChanged.connect(self.on_name_changed)
+        layout.addWidget(self.name_edit, 1)
+        self.delete_button = QPushButton("❌")
+        self.delete_button.setFixedWidth(28)
+        self.delete_button.setFlat(True)
+        NovelAIPromptTagRow.apply_icon_button_style(self.delete_button)
+        self.delete_button.setFocusPolicy(Qt.NoFocus)
+        self.delete_button.clicked.connect(lambda: self.deleteRequested.emit(self))
+        layout.addWidget(self.delete_button)
+
+    def set_depth(self, depth: int) -> None:
+        self.indent_spacer.setFixedWidth(max(0, depth) * 20)
+
+    def set_highlight_style(self, style: str) -> None:
+        self.content_widget.setStyleSheet(
+            f"#novelaiPromptFolderContent {{ {style} }}" if style else ""
+        )
+
+    def enterEvent(self, event) -> None:
+        self.hoverEntered.emit(self)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self.hoverLeft.emit(self)
+        super().leaveEvent(event)
+
+    def refresh_expanded(self, expanded: bool) -> None:
+        self.toggle_button.setText("▼" if expanded else "▶")
+
+    def on_name_changed(self, text: str) -> None:
+        self.name = text.strip()
+        self.changed.emit()
+
+    def on_random_toggled(self, checked: bool) -> None:
+        self.random_enabled = bool(checked)
+        self.changed.emit()
+
+    def apply_language(self, language: str) -> None:
+        labels = UI_TEXT_EN if language == "en" else UI_TEXT_JA
+        self.up_button.setToolTip(labels.get("上へ", "上へ"))
+        self.down_button.setToolTip(labels.get("下へ", "下へ"))
+        self.toggle_button.setToolTip(labels.get("開く / 閉じる", "開く / 閉じる"))
+        self.handle_label.setToolTip(labels.get("移動", "移動"))
+        self.random_button.setText(labels.get("ランダム", "ランダム"))
+        self.random_button.setToolTip(labels.get("フォルダ内からランダムに選択", "フォルダ内からランダムに選択"))
+        self.name_edit.setPlaceholderText(labels.get("フォルダ名", "フォルダ名"))
+        self.delete_button.setToolTip(labels.get("削除", "削除"))
+
+
+class NovelAIPromptTreeWidget(QTreeWidget):
+    itemsMoved = Signal(object)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.drag_folder_row: NovelAIPromptFolderRow | None = None
+        self.drag_source_row: QWidget | None = None
+        self.hover_row: QWidget | None = None
+
+    def highlight_style(self, alpha: int) -> str:
+        color = self.palette().highlight().color()
+        return f"background-color: rgba({color.red()}, {color.green()}, {color.blue()}, {alpha});"
+
+    def refresh_row_highlights(self) -> None:
+        rows = {row for _item, row in self.item_widget_pairs()}
+        for row in rows:
+            if row is self.drag_source_row:
+                row.set_highlight_style(self.highlight_style(110))
+            elif row is self.drag_folder_row:
+                row.set_highlight_style(self.highlight_style(80))
+            elif not bool(self.property("dragging")) and row is self.hover_row:
+                row.set_highlight_style(self.highlight_style(70))
+            else:
+                row.set_highlight_style("")
+
+    def set_hover_row(self, row: object) -> None:
+        if isinstance(row, (NovelAIPromptTagRow, NovelAIPromptFolderRow)):
+            self.hover_row = row
+            self.refresh_row_highlights()
+
+    def clear_hover_row(self, row: object) -> None:
+        if row is self.hover_row:
+            self.hover_row = None
+            self.refresh_row_highlights()
+
+    def set_dragging(self, dragging: bool) -> None:
+        self.setProperty("dragging", dragging)
+        self.refresh_row_highlights()
+
+    def startDrag(self, supported_actions) -> None:
+        item = self.currentItem()
+        row = self.itemWidget(item, 0) if item is not None else None
+        self.drag_source_row = row
+        self.set_dragging(True)
+        try:
+            super().startDrag(supported_actions)
+        finally:
+            self.clear_drag_target()
+            self.drag_source_row = None
+            self.set_dragging(False)
+
+    def clear_drag_target(self) -> None:
+        self.drag_folder_row = None
+        self.refresh_row_highlights()
+
+    def dragMoveEvent(self, event) -> None:
+        super().dragMoveEvent(event)
+        self.clear_drag_target()
+        item = self.itemAt(event.position().toPoint())
+        if (
+            self.dropIndicatorPosition() == QAbstractItemView.DropIndicatorPosition.OnItem
+            and item is not None
+            and item.data(0, Qt.UserRole) == "folder"
+        ):
+            row = self.itemWidget(item, 0)
+            if isinstance(row, NovelAIPromptFolderRow):
+                self.drag_folder_row = row
+        self.refresh_row_highlights()
+
+    def dragLeaveEvent(self, event) -> None:
+        self.clear_drag_target()
+        super().dragLeaveEvent(event)
+
+    def item_widget_pairs(self, parent: QTreeWidgetItem | None = None) -> list[tuple[QTreeWidgetItem, QWidget]]:
+        pairs: list[tuple[QTreeWidgetItem, QWidget]] = []
+        count = self.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.topLevelItem(index) if parent is None else parent.child(index)
+            widget = self.itemWidget(item, 0)
+            if widget is not None:
+                pairs.append((item, widget))
+            pairs.extend(self.item_widget_pairs(item))
+        return pairs
+
+    def item_data_map(self) -> dict[QTreeWidgetItem, dict[str, object]]:
+        data: dict[QTreeWidgetItem, dict[str, object]] = {}
+        for item, widget in self.item_widget_pairs():
+            if isinstance(widget, NovelAIPromptFolderRow):
+                data[item] = {
+                    "type": "folder",
+                    "name": widget.name.strip(),
+                    "expanded": item.isExpanded(),
+                    "random": bool(widget.random_enabled),
+                }
+            elif isinstance(widget, NovelAIPromptTagRow):
+                data[item] = {"type": "tag", "tag": widget.tag.strip(), "active": bool(widget.active)}
+        return data
+
+    def nodes_from_items(
+        self,
+        data: dict[QTreeWidgetItem, dict[str, object]],
+        parent: QTreeWidgetItem | None = None,
+    ) -> list[dict[str, object]]:
+        nodes: list[dict[str, object]] = []
+        count = self.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.topLevelItem(index) if parent is None else parent.child(index)
+            node = dict(data.get(item, {}))
+            if not node:
+                continue
+            if node.get("type") == "folder":
+                node["children"] = self.nodes_from_items(data, item)
+            nodes.append(node)
+        return nodes
+
+    def dropEvent(self, event) -> None:
+        data = self.item_data_map()
+        self.clear_drag_target()
+        super().dropEvent(event)
+        self.itemsMoved.emit(self.nodes_from_items(data))
 
 
 class NovelAIPromptListEditor(QWidget):
@@ -2401,6 +2916,8 @@ class NovelAIPromptListEditor(QWidget):
         super().__init__(parent)
         self.updating = False
         self.language = "ja"
+        self.delete_folder_contents = False
+        self.add_items_at_top = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -2412,18 +2929,29 @@ class NovelAIPromptListEditor(QWidget):
         self.add_button = QPushButton("追加")
         self.add_button.clicked.connect(self.add_from_input)
         input_row.addWidget(self.add_button)
+        self.add_folder_button = QPushButton("フォルダ追加")
+        self.add_folder_button.clicked.connect(self.add_folder)
+        input_row.addWidget(self.add_folder_button)
         layout.addLayout(input_row)
-        self.list_widget = QListWidget()
+        self.list_widget = NovelAIPromptTreeWidget()
+        self.list_widget.setHeaderHidden(True)
+        self.list_widget.setRootIsDecorated(False)
+        self.list_widget.setIndentation(0)
+        self.list_widget.setExpandsOnDoubleClick(False)
         self.list_widget.setFocusPolicy(Qt.NoFocus)
         self.list_widget.setDragDropMode(QAbstractItemView.InternalMove)
         self.list_widget.setDefaultDropAction(Qt.MoveAction)
         self.list_widget.setSelectionMode(QAbstractItemView.SingleSelection)
         self.list_widget.setAlternatingRowColors(True)
         self.list_widget.setStyleSheet(
-            "QListWidget::item:selected { background: transparent; color: palette(text); }"
-            "QListWidget::item:focus { outline: none; }"
+            "QTreeWidget::item:selected { background: transparent; color: palette(text); }"
+            "QTreeWidget::item:hover { background: transparent; color: palette(text); }"
+            "QTreeWidget::item:focus { outline: none; }"
+            "QTreeWidget::branch { image: none; }"
         )
-        self.list_widget.model().rowsMoved.connect(lambda *_args: self.emit_changed())
+        self.list_widget.itemsMoved.connect(self.on_items_moved)
+        self.list_widget.itemExpanded.connect(self.refresh_folder_item)
+        self.list_widget.itemCollapsed.connect(self.refresh_folder_item)
         self.list_widget.setMinimumHeight(118)
         layout.addWidget(self.list_widget)
         self.set_text(text)
@@ -2433,8 +2961,43 @@ class NovelAIPromptListEditor(QWidget):
         if not text:
             self.submitRequested.emit()
             return
-        self.add_tag(text, True)
+        self.add_tag(text, True, None, insert_at_top=self.add_items_at_top)
         self.input_edit.clear()
+        self.emit_changed()
+
+    def on_items_moved(self, items: object) -> None:
+        if isinstance(items, list):
+            self.set_items(items)
+        self.emit_changed()
+
+    def refresh_tag_item(self, item: QTreeWidgetItem, row: NovelAIPromptTagRow) -> None:
+        item.setToolTip(0, "")
+
+    def refresh_folder_item(self, item: QTreeWidgetItem) -> None:
+        row = self.list_widget.itemWidget(item, 0)
+        if isinstance(row, NovelAIPromptFolderRow):
+            row.refresh_expanded(item.isExpanded())
+
+    def toggle_folder(self, row: object) -> None:
+        item = self.item_for_row(row)
+        if item is None:
+            return
+        item.setExpanded(not item.isExpanded())
+        self.refresh_folder_item(item)
+        self.emit_changed()
+
+    def add_folder(self) -> None:
+        labels = UI_TEXT_EN if self.language == "en" else UI_TEXT_JA
+        input_name = self.input_edit.text().strip()
+        name = input_name or labels.get("新しいフォルダ", "新しいフォルダ")
+        item = self.add_folder_item(name, None, insert_at_top=self.add_items_at_top)
+        if input_name:
+            self.input_edit.clear()
+        self.list_widget.setCurrentItem(item)
+        row = self.list_widget.itemWidget(item, 0)
+        if isinstance(row, NovelAIPromptFolderRow) and not input_name:
+            row.name_edit.setFocus()
+            row.name_edit.selectAll()
         self.emit_changed()
 
     def split_prompt_text(self, text: str) -> list[str]:
@@ -2509,23 +3072,90 @@ class NovelAIPromptListEditor(QWidget):
             items.append((part, current_active))
         return items
 
-    def add_tag(self, tag: str, active: bool = True) -> None:
-        item = QListWidgetItem()
+    def add_tag(
+        self,
+        tag: str,
+        active: bool = True,
+        parent: QTreeWidgetItem | None = None,
+        insert_at_top: bool = False,
+    ) -> QTreeWidgetItem:
+        item = QTreeWidgetItem()
+        item.setData(0, Qt.UserRole, "tag")
+        item.setFlags((item.flags() | Qt.ItemIsDragEnabled) & ~Qt.ItemIsDropEnabled)
         row = NovelAIPromptTagRow(tag, active)
+        row.set_depth(self.item_depth(parent) + 1 if parent is not None else 0)
         row.apply_language(self.language)
+        row.hoverEntered.connect(self.list_widget.set_hover_row)
+        row.hoverLeft.connect(self.list_widget.clear_hover_row)
         row.changed.connect(self.emit_changed)
         row.deleteRequested.connect(self.delete_row)
         row.moveUpRequested.connect(self.move_row_up)
         row.moveDownRequested.connect(self.move_row_down)
-        item.setSizeHint(row.sizeHint())
-        self.list_widget.addItem(item)
-        self.list_widget.setItemWidget(item, row)
+        item.setSizeHint(0, row.sizeHint())
+        if parent is None:
+            if insert_at_top:
+                self.list_widget.insertTopLevelItem(0, item)
+            else:
+                self.list_widget.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+            parent.setExpanded(True)
+        self.list_widget.setItemWidget(item, 0, row)
+        self.refresh_tag_item(item, row)
+        return item
 
-    def row_index(self, row: object) -> int:
-        for index in range(self.list_widget.count()):
-            if self.list_widget.itemWidget(self.list_widget.item(index)) is row:
-                return index
-        return -1
+    def add_folder_item(
+        self,
+        name: str,
+        parent: QTreeWidgetItem | None = None,
+        expanded: bool = True,
+        random_enabled: bool = False,
+        insert_at_top: bool = False,
+    ) -> QTreeWidgetItem:
+        item = QTreeWidgetItem()
+        item.setData(0, Qt.UserRole, "folder")
+        item.setFlags(item.flags() | Qt.ItemIsDragEnabled | Qt.ItemIsDropEnabled)
+        row = NovelAIPromptFolderRow(name, random_enabled)
+        row.set_depth(self.item_depth(parent) + 1 if parent is not None else 0)
+        row.apply_language(self.language)
+        row.hoverEntered.connect(self.list_widget.set_hover_row)
+        row.hoverLeft.connect(self.list_widget.clear_hover_row)
+        row.changed.connect(self.emit_changed)
+        row.toggleRequested.connect(self.toggle_folder)
+        row.deleteRequested.connect(self.delete_row)
+        row.moveUpRequested.connect(self.move_row_up)
+        row.moveDownRequested.connect(self.move_row_down)
+        item.setSizeHint(0, row.sizeHint())
+        if parent is None:
+            if insert_at_top:
+                self.list_widget.insertTopLevelItem(0, item)
+            else:
+                self.list_widget.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+            parent.setExpanded(True)
+        self.list_widget.setItemWidget(item, 0, row)
+        item.setExpanded(expanded)
+        row.refresh_expanded(expanded)
+        return item
+
+    def item_depth(self, item: QTreeWidgetItem | None) -> int:
+        depth = 0
+        while item is not None and item.parent() is not None:
+            depth += 1
+            item = item.parent()
+        return depth
+
+    def item_for_row(self, row: object, parent: QTreeWidgetItem | None = None) -> QTreeWidgetItem | None:
+        count = self.list_widget.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.list_widget.topLevelItem(index) if parent is None else parent.child(index)
+            if self.list_widget.itemWidget(item, 0) is row:
+                return item
+            found = self.item_for_row(row, item)
+            if found is not None:
+                return found
+        return None
 
     def move_row_up(self, row: object) -> None:
         self.move_row(row, -1)
@@ -2534,63 +3164,229 @@ class NovelAIPromptListEditor(QWidget):
         self.move_row(row, 1)
 
     def move_row(self, row: object, offset: int) -> None:
-        index = self.row_index(row)
-        target = index + offset
-        if index < 0 or target < 0 or target >= self.list_widget.count():
+        item = self.item_for_row(row)
+        if item is None:
             return
+        path = self.item_path(item)
         items = self.to_items()
-        items[index], items[target] = items[target], items[index]
+        container = items
+        for parent_index in path[:-1]:
+            children = container[parent_index].get("children")
+            if not isinstance(children, list):
+                return
+            container = children
+        index = path[-1]
+        count = len(container)
+        target = index + offset
+        if index < 0 or target < 0 or target >= count:
+            return
+        container[index], container[target] = container[target], container[index]
+        path[-1] = target
         self.set_items(items)
-        self.list_widget.setCurrentRow(target)
+        self.list_widget.setCurrentItem(self.item_at_path(path))
         self.emit_changed()
 
+    def item_path(self, item: QTreeWidgetItem) -> list[int]:
+        path: list[int] = []
+        current: QTreeWidgetItem | None = item
+        while current is not None:
+            parent = current.parent()
+            path.append(self.list_widget.indexOfTopLevelItem(current) if parent is None else parent.indexOfChild(current))
+            current = parent
+        path.reverse()
+        return path
+
+    def item_at_path(self, path: list[int]) -> QTreeWidgetItem | None:
+        current: QTreeWidgetItem | None = None
+        for depth, index in enumerate(path):
+            current = self.list_widget.topLevelItem(index) if depth == 0 else current.child(index) if current is not None else None
+            if current is None:
+                return None
+        return current
+
     def delete_row(self, row: object) -> None:
-        index = self.row_index(row)
-        if index >= 0:
-            self.list_widget.takeItem(index)
-            self.emit_changed()
+        item = self.item_for_row(row)
+        if item is None:
+            return
+        path = self.item_path(item)
+        items = self.to_items()
+        container = items
+        for parent_index in path[:-1]:
+            children = container[parent_index].get("children")
+            if not isinstance(children, list):
+                return
+            container = children
+        index = path[-1]
+        removed = container.pop(index)
+        children = removed.get("children")
+        if not self.delete_folder_contents and isinstance(children, list):
+            container[index:index] = children
+        self.set_items(items)
+        self.emit_changed()
 
     def set_text(self, text: str) -> None:
-        self.updating = True
-        self.list_widget.clear()
-        for tag, active in self.split_prompt_items(text):
-            self.add_tag(tag, active)
-        self.updating = False
+        self.set_items(self.split_prompt_nodes(text))
+
+    def encode_folder_name(self, name: str) -> str:
+        return base64.urlsafe_b64encode(name.encode("utf-8")).decode("ascii").rstrip("=")
+
+    def decode_folder_name(self, encoded: str) -> str | None:
+        try:
+            padding = "=" * (-len(encoded) % 4)
+            return base64.urlsafe_b64decode((encoded + padding).encode("ascii")).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+    def split_prompt_nodes(self, text: str) -> list[dict[str, object]]:
+        root: list[dict[str, object]] = []
+        stack = [root]
+        current: list[str] = []
+
+        def flush() -> None:
+            part = "".join(current).strip(" ,\r\n\t")
+            current.clear()
+            if part:
+                stack[-1].extend({"type": "tag", "tag": tag, "active": active} for tag, active in self.split_prompt_items(part))
+
+        index = 0
+        while index < len(text):
+            folder_marker = next(
+                (
+                    (marker, random_enabled)
+                    for marker, random_enabled in (
+                        (RAIV_PROMPT_RANDOM_FOLDER_START, True),
+                        (RAIV_PROMPT_FOLDER_START, False),
+                    )
+                    if text.startswith(marker, index)
+                ),
+                None,
+            )
+            if folder_marker is not None:
+                marker, random_enabled = folder_marker
+                marker_end = text.find(">>", index + len(marker))
+                if marker_end >= 0:
+                    encoded = text[index + len(marker) : marker_end]
+                    name = self.decode_folder_name(encoded)
+                    if name is not None:
+                        flush()
+                        folder: dict[str, object] = {
+                            "type": "folder",
+                            "name": name,
+                            "children": [],
+                            "expanded": True,
+                            "random": random_enabled,
+                        }
+                        stack[-1].append(folder)
+                        stack.append(folder["children"])
+                        index = marker_end + 2
+                        continue
+            if text.startswith(RAIV_PROMPT_FOLDER_END, index) and len(stack) > 1:
+                flush()
+                stack.pop()
+                index += len(RAIV_PROMPT_FOLDER_END)
+                continue
+            current.append(text[index])
+            index += 1
+        flush()
+        return root
+
+    def active_text_from_text(self, text: str) -> str:
+        return self.active_text_from_nodes(self.split_prompt_nodes(text))
+
+    def active_text_from_nodes(self, nodes: list[dict[str, object]], separator: str = ", ") -> str:
+        parts: list[str] = []
+        for node in nodes:
+            children = node.get("children")
+            if isinstance(children, list):
+                child_separator = "|" if bool(node.get("random", False)) else ", "
+                child_text = self.active_text_from_nodes(children, child_separator)
+                if child_text:
+                    parts.append(f"||{child_text}||" if bool(node.get("random", False)) else child_text)
+                continue
+            tag = str(node.get("tag") or "").strip()
+            if tag and bool(node.get("active", True)):
+                parts.append(tag)
+        return separator.join(parts)
 
     def set_items(self, items: list[dict[str, object]], fallback_text: str = "") -> None:
         self.updating = True
+        self.list_widget.hover_row = None
+        self.list_widget.drag_source_row = None
+        self.list_widget.drag_folder_row = None
         self.list_widget.clear()
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            tag = str(item.get("tag") or "").strip()
-            if tag:
-                self.add_tag(tag, bool(item.get("active", True)))
-        if self.list_widget.count() == 0 and fallback_text:
-            for tag, active in self.split_prompt_items(fallback_text):
-                self.add_tag(tag, active)
+        self.add_items(items)
+        if self.list_widget.topLevelItemCount() == 0 and fallback_text:
+            self.add_items(self.split_prompt_nodes(fallback_text))
         self.updating = False
 
+    def add_items(self, items: list[dict[str, object]], parent: QTreeWidgetItem | None = None) -> None:
+        for data in items:
+            if not isinstance(data, dict):
+                continue
+            if data.get("type") == "folder" or isinstance(data.get("children"), list):
+                folder = self.add_folder_item(
+                    str(data.get("name") or "").strip(),
+                    parent,
+                    bool(data.get("expanded", True)),
+                    bool(data.get("random", False)),
+                )
+                children = data.get("children")
+                if isinstance(children, list):
+                    self.add_items(children, folder)
+                folder.setExpanded(bool(data.get("expanded", True)))
+                continue
+            tag = str(data.get("tag") or "").strip()
+            if tag:
+                self.add_tag(tag, bool(data.get("active", True)), parent)
+
     def to_items(self) -> list[dict[str, object]]:
+        return self.items_from_parent(None)
+
+    def items_from_parent(self, parent: QTreeWidgetItem | None) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
-        for index in range(self.list_widget.count()):
-            row = self.list_widget.itemWidget(self.list_widget.item(index))
-            if isinstance(row, NovelAIPromptTagRow) and row.tag.strip():
-                items.append({"tag": row.tag.strip(), "active": bool(row.active)})
+        count = self.list_widget.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.list_widget.topLevelItem(index) if parent is None else parent.child(index)
+            row = self.list_widget.itemWidget(item, 0)
+            if isinstance(row, NovelAIPromptFolderRow):
+                items.append({
+                    "type": "folder",
+                    "name": row.name.strip(),
+                    "expanded": item.isExpanded(),
+                    "random": bool(row.random_enabled),
+                    "children": self.items_from_parent(item),
+                })
+            elif isinstance(row, NovelAIPromptTagRow) and row.tag.strip():
+                items.append({"type": "tag", "tag": row.tag.strip(), "active": bool(row.active)})
         return items
 
     def disabled_prompt_text(self, tag: str) -> str:
         return f"{RAIV_DISABLED_PROMPT_START}{tag}{RAIV_DISABLED_PROMPT_END}"
 
     def to_text(self, active_only: bool = True, preserve_inactive: bool = False) -> str:
-        tags: list[str] = []
-        for index in range(self.list_widget.count()):
-            row = self.list_widget.itemWidget(self.list_widget.item(index))
-            if isinstance(row, NovelAIPromptTagRow) and (row.active or not active_only):
-                if row.tag.strip():
-                    tag = row.tag.strip()
-                    tags.append(tag if row.active or not preserve_inactive else self.disabled_prompt_text(tag))
-        return ", ".join(tags)
+        if active_only and not preserve_inactive:
+            return self.active_text_from_nodes(self.to_items())
+        return self.text_from_parent(None, active_only, preserve_inactive)
+
+    def text_from_parent(self, parent: QTreeWidgetItem | None, active_only: bool, preserve_inactive: bool) -> str:
+        parts: list[str] = []
+        count = self.list_widget.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.list_widget.topLevelItem(index) if parent is None else parent.child(index)
+            row = self.list_widget.itemWidget(item, 0)
+            if isinstance(row, NovelAIPromptFolderRow):
+                children = self.text_from_parent(item, active_only, preserve_inactive)
+                if not active_only or preserve_inactive:
+                    encoded = self.encode_folder_name(row.name.strip())
+                    marker = RAIV_PROMPT_RANDOM_FOLDER_START if row.random_enabled else RAIV_PROMPT_FOLDER_START
+                    parts.append(f"{marker}{encoded}>>{children}{RAIV_PROMPT_FOLDER_END}")
+                elif children:
+                    parts.append(children)
+            elif isinstance(row, NovelAIPromptTagRow) and (row.active or not active_only):
+                tag = row.tag.strip()
+                if tag:
+                    parts.append(tag if row.active or not preserve_inactive else self.disabled_prompt_text(tag))
+        return ", ".join(parts)
 
     def emit_changed(self) -> None:
         if not self.updating:
@@ -2598,10 +3394,21 @@ class NovelAIPromptListEditor(QWidget):
 
     def apply_language(self, language: str) -> None:
         self.language = language
-        for index in range(self.list_widget.count()):
-            row = self.list_widget.itemWidget(self.list_widget.item(index))
-            if isinstance(row, NovelAIPromptTagRow):
+        labels = UI_TEXT_EN if language == "en" else UI_TEXT_JA
+        self.add_button.setText(labels.get("追加", "追加"))
+        self.add_folder_button.setText(labels.get("フォルダ追加", "フォルダ追加"))
+        self.apply_language_to_parent(None, language)
+
+    def apply_language_to_parent(self, parent: QTreeWidgetItem | None, language: str) -> None:
+        count = self.list_widget.topLevelItemCount() if parent is None else parent.childCount()
+        for index in range(count):
+            item = self.list_widget.topLevelItem(index) if parent is None else parent.child(index)
+            row = self.list_widget.itemWidget(item, 0)
+            if isinstance(row, (NovelAIPromptTagRow, NovelAIPromptFolderRow)):
                 row.apply_language(language)
+            if isinstance(row, NovelAIPromptTagRow):
+                self.refresh_tag_item(item, row)
+            self.apply_language_to_parent(item, language)
 
 
 class GLImageView(QOpenGLWidget):
@@ -3429,6 +4236,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.initializing = True
         self.config_data = load_config()
+        apply_application_color_scheme(self.config_data.ui_theme)
         self.novelai_prompt_presets = load_novelai_prompt_presets()
         self.duplicate_keyboard_bindings = duplicate_binding_signatures(self.config_data.key_bindings, "keyboard")
         self.show_log_panel = self.config_data.show_log_panel
@@ -3523,6 +4331,9 @@ class MainWindow(QMainWindow):
         self.novelai_generation_running = False
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = False
+        self.novelai_continuous_delay_timer = QTimer(self)
+        self.novelai_continuous_delay_timer.setSingleShot(True)
+        self.novelai_continuous_delay_timer.timeout.connect(self.run_next_novelai_continuous_generation)
         self.novelai_generate_click_pending = False
         self.ignore_next_novelai_generate_release = False
         self.novelai_queue: queue.Queue[dict[str, object] | None] = queue.Queue()
@@ -3595,7 +4406,8 @@ class MainWindow(QMainWindow):
 
         self.side_panel = self._build_side_panel()
         self.side_panel.installEventFilter(self)
-        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter = SidePanelSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(18)
         if self.config_data.side_panel_on_left:
             self.splitter.addWidget(self.side_panel)
             self.splitter.addWidget(self.viewer_host)
@@ -3608,6 +4420,11 @@ class MainWindow(QMainWindow):
             self.splitter.setStretchFactor(1, 0)
         self.splitter.splitterMoved.connect(self.on_splitter_moved)
         self.setCentralWidget(self.splitter)
+
+        self.side_panel_overlay_resize_handle = SidePanelOverlayResizeHandle(self)
+        self.side_panel_overlay_resize_handle.resized.connect(self.resize_overlay_side_panel)
+        self.side_panel_overlay_resize_handle.resizeFinished.connect(self.finish_overlay_side_panel_resize)
+        self.side_panel_overlay_resize_handle.hide()
 
         self._restore_geometry()
         self._apply_settings_to_viewer()
@@ -4367,6 +5184,13 @@ class MainWindow(QMainWindow):
         self.language_label = QLabel("Language")
         self.language_label.setObjectName("languageLabel")
         language_form.addRow(self.language_label, self.language_combo)
+        self.theme_combo = QComboBox()
+        for key, label in THEME_OPTIONS:
+            self.theme_combo.addItem(self.tr_ui(label), key)
+        self.set_combo_by_data(self.theme_combo, self.config_data.ui_theme)
+        self.theme_combo.currentIndexChanged.connect(self.on_theme_changed)
+        self.theme_label = QLabel(self.tr_ui("テーマ"))
+        language_form.addRow(self.theme_label, self.theme_combo)
         other_layout.addLayout(language_form)
         other_layout.addWidget(self.separator())
         self.cpu_resample_check = QCheckBox("拡大縮小を高品質に補完する")
@@ -4465,32 +5289,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.addWidget(self.help_label("NovelAIの永続APIトークンを使い、テキストから画像を生成してRAIVへ取り込みます。バイブストランスファー、画像から画像生成、インペイントは未対応です。"))
 
-        auth_form = QFormLayout()
-        output_row = QHBoxLayout()
-        self.novelai_output_dir_edit = QLineEdit(self.config_data.novelai_output_dir or str(DEFAULT_NOVELAI_GENERATED_DIR))
-        self.novelai_output_dir_edit.editingFinished.connect(self.on_novelai_settings_changed)
-        output_button = QPushButton("参照")
-        output_button.clicked.connect(self.choose_novelai_output_dir)
-        output_row.addWidget(self.novelai_output_dir_edit, 1)
-        output_row.addWidget(output_button)
-        auth_form.addRow("保存先", output_row)
-        layout.addLayout(auth_form)
-        output_options_row = QHBoxLayout()
-        self.novelai_date_subfolders_check = QCheckBox("日付ごとにサブフォルダを生成する")
-        self.novelai_date_subfolders_check.setChecked(self.config_data.novelai_date_subfolders)
-        self.novelai_date_subfolders_check.stateChanged.connect(self.on_novelai_settings_changed)
-        output_options_row.addWidget(self.novelai_date_subfolders_check)
-        output_options_row.addSpacing(12)
-        output_options_row.addWidget(QLabel("ファイル名"))
-        self.novelai_filename_combo = QComboBox()
-        self.novelai_filename_combo.addItem("シード値.png", "seed")
-        self.novelai_filename_combo.addItem("日付_時刻.png", "time")
-        self.novelai_filename_combo.addItem("時刻.png", "time_only")
-        self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_filename_mode)
-        self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
-        output_options_row.addWidget(self.novelai_filename_combo)
-        output_options_row.addStretch(1)
-        layout.addLayout(output_options_row)
         self.novelai_split_prompts_check = QCheckBox("プロンプトを分解する")
         self.novelai_split_prompts_check.setChecked(self.config_data.novelai_split_prompts)
         self.novelai_split_prompts_check.stateChanged.connect(self.on_novelai_split_prompts_changed)
@@ -4511,7 +5309,19 @@ class MainWindow(QMainWindow):
         layout.addLayout(preset_row)
         self.refresh_novelai_prompt_preset_combo()
 
-        layout.addWidget(QLabel("プロンプト"))
+        prompt_heading_row = QHBoxLayout()
+        self.novelai_prompt_label = QLabel("プロンプト")
+        prompt_heading_row.addWidget(self.novelai_prompt_label)
+        prompt_heading_row.addStretch(1)
+        self.novelai_add_prompt_items_at_top_check = QCheckBox("先頭に追加する")
+        self.novelai_add_prompt_items_at_top_check.setChecked(self.config_data.novelai_add_prompt_items_at_top)
+        self.novelai_add_prompt_items_at_top_check.stateChanged.connect(self.on_novelai_add_prompt_items_at_top_changed)
+        prompt_heading_row.addWidget(self.novelai_add_prompt_items_at_top_check)
+        self.novelai_delete_folder_contents_check = QCheckBox("フォルダ削除時、中身ごと消す")
+        self.novelai_delete_folder_contents_check.setChecked(self.config_data.novelai_delete_folder_contents)
+        self.novelai_delete_folder_contents_check.stateChanged.connect(self.on_novelai_delete_folder_contents_changed)
+        prompt_heading_row.addWidget(self.novelai_delete_folder_contents_check)
+        layout.addLayout(prompt_heading_row)
         self.novelai_prompt_edit = PromptSubmitTextEdit(self.config_data.novelai_prompt)
         self.novelai_prompt_edit.setMinimumHeight(0)
         self.novelai_prompt_edit.textChanged.connect(self.on_novelai_settings_changed)
@@ -4538,6 +5348,7 @@ class MainWindow(QMainWindow):
         self.novelai_negative_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_negative_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_list_edit)
+        self.on_novelai_add_prompt_items_at_top_changed(persist=False)
         self.novelai_negative_resize_handle = VerticalResizeHandle()
         self.novelai_negative_resize_handle.resized.connect(
             lambda delta: self.resize_novelai_prompt_editor("negative", delta)
@@ -4548,6 +5359,7 @@ class MainWindow(QMainWindow):
         self.novelai_enter_generate_check.setChecked(self.config_data.novelai_enter_to_generate)
         self.novelai_enter_generate_check.stateChanged.connect(self.on_novelai_enter_generate_changed)
         layout.addWidget(self.novelai_enter_generate_check)
+        self.on_novelai_delete_folder_contents_changed(persist=False)
         self.on_novelai_enter_generate_changed()
         self.update_novelai_prompt_editor_visibility()
         size_form = QFormLayout()
@@ -4617,6 +5429,32 @@ class MainWindow(QMainWindow):
         self.novelai_detail_widget = QWidget()
         detail_layout = QVBoxLayout(self.novelai_detail_widget)
         detail_layout.setContentsMargins(0, 0, 0, 0)
+        output_form = QFormLayout()
+        output_row = QHBoxLayout()
+        self.novelai_output_dir_edit = QLineEdit(self.config_data.novelai_output_dir or str(DEFAULT_NOVELAI_GENERATED_DIR))
+        self.novelai_output_dir_edit.editingFinished.connect(self.on_novelai_settings_changed)
+        output_button = QPushButton("参照")
+        output_button.clicked.connect(self.choose_novelai_output_dir)
+        output_row.addWidget(self.novelai_output_dir_edit, 1)
+        output_row.addWidget(output_button)
+        output_form.addRow("保存先", output_row)
+        output_options_row = QHBoxLayout()
+        self.novelai_date_subfolders_check = QCheckBox("日付ごとにサブフォルダを生成する")
+        self.novelai_date_subfolders_check.setChecked(self.config_data.novelai_date_subfolders)
+        self.novelai_date_subfolders_check.stateChanged.connect(self.on_novelai_settings_changed)
+        output_options_row.addWidget(self.novelai_date_subfolders_check)
+        output_options_row.addSpacing(12)
+        output_options_row.addWidget(QLabel("ファイル名"))
+        self.novelai_filename_combo = QComboBox()
+        self.novelai_filename_combo.addItem("シード値.png", "seed")
+        self.novelai_filename_combo.addItem("日付_時刻.png", "time")
+        self.novelai_filename_combo.addItem("時刻.png", "time_only")
+        self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_filename_mode)
+        self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
+        output_options_row.addWidget(self.novelai_filename_combo)
+        output_options_row.addStretch(1)
+        output_form.addRow(output_options_row)
+        detail_layout.addLayout(output_form)
         detail_auth_form = QFormLayout()
         self.novelai_token_edit = QLineEdit(load_novelai_api_token())
         self.novelai_token_edit.setEchoMode(QLineEdit.Password)
@@ -4692,9 +5530,6 @@ class MainWindow(QMainWindow):
         self.novelai_opus_check = QCheckBox("OpusプランとしてAnlasを推定")
         self.novelai_opus_check.setChecked(self.config_data.novelai_is_opus)
         self.novelai_opus_check.stateChanged.connect(self.on_novelai_settings_changed)
-        self.novelai_auto_open_check = QCheckBox("生成後に自動表示")
-        self.novelai_auto_open_check.setChecked(self.config_data.novelai_auto_open)
-        self.novelai_auto_open_check.stateChanged.connect(self.on_novelai_settings_changed)
         self.novelai_auto_upscale_check = QCheckBox("生成後に拡大処理キューへ投入")
         self.novelai_auto_upscale_check.setChecked(self.config_data.novelai_auto_upscale)
         self.novelai_auto_upscale_check.stateChanged.connect(self.on_novelai_settings_changed)
@@ -4703,7 +5538,6 @@ class MainWindow(QMainWindow):
         self.novelai_metadata_check.stateChanged.connect(self.on_novelai_settings_changed)
         for check in (
             self.novelai_opus_check,
-            self.novelai_auto_open_check,
             self.novelai_auto_upscale_check,
             self.novelai_metadata_check,
         ):
@@ -4719,6 +5553,10 @@ class MainWindow(QMainWindow):
         self.novelai_generate_button = QPushButton("生成")
         self.novelai_generate_button.installEventFilter(self)
         run_row.addWidget(self.novelai_generate_button)
+        self.novelai_auto_open_check = QCheckBox("生成後に自動表示")
+        self.novelai_auto_open_check.setChecked(self.config_data.novelai_auto_open)
+        self.novelai_auto_open_check.stateChanged.connect(self.on_novelai_settings_changed)
+        run_row.addWidget(self.novelai_auto_open_check)
         self.novelai_continuous_delay_widget = QWidget()
         delay_layout = QHBoxLayout(self.novelai_continuous_delay_widget)
         delay_layout.setContentsMargins(0, 0, 0, 0)
@@ -4779,7 +5617,7 @@ class MainWindow(QMainWindow):
     def help_label(self, text: str) -> QLabel:
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #666;")
+        label.setForegroundRole(QPalette.PlaceholderText)
         return label
 
     def normalize_form_labels(self, *forms: QFormLayout) -> None:
@@ -4820,7 +5658,7 @@ class MainWindow(QMainWindow):
     def novelai_prompt_items_for_preset(self, editor: NovelAIPromptListEditor, text_edit: PromptSubmitTextEdit) -> list[dict[str, object]]:
         if self.novelai_split_prompts_enabled():
             return editor.to_items()
-        return [{"tag": tag, "active": active} for tag, active in editor.split_prompt_items(text_edit.toPlainText())]
+        return editor.split_prompt_nodes(text_edit.toPlainText())
 
     def current_novelai_prompt_preset_payload(self, name: str) -> dict[str, object]:
         return {
@@ -4945,7 +5783,7 @@ class MainWindow(QMainWindow):
         return bool(getattr(self, "novelai_split_prompts_check", None) and self.novelai_split_prompts_check.isChecked())
 
     def active_novelai_text_from_editor(self, editor: NovelAIPromptListEditor, text: str) -> str:
-        return ", ".join(tag for tag, active in editor.split_prompt_items(text) if active and tag.strip())
+        return editor.active_text_from_text(text)
 
     def novelai_prompt_storage_text(self) -> str:
         if self.novelai_split_prompts_enabled() and hasattr(self, "novelai_prompt_list_edit"):
@@ -5023,8 +5861,12 @@ class MainWindow(QMainWindow):
         self.novelai_negative_edit.setVisible(not split_enabled)
         self.novelai_prompt_list_edit.setVisible(split_enabled)
         self.novelai_negative_list_edit.setVisible(split_enabled)
+        if hasattr(self, "novelai_add_prompt_items_at_top_check"):
+            self.novelai_add_prompt_items_at_top_check.setVisible(split_enabled)
         if hasattr(self, "novelai_enter_generate_check"):
-            self.novelai_enter_generate_check.setEnabled(not split_enabled)
+            self.novelai_enter_generate_check.setVisible(not split_enabled)
+        if hasattr(self, "novelai_delete_folder_contents_check"):
+            self.novelai_delete_folder_contents_check.setVisible(split_enabled)
 
     def sync_novelai_lists_from_text(self) -> None:
         if hasattr(self, "novelai_prompt_list_edit"):
@@ -5039,6 +5881,18 @@ class MainWindow(QMainWindow):
             self.sync_novelai_text_from_lists()
         self.update_novelai_prompt_editor_visibility()
         self.on_novelai_settings_changed()
+
+    def on_novelai_add_prompt_items_at_top_changed(self, *_args, persist: bool = True) -> None:
+        enabled = bool(
+            getattr(self, "novelai_add_prompt_items_at_top_check", None)
+            and self.novelai_add_prompt_items_at_top_check.isChecked()
+        )
+        for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
+            editor = getattr(self, editor_name, None)
+            if isinstance(editor, NovelAIPromptListEditor):
+                editor.add_items_at_top = enabled
+        if persist:
+            self.on_novelai_settings_changed()
 
     def on_novelai_prompt_list_changed(self) -> None:
         if not self.novelai_split_prompts_enabled():
@@ -5061,6 +5915,18 @@ class MainWindow(QMainWindow):
             if edit is not None:
                 edit.enter_submits = enabled
         self.on_novelai_settings_changed()
+
+    def on_novelai_delete_folder_contents_changed(self, *_args, persist: bool = True) -> None:
+        enabled = bool(
+            getattr(self, "novelai_delete_folder_contents_check", None)
+            and self.novelai_delete_folder_contents_check.isChecked()
+        )
+        for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
+            editor = getattr(self, editor_name, None)
+            if isinstance(editor, NovelAIPromptListEditor):
+                editor.delete_folder_contents = enabled
+        if persist:
+            self.on_novelai_settings_changed()
 
     def novelai_number_of_images(self) -> int:
         group = getattr(self, "novelai_batch_group", None)
@@ -5285,6 +6151,16 @@ class MainWindow(QMainWindow):
         self.update_side_panel_side_button()
         if hasattr(self, "language_label"):
             self.language_label.setText("Language")
+        self.update_side_panel_resize_handle_tooltips()
+        if hasattr(self, "theme_combo"):
+            current = self.theme_combo.currentData() or THEME_SYSTEM
+            self.theme_combo.blockSignals(True)
+            self.theme_combo.clear()
+            for key, label in THEME_OPTIONS:
+                self.theme_combo.addItem(self.tr_ui(label), key)
+            self.set_combo_by_data(self.theme_combo, current)
+            self.theme_combo.blockSignals(False)
+            self.theme_label.setText(self.tr_ui("テーマ"))
         if hasattr(self, "version_label"):
             self.update_version_label()
             self.render_update_check_result()
@@ -5714,10 +6590,13 @@ class MainWindow(QMainWindow):
         self.novelai_continuous_generation_enabled = bool(enabled)
         if enabled:
             self.novelai_continuous_generation_stopping = False
+        else:
+            self.novelai_continuous_delay_timer.stop()
         self.update_novelai_generate_button_text()
         self.update_novelai_continuous_delay_visibility()
 
     def request_stop_novelai_continuous_generation(self) -> None:
+        self.novelai_continuous_delay_timer.stop()
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = bool(self.novelai_generation_running)
         self.update_novelai_generate_button_text()
@@ -5763,11 +6642,21 @@ class MainWindow(QMainWindow):
             and not self.novelai_continuous_generation_stopping
             and not getattr(self, "closing", False)
         ):
-            QTimer.singleShot(self.novelai_continuous_delay_ms(), self.generate_novelai_images)
+            self.novelai_continuous_delay_timer.start(self.novelai_continuous_delay_ms())
         else:
             self.set_novelai_continuous_generation_enabled(False)
             self.novelai_continuous_generation_stopping = False
             self.update_novelai_generate_button_text()
+
+    def run_next_novelai_continuous_generation(self) -> None:
+        if (
+            not self.novelai_continuous_generation_enabled
+            or self.novelai_continuous_generation_stopping
+            or self.novelai_generation_running
+            or getattr(self, "closing", False)
+        ):
+            return
+        self.generate_novelai_images()
 
     def generate_novelai_images(self) -> None:
         if self.novelai_generation_running:
@@ -6401,6 +7290,8 @@ class MainWindow(QMainWindow):
         self.config_data.show_profile_panel = self.show_profile_check.isChecked()
         if hasattr(self, "language_combo"):
             self.config_data.ui_language = self.language_combo.currentData() or "ja"
+        if hasattr(self, "theme_combo"):
+            self.config_data.ui_theme = self.theme_combo.currentData() or THEME_SYSTEM
         self.config_data.thumbnail_enabled = self.thumbnail_enabled_check.isChecked()
         self.config_data.thumbnail_pinned = self.thumbnail_pinned_check.isChecked()
         self.config_data.thumbnail_height = self.clamped_thumbnail_height()
@@ -6439,11 +7330,13 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_prompt = self.novelai_prompt_storage_text()
             self.config_data.novelai_negative_prompt = self.novelai_negative_prompt_storage_text()
             self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
+            self.config_data.novelai_add_prompt_items_at_top = self.novelai_add_prompt_items_at_top_check.isChecked()
             self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
             self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
             self.config_data.novelai_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
             self.config_data.novelai_negative_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_negative_prompt_editor_height)
             self.config_data.novelai_enter_to_generate = self.novelai_enter_generate_check.isChecked()
+            self.config_data.novelai_delete_folder_contents = self.novelai_delete_folder_contents_check.isChecked()
             self.config_data.novelai_quality_tags = self.novelai_quality_tags_check.isChecked()
             self.config_data.novelai_uc_preset = self.novelai_uc_preset_combo.currentData() or "strong"
             self.config_data.novelai_dataset_mode = self.novelai_dataset_mode()
@@ -8101,7 +8994,7 @@ class MainWindow(QMainWindow):
             self.open_path_deferred(Path(urls[0].toLocalFile()))
 
     def hide_side_panel(self) -> None:
-        self.side_panel.hide()
+        self.set_overlay_side_panel_visible(False)
         self.persist_config()
 
     def show_side_panel(self) -> None:
@@ -8140,7 +9033,7 @@ class MainWindow(QMainWindow):
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = True
             self.position_overlay_side_panel()
-            self.side_panel.setVisible(visible)
+            self.set_overlay_side_panel_visible(visible)
         else:
             if self.side_panel_on_left():
                 self.splitter.insertWidget(0, self.side_panel)
@@ -8159,8 +9052,14 @@ class MainWindow(QMainWindow):
     def is_cursor_over_side_panel(self) -> bool:
         if not self.side_panel.isVisible():
             return False
-        local = self.side_panel.mapFromGlobal(QCursor.pos())
-        return self.side_panel.rect().contains(local)
+        global_pos = QCursor.pos()
+        local = self.side_panel.mapFromGlobal(global_pos)
+        if self.side_panel.rect().contains(local):
+            return True
+        handle = getattr(self, "side_panel_overlay_resize_handle", None)
+        if handle is not None and handle.isVisible():
+            return handle.rect().contains(handle.mapFromGlobal(global_pos))
+        return False
 
     def should_hide_overlay_panel(self) -> bool:
         if self.overlay_resizing or self.overlay_modal_guard or self.pin_button.isChecked() or not self.side_panel_overlay:
@@ -8240,6 +9139,9 @@ class MainWindow(QMainWindow):
         self.adjusting_splitter = False
 
     def attach_side_panel_to_splitter(self, visible: bool = True) -> None:
+        handle = getattr(self, "side_panel_overlay_resize_handle", None)
+        if handle is not None:
+            handle.hide()
         if self.side_panel_overlay:
             self.side_panel.hide()
             self.side_panel.setParent(None)
@@ -8249,10 +9151,21 @@ class MainWindow(QMainWindow):
                 self.splitter.addWidget(self.side_panel)
             self.side_panel.installEventFilter(self)
             self.side_panel_overlay = False
+            self.update_side_panel_resize_handle_tooltips()
         self.side_panel.setVisible(visible)
         if visible:
             self._apply_splitter_panel_width()
             self.request_pinned_side_panel_repair()
+
+    def update_side_panel_resize_handle_tooltips(self) -> None:
+        tooltip = self.tr_ui("ドラッグして設定ペインの幅を調整")
+        splitter = getattr(self, "splitter", None)
+        if splitter is not None:
+            for index in range(1, splitter.count()):
+                splitter.handle(index).setToolTip(tooltip)
+        overlay_handle = getattr(self, "side_panel_overlay_resize_handle", None)
+        if overlay_handle is not None:
+            overlay_handle.setToolTip(tooltip)
 
     def detach_side_panel_for_overlay(self, visible: bool = False) -> None:
         if not self.side_panel_overlay:
@@ -8270,7 +9183,7 @@ class MainWindow(QMainWindow):
                 self.splitter.setSizes([max(1, self.splitter.width()), 0])
             self.adjusting_splitter = False
         self.position_overlay_side_panel()
-        self.side_panel.setVisible(visible)
+        self.set_overlay_side_panel_visible(visible)
 
     def position_overlay_side_panel(self) -> None:
         if not self.side_panel_overlay:
@@ -8281,6 +9194,44 @@ class MainWindow(QMainWindow):
             self.side_panel.setGeometry(central.left(), central.top(), width, central.height())
         else:
             self.side_panel.setGeometry(central.right() - width + 1, central.top(), width, central.height())
+        self.position_overlay_side_panel_resize_handle()
+
+    def position_overlay_side_panel_resize_handle(self) -> None:
+        handle = getattr(self, "side_panel_overlay_resize_handle", None)
+        if handle is None:
+            return
+        if not self.side_panel_overlay or not self.side_panel.isVisible():
+            handle.hide()
+            return
+        handle_width = 18
+        handle_gap = 4
+        panel_rect = self.side_panel.geometry()
+        x = panel_rect.right() + 1 + handle_gap if self.side_panel_on_left() else panel_rect.left() - handle_gap - handle_width
+        handle.setGeometry(x, panel_rect.top(), handle_width, panel_rect.height())
+        handle.show()
+        handle.raise_()
+
+    def set_overlay_side_panel_visible(self, visible: bool) -> None:
+        self.side_panel.setVisible(visible)
+        handle = getattr(self, "side_panel_overlay_resize_handle", None)
+        if handle is None:
+            return
+        if visible and self.side_panel_overlay:
+            self.position_overlay_side_panel_resize_handle()
+        else:
+            handle.hide()
+
+    def resize_overlay_side_panel(self, delta: int) -> None:
+        self.overlay_resizing = True
+        width_delta = delta if self.side_panel_on_left() else -delta
+        self.side_panel_width = self.clamped_side_panel_width(self.side_panel_width + width_delta)
+        self.config_data.side_panel_width = self.side_panel_width
+        self.position_overlay_side_panel()
+
+    def finish_overlay_side_panel_resize(self) -> None:
+        self.overlay_resizing = False
+        self.overlay_hide_suppressed_until = time.monotonic() + SIDE_PANEL_HIDE_GRACE_SEC
+        self.persist_config()
 
     def on_splitter_moved(self, _pos: int, _index: int) -> None:
         if self.adjusting_splitter or self.side_panel_overlay:
@@ -8587,33 +9538,6 @@ class MainWindow(QMainWindow):
             if event.type() in {QEvent.Enter, QEvent.MouseButtonPress, QEvent.MouseMove}:
                 self._show_fullscreen_cursor()
             if self.side_panel_overlay and not self.pin_button.isChecked():
-                resize_hit = (
-                    event.position().x() >= self.side_panel.width() - 18
-                    if self.side_panel_on_left()
-                    else event.position().x() <= 18
-                )
-                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and resize_hit:
-                    self.overlay_resizing = True
-                    self.side_panel.setCursor(Qt.SizeHorCursor)
-                    return True
-                if event.type() == QEvent.MouseMove:
-                    if self.overlay_resizing:
-                        local = self.mapFromGlobal(event.globalPosition().toPoint())
-                        if self.side_panel_on_left():
-                            left = self.side_panel.geometry().left()
-                            self.side_panel_width = self.clamped_side_panel_width(local.x() - left + 1)
-                        else:
-                            right = self.side_panel.geometry().right()
-                            self.side_panel_width = self.clamped_side_panel_width(right - local.x() + 1)
-                        self.config_data.side_panel_width = self.side_panel_width
-                        self.position_overlay_side_panel()
-                        return True
-                    self.side_panel.setCursor(Qt.SizeHorCursor if resize_hit else Qt.ArrowCursor)
-                if event.type() == QEvent.MouseButtonRelease and self.overlay_resizing:
-                    self.overlay_resizing = False
-                    self.side_panel.unsetCursor()
-                    self.persist_config()
-                    return True
                 if event.type() in {QEvent.Leave, QEvent.Hide}:
                     QTimer.singleShot(SIDE_PANEL_HIDE_DELAY_MS, self.hide_overlay_side_panel_if_needed)
         elif watched is self.viewer and event.type() == QEvent.MouseMove:
@@ -8630,7 +9554,7 @@ class MainWindow(QMainWindow):
                 if should_show:
                     self.show_side_panel()
                 elif self.side_panel_overlay and self.side_panel.isVisible() and self.should_hide_overlay_panel():
-                    self.side_panel.hide()
+                    self.set_overlay_side_panel_visible(False)
                     self.persist_config()
             if self.is_app_fullscreen() and self.fullscreen_cursor_hidden:
                 self._show_fullscreen_cursor()
@@ -8639,7 +9563,7 @@ class MainWindow(QMainWindow):
 
     def hide_overlay_side_panel_if_needed(self) -> None:
         if self.should_hide_overlay_panel():
-            self.side_panel.hide()
+            self.set_overlay_side_panel_visible(False)
             self.persist_config()
 
     def on_side_panel_pin_changed(self, pinned: bool) -> None:
@@ -8885,6 +9809,12 @@ class MainWindow(QMainWindow):
     def on_language_changed(self) -> None:
         self.config_data.ui_language = self.language_combo.currentData() or "ja"
         self.apply_language()
+        self.persist_config()
+
+    def on_theme_changed(self) -> None:
+        theme = self.theme_combo.currentData() or THEME_SYSTEM
+        self.config_data.ui_theme = theme
+        apply_application_color_scheme(theme)
         self.persist_config()
 
     def on_settings_tab_changed(self, index: int) -> None:
@@ -9736,6 +10666,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         self.closing = True
+        self.novelai_continuous_delay_timer.stop()
         self._show_fullscreen_cursor()
         self.persist_config()
         self.folder_history_save_timer.stop()

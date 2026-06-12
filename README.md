@@ -164,10 +164,12 @@ NovelAI生成:
 - 保存先フォルダ指定（既定は `RAIV_generated`）
 - 保存ファイル名をシード値、日付_時刻、時刻のみから選択（既定はシード値）
 - プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定
-- APIトークン、品質タグ、モデル、サンプラー、自動処理などを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
+- 保存先、サブフォルダ生成、ファイル名、APIトークン、品質タグ、モデル、サンプラーなどを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
 - アニメモード / ケモノモード切替（ケモノモードでは生成時に `fur dataset` をプロンプト先頭へ追加）
-- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード（入力欄からの追加は1行扱い。既存テキストの分解時は括弧、`||...|...||` のランダム選択構文、`1.2::tagA, tagB::` や `-1::tag::` などの数値重み指定構文の外側にある`, `を区切りとして扱います。単独の `::` は未閉じの強調/抑制括弧を閉じるものとして扱います）
+- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード。名前付きフォルダを入れ子にしてタグを整理し、折りたたみやドラッグによるフォルダ間移動もできます。フォルダの「ランダム」をオンにすると、有効な内容を `|` でつないで全体を `||` で囲み、ランダム選択構文として送信します。タグとフォルダの追加先は選択行に影響されず、既定では一覧の末尾、「先頭に追加する」をオンにすると先頭になります。入力欄に文字がある状態でフォルダ追加を押すと、その文字をフォルダ名に使います（入力欄からのタグ追加は1行扱い。既存テキストの分解時は括弧、`||...|...||` のランダム選択構文、`1.2::tagA, tagB::` や `-1::tag::` などの数値重み指定構文の外側にある`, `を区切りとして扱います。単独の `::` は未閉じの強調/抑制括弧を閉じるものとして扱います）
 - プロンプト分解モードで無効化したタグは、通常モードではRAIV専用マーカー `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>` で保持されます。このマーカー内の内容はNovelAI送信時には除外されます。
+- 分解モードのフォルダ構造は、通常モードではRAIV専用マーカー `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>` で保持されます。ランダム設定も専用の `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` マーカーで保持します。フォルダ名はマーカー内へ安全に符号化され、NovelAI送信時にはフォルダマーカーを除外してランダム選択構文へ変換します。ユーザーが直接入力した `||...|...||` を自動でフォルダ化することはありません。
+- 「フォルダ削除時、中身ごと消す」は既定でオフです。オフではフォルダだけを削除して中のタグやフォルダを同じ位置へ残し、オンでは中身もまとめて削除します。
 - タグプリセットの保存、読込、削除（`setting.json` とは別の `novelai_prompt_presets.json` に保存）
 - 品質タグ追加と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定
 - Enterで生成、Shift+Enterで改行する入力オプション
@@ -185,8 +187,9 @@ NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persiste
 その他:
 
 - Language（日本語 / English）
+- テーマ（Windowsの設定に同期 / ライトテーマ / ダークテーマ）。QtのWindows連携を使い、RAIV独自の配色は使用しません
 - AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
-- 右ペインの左右移動
+- 右ペインの左右移動。境界の三本線グリップをドラッグして幅を変更可能
 - 拡大縮小時の高品質補完
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area
 - アプリの二重起動禁止
@@ -453,10 +456,12 @@ NovelAI Generation:
 - Configurable output folder (default: `RAIV_generated`)
 - Select generated filename style from seed, date_time, or time only (default: seed)
 - Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings
-- API token, quality tags, model/sampler, and automatic processing settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
+- Output folder, subfolder creation, filename, API token, quality tags, model, and sampler settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
 - Anime / Furry mode switch. Furry mode adds `fur dataset` to the beginning of the generation prompt.
-- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Text entered in the add field is kept as one row; decomposing existing text splits on `, ` outside brackets, `||...|...||` random-choice syntax, and numeric weight syntax such as `1.2::tagA, tagB::` or `-1::tag::`. A standalone `::` is treated as closing unbalanced emphasis/suppression brackets.
+- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Tags can be organized in nested named folders, collapsed, and dragged between folders. Enabling Random on a folder joins its active contents with `|` and wraps the result in `||` when sending the prompt. New tags and folders ignore the selected row and are added to the bottom by default, or to the top when Add at top is enabled. When the input field contains text, Add folder uses it as the folder name. Text added as a tag is kept as one row; decomposing existing text splits on `, ` outside brackets, `||...|...||` random-choice syntax, and numeric weight syntax such as `1.2::tagA, tagB::` or `-1::tag::`. A standalone `::` is treated as closing unbalanced emphasis/suppression brackets.
 - Tags disabled in prompt decomposition mode are preserved in normal mode with RAIV-specific markers: `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>`. Content inside those markers is excluded when sending prompts to NovelAI.
+- Folder structure from prompt decomposition mode is preserved in normal mode with RAIV-specific markers: `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>`. Random folder settings are preserved with a separate `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` marker. Folder names are safely encoded in the marker; when sending prompts to NovelAI, the markers are removed and random folders are converted to random-choice syntax. User-written `||...|...||` syntax is never converted into a folder automatically.
+- `Delete folder contents with folder` is off by default. When off, deleting a folder keeps its tags and nested folders at the same position; when on, its contents are deleted with it.
 - Save, load, and delete tag presets. Presets are stored in `novelai_prompt_presets.json`, separate from `setting.json`.
 - Add Quality Tags and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None)
 - Enter-to-generate option, with Shift+Enter inserting a line break
@@ -474,8 +479,9 @@ NovelAI Generation requires the user's own NovelAI Persistent API Token. RAIV is
 Other:
 
 - Language (Japanese / English)
+- Theme (Follow Windows settings / Light theme / Dark theme). This uses Qt's Windows integration rather than a RAIV-specific color palette.
 - Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
-- Move the side panel between the left and right side
+- Move the side panel between the left and right side, and drag the three-line boundary grip to resize it
 - High-quality scaling for zoomed/resized display
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area
 - Prevent multiple app instances
