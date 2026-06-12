@@ -103,7 +103,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -325,6 +325,8 @@ TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
 TEMP_WORK_PREFIX = "realcugan_qt_work_"
 TEMP_OUTPUT_PREFIX = "realcugan_"
 TEMP_LOCK_FILE = "viewer.lock"
+CONFIG_SAVE_DEBOUNCE_MS = 300
+NOVELAI_PREVIEW_DEBOUNCE_MS = 120
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\RealtimeAIImageViewer_RAIV_SingleInstance"
 BORDERLESS_FULLSCREEN_OVERSCAN = 1
 GWL_STYLE = -16
@@ -338,6 +340,8 @@ SWP_FRAMECHANGED = 0x0020
 SWP_SHOWWINDOW = 0x0040
 MONITOR_DEFAULTTONEAREST = 2
 FO_DELETE = 3
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_ACCESS_DENIED = 5
 FOF_ALLOWUNDO = 0x0040
 FOF_NOCONFIRMATION = 0x0010
 FOF_SILENT = 0x0004
@@ -352,6 +356,7 @@ THUMBNAIL_RESIZE_GRIP = 10
 THUMBNAIL_HIDE_GRACE_SEC = 0.45
 THUMBNAIL_HIDE_MARGIN = 28
 THUMBNAIL_HIDE_DELAY_MS = 220
+THUMBNAIL_PREFETCH_DEBOUNCE_MS = 90
 SIDE_PANEL_HIDE_GRACE_SEC = 0.45
 SIDE_PANEL_HIDE_MARGIN = 36
 SIDE_PANEL_HIDE_DELAY_MS = 220
@@ -369,6 +374,10 @@ MODIFIER_MASK = (
     | Qt.ShiftModifier.value
     | Qt.AltModifier.value
 )
+
+
+def viewer_pixmap_cache_limit(prefetch_count: int) -> int:
+    return max(24, max(0, int(prefetch_count)) * 4 + 8)
 
 
 class WICGUID(ctypes.Structure):
@@ -453,6 +462,25 @@ def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
         if not image.isNull():
             return image
     return QImage(str(path))
+
+
+def load_thumbnail_image(path: Path, max_size: int, hdr_tonemap_brightness: float = 1.0) -> QImage:
+    max_size = max(1, int(max_size))
+    if is_hdr_image_path(path):
+        image = load_image(path, hdr_tonemap_brightness)
+    else:
+        reader = QImageReader(str(path))
+        source_size = reader.size()
+        if source_size.isValid():
+            reader.setScaledSize(source_size.scaled(QSize(max_size, max_size), Qt.KeepAspectRatio))
+        image = reader.read()
+        if image.isNull():
+            image = load_image(path, hdr_tonemap_brightness)
+    if image.isNull():
+        return image
+    if image.width() != max_size and image.height() != max_size:
+        image = image.scaled(max_size, max_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    return image
 
 
 def read_image_size(path: Path) -> QSize:
@@ -913,8 +941,7 @@ def default_comfyui_workflow(model_name: str, controlnet_name: str) -> dict[str,
 
 
 def save_default_comfyui_workflow(path: Path, model_name: str, controlnet_name: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(default_comfyui_workflow(model_name, controlnet_name), ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(default_comfyui_workflow(model_name, controlnet_name), ensure_ascii=False, indent=2))
 
 
 def preserve_original_luminance(
@@ -1415,6 +1442,30 @@ class AppConfig:
     last_dir: str = ""
 
 
+@dataclass(frozen=True)
+class UpscaleTask:
+    source: Path
+    engine_input: Path
+    key: tuple
+    engine: str
+    engine_label: str
+    command_template: str
+    scale: int
+    denoise: int
+    tile: int
+    model: str
+    sharpen: int
+    compression: int
+    face_recovery: int
+    cache_path: Path | None
+    read_cache: bool
+    save_to_cache: bool
+    force: bool
+    skip_tall_images: bool
+    skip_height_threshold: int
+    hdr_tonemap_brightness: float
+
+
 class DATA_BLOB(ctypes.Structure):
     _fields_ = [
         ("cbData", wintypes.DWORD),
@@ -1463,13 +1514,27 @@ def load_novelai_api_token() -> str:
         return ""
 
 
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        temp_path.write_bytes(data)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
+    atomic_write_bytes(path, text.encode(encoding))
+
+
 def save_novelai_api_token(token: str) -> None:
     token = token.strip()
     if not token:
         if NOVELAI_TOKEN_PATH.exists():
             NOVELAI_TOKEN_PATH.unlink()
         return
-    NOVELAI_TOKEN_PATH.write_bytes(dpapi_protect(token.encode("utf-8")))
+    atomic_write_bytes(NOVELAI_TOKEN_PATH, dpapi_protect(token.encode("utf-8")))
 
 
 def set_process_app_user_model_id() -> None:
@@ -1705,7 +1770,7 @@ def load_config() -> AppConfig:
 def save_config(config: AppConfig) -> None:
     data = asdict(config)
     data["novelai_api_token"] = ""
-    CONFIG_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(CONFIG_PATH, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def load_folder_history() -> dict[str, dict[str, object]]:
@@ -1729,10 +1794,7 @@ def load_folder_history() -> dict[str, dict[str, object]]:
 
 
 def save_folder_history(entries: dict[str, dict[str, object]]) -> None:
-    FOLDER_HISTORY_PATH.write_text(
-        json.dumps({"entries": entries}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(FOLDER_HISTORY_PATH, json.dumps({"entries": entries}, ensure_ascii=False, indent=2))
 
 
 def load_novelai_prompt_presets() -> list[dict[str, object]]:
@@ -1749,10 +1811,33 @@ def load_novelai_prompt_presets() -> list[dict[str, object]]:
 
 
 def save_novelai_prompt_presets(presets: list[dict[str, object]]) -> None:
-    NOVELAI_PROMPT_PRESETS_PATH.write_text(
-        json.dumps({"presets": presets}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_text(NOVELAI_PROMPT_PRESETS_PATH, json.dumps({"presets": presets}, ensure_ascii=False, indent=2))
+
+
+def process_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetLastError(0)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    open_process.restype = wintypes.HANDLE
+    handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if handle:
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = [wintypes.HANDLE]
+        close_handle.restype = wintypes.BOOL
+        close_handle(handle)
+        return True
+    return int(kernel32.GetLastError()) == ERROR_ACCESS_DENIED
 
 
 def acquire_single_instance_mutex_if_needed() -> object | None:
@@ -1978,7 +2063,7 @@ def save_legacy_cur(path: Path, curve: ToneCurve) -> None:
             else:
                 pairs.extend(["-1", "-1"])
         lines.append(" ".join(pairs) + " ")
-    path.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    atomic_write_text(path, "\r\n".join(lines) + "\r\n")
 
 
 class KeyBindingDialog(QDialog):
@@ -2224,7 +2309,7 @@ class ToneCurveGraph(QWidget):
 
 
 class AppSignals(QObject):
-    process_started = Signal(str)
+    process_started = Signal(object)
     process_done = Signal(object)
     folder_images_ready = Signal(object, object)
     prefetch_done = Signal(int, object, object, object, object)
@@ -2445,8 +2530,8 @@ class SidePanelOverlayResizeHandle(QFrame):
         self.setToolTip("ドラッグして設定ペインの幅を調整")
 
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
         painter = QPainter(self)
+        painter.fillRect(self.rect(), self.palette().window())
         center_x = self.width() // 2
         separator_color = self.palette().mid().color()
         separator_color.setAlpha(90)
@@ -3550,9 +3635,17 @@ class GLImageView(QOpenGLWidget):
     def set_processed(self, processed: QImage | None, page_slot: int = 0) -> None:
         if page_slot == 1:
             self.raw_secondary_processed_image = processed or QImage()
+            self.secondary_processed_image = self.transformed_image(
+                self.adjusted_display_image(self.raw_secondary_processed_image)
+            )
+            self.secondary_processed_pixmap = self.pixmap_for_image(
+                self.raw_secondary_processed_image,
+                self.secondary_processed_image,
+            )
         else:
             self.raw_processed_image = processed or QImage()
-        self.rebuild_display_images()
+            self.processed_image = self.transformed_image(self.adjusted_display_image(self.raw_processed_image))
+            self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
         self.clear_resample_cache()
         self.update()
 
@@ -3578,7 +3671,7 @@ class GLImageView(QOpenGLWidget):
     def pixmap_for_image(self, raw_image: QImage, display_image: QImage) -> QPixmap:
         if raw_image.isNull() or display_image.isNull():
             return QPixmap()
-        key = self.pixmap_cache_key(raw_image)
+        key = self.pixmap_cache_key(display_image)
         cached = self.pixmap_cache.get(key)
         if cached is not None:
             self.pixmap_cache.move_to_end(key)
@@ -3598,6 +3691,8 @@ class GLImageView(QOpenGLWidget):
             self.pixmap_cache.popitem(last=False)
 
     def queue_pixmap_prefetch(self, items: list[tuple[object, QImage]]) -> None:
+        if self.tone_curve_enabled or self.has_display_adjustments():
+            return
         for stable_key, image in items:
             if image.isNull():
                 continue
@@ -4275,6 +4370,12 @@ class MainWindow(QMainWindow):
         self.folder_history_save_timer = QTimer(self)
         self.folder_history_save_timer.setSingleShot(True)
         self.folder_history_save_timer.timeout.connect(self.save_folder_history_now)
+        self.config_save_timer = QTimer(self)
+        self.config_save_timer.setSingleShot(True)
+        self.config_save_timer.timeout.connect(self.persist_config)
+        self.novelai_preview_timer = QTimer(self)
+        self.novelai_preview_timer.setSingleShot(True)
+        self.novelai_preview_timer.timeout.connect(self.update_novelai_anlas_preview)
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -4282,12 +4383,13 @@ class MainWindow(QMainWindow):
         self.image_height_cache: OrderedDict[Path, int] = OrderedDict()
         self.processed_cache: OrderedDict[tuple, QImage] = OrderedDict()
         self.processing_paths: set[Path] = set()
-        self.queued_paths: set[Path] = set()
+        self.processing_task_keys: dict[Path, tuple] = {}
+        self.queued_tasks: dict[Path, UpscaleTask] = {}
         self.work_queue: queue.Queue[Path | None] = queue.Queue()
         self.prefetch_io_queue: queue.PriorityQueue[tuple[int, int, int, str, object, str, str]] = queue.PriorityQueue()
         self.prefetch_io_sequence = 0
         self.prefetch_io_lock = threading.Lock()
-        self.thumbnail_queue: queue.PriorityQueue[tuple[int, int, int, int, str]] = queue.PriorityQueue()
+        self.thumbnail_queue: queue.PriorityQueue[tuple[int, int, int, int, str, int, float]] = queue.PriorityQueue()
         self.thumbnail_sequence = 0
         self.thumbnail_lock = threading.Lock()
         self.thumbnail_generation = 0
@@ -4303,6 +4405,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_rebuild_timer = QTimer(self)
         self.thumbnail_rebuild_timer.setSingleShot(True)
         self.thumbnail_rebuild_timer.timeout.connect(self.continue_thumbnail_rebuild)
+        self.thumbnail_prefetch_timer = QTimer(self)
+        self.thumbnail_prefetch_timer.setSingleShot(True)
+        self.thumbnail_prefetch_timer.timeout.connect(self.schedule_thumbnail_prefetch)
         self.thumbnail_resize_refresh_timer = QTimer(self)
         self.thumbnail_resize_refresh_timer.setSingleShot(True)
         self.thumbnail_resize_refresh_timer.timeout.connect(self.refresh_thumbnail_icons_for_size)
@@ -4701,6 +4806,7 @@ class MainWindow(QMainWindow):
 
         realcugan_layout.addWidget(QLabel("コマンドテンプレート"))
         self.command_edit = QLineEdit(self.config_data.command_template)
+        self.command_edit.editingFinished.connect(self.on_command_template_changed)
         realcugan_layout.addWidget(self.command_edit)
         exe_button = QPushButton("エンジンexeを選択")
         exe_button.clicked.connect(self.choose_engine_exe)
@@ -5456,7 +5562,8 @@ class MainWindow(QMainWindow):
         output_form.addRow(output_options_row)
         detail_layout.addLayout(output_form)
         detail_auth_form = QFormLayout()
-        self.novelai_token_edit = QLineEdit(load_novelai_api_token())
+        self.saved_novelai_api_token = load_novelai_api_token()
+        self.novelai_token_edit = QLineEdit(self.saved_novelai_api_token)
         self.novelai_token_edit.setEchoMode(QLineEdit.Password)
         self.novelai_token_edit.editingFinished.connect(self.on_novelai_settings_changed)
         detail_auth_form.addRow("永続APIトークン", self.novelai_token_edit)
@@ -5937,8 +6044,8 @@ class MainWindow(QMainWindow):
 
     def on_novelai_settings_changed(self, *_args) -> None:
         if not getattr(self, "initializing", False):
-            self.persist_config()
-        self.update_novelai_anlas_preview()
+            self.schedule_persist_config()
+            self.novelai_preview_timer.start(NOVELAI_PREVIEW_DEBOUNCE_MS)
 
     def current_novelai_request(self, seed: int | None = None) -> dict[str, object]:
         return {
@@ -6299,7 +6406,7 @@ class MainWindow(QMainWindow):
         return self.comfyui_api_edit.text().strip() or DEFAULT_COMFYUI_API_URL
 
     def on_comfyui_settings_changed(self, *_args) -> None:
-        self.persist_config()
+        self.schedule_persist_config()
 
     def on_comfyui_workflow_changed(self) -> None:
         self.persist_config()
@@ -6734,9 +6841,9 @@ class MainWindow(QMainWindow):
                     "image_index": index,
                     "estimated_anlas": adapter.estimate_anlas(request, bool(task.get("is_opus", False))),
                 }
-                output_path.with_suffix(output_path.suffix + ".json").write_text(
+                atomic_write_text(
+                    output_path.with_suffix(output_path.suffix + ".json"),
                     json.dumps(metadata, ensure_ascii=False, indent=2),
-                    encoding="utf-8",
                 )
         return {
             "ok": True,
@@ -7076,7 +7183,7 @@ class MainWindow(QMainWindow):
             fd, text_path = tempfile.mkstemp(prefix=f"{source.stem}_comfyui_", suffix=".png", dir=self.process_temp_dir)
             os.close(fd)
             output_path = Path(text_path)
-        output_path.write_bytes(image_bytes)
+        atomic_write_bytes(output_path, image_bytes)
         return {"status": "ok", "source": str(source), "path": str(output_path), "saved": save_to_folder}
 
     def apply_colorize_settings_to_workflow(
@@ -7240,9 +7347,16 @@ class MainWindow(QMainWindow):
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
 
+    def schedule_persist_config(self, delay_ms: int = CONFIG_SAVE_DEBOUNCE_MS) -> None:
+        if getattr(self, "initializing", False) or getattr(self, "closing", False):
+            return
+        self.config_save_timer.start(max(0, int(delay_ms)))
+
     def persist_config(self, log: bool = False) -> None:
         if getattr(self, "initializing", False):
             return
+        if self.config_save_timer.isActive():
+            self.config_save_timer.stop()
         self.save_active_command_template()
         self.config_data.engine = self.current_engine()
         self.config_data.command_template = self.config_data.realcugan_command_template
@@ -7319,10 +7433,13 @@ class MainWindow(QMainWindow):
             self.config_data.colorize_positive_prompt = self.colorize_positive_edit.toPlainText().strip() or DEFAULT_COLORIZE_POSITIVE_PROMPT
             self.config_data.colorize_negative_prompt = self.colorize_negative_edit.toPlainText().strip() or DEFAULT_COLORIZE_NEGATIVE_PROMPT
         if hasattr(self, "novelai_token_edit"):
-            try:
-                save_novelai_api_token(self.novelai_token_edit.text())
-            except Exception as exc:
-                self.append_log_if_visible(f"Failed to save NovelAI token with DPAPI: {exc}")
+            token = self.novelai_token_edit.text().strip()
+            if token != getattr(self, "saved_novelai_api_token", ""):
+                try:
+                    save_novelai_api_token(token)
+                    self.saved_novelai_api_token = token
+                except Exception as exc:
+                    self.append_log_if_visible(f"Failed to save NovelAI token with DPAPI: {exc}")
             self.config_data.novelai_api_token = ""
             self.config_data.novelai_output_dir = self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR)
             self.config_data.novelai_date_subfolders = self.novelai_date_subfolders_check.isChecked()
@@ -7392,7 +7509,7 @@ class MainWindow(QMainWindow):
         self.viewer.set_background(self.config_data.background_color)
         self.viewer.set_resample_options(self.config_data.cpu_resample_cache_enabled, self.config_data.cpu_resample_algorithm)
         self.viewer.set_key_bindings(self.config_data.key_bindings)
-        self.viewer.set_pixmap_cache_limit(self.viewer_prefetch_spin.value() * 2 + 8)
+        self.viewer.set_pixmap_cache_limit(viewer_pixmap_cache_limit(self.viewer_prefetch_spin.value()))
         self.viewer.set_horizontal_wheel_options(
             self.config_data.horizontal_wheel_navigation,
             self.config_data.horizontal_wheel_inverted,
@@ -7500,6 +7617,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "thumbnail_list"):
             return
         self.thumbnail_generation += 1
+        self.thumbnail_prefetch_timer.stop()
         self.thumbnail_rebuild_timer.stop()
         self.clear_thumbnail_queue()
         self.thumbnail_ready_indexes.clear()
@@ -7560,27 +7678,35 @@ class MainWindow(QMainWindow):
                 sequence = self.thumbnail_sequence
             priority = abs(index - current)
             self.thumbnail_pending.add(index)
-            self.thumbnail_queue.put((priority, sequence, self.thumbnail_generation, index, str(self.image_paths[index])))
+            self.thumbnail_queue.put((
+                priority,
+                sequence,
+                self.thumbnail_generation,
+                index,
+                str(self.image_paths[index]),
+                int(self.config_data.thumbnail_size),
+                float(self.config_data.hdr_tonemap_brightness),
+            ))
 
     def _thumbnail_worker_loop(self) -> None:
         while True:
-            priority, sequence, generation, index, path_text = self.thumbnail_queue.get()
+            priority, sequence, generation, index, path_text, size, hdr_brightness = self.thumbnail_queue.get()
             if getattr(self, "closing", False):
                 return
             if generation != self.thumbnail_generation:
                 continue
             started = time.perf_counter()
-            image = load_image(Path(path_text), self.config_data.hdr_tonemap_brightness)
-            size = int(self.config_data.thumbnail_size)
-            if not image.isNull():
-                image = image.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            try:
+                image = load_thumbnail_image(Path(path_text), size, hdr_brightness)
+            except Exception:
+                image = QImage()
             self.signals.profile_event.emit("サムネイル生成", (time.perf_counter() - started) * 1000)
             self.signals.thumbnail_done.emit(generation, index, image)
 
     def on_thumbnail_done(self, generation: int, index: int, image: QImage) -> None:
-        self.thumbnail_pending.discard(index)
         if generation != self.thumbnail_generation or index < 0 or index >= len(self.thumbnail_items):
             return
+        self.thumbnail_pending.discard(index)
         item = self.thumbnail_items[index]
         if item is None:
             return
@@ -7620,7 +7746,7 @@ class MainWindow(QMainWindow):
             scroll_bar.setValue(scroll_value)
             QTimer.singleShot(0, lambda bar=scroll_bar, value=scroll_value: bar.setValue(value))
         if schedule and self.thumbnails_enabled():
-            self.schedule_thumbnail_prefetch()
+            self.thumbnail_prefetch_timer.start(THUMBNAIL_PREFETCH_DEBOUNCE_MS)
 
     def on_thumbnail_settings_changed(self) -> None:
         enabled = self.thumbnail_enabled_check.isChecked()
@@ -7890,6 +8016,60 @@ class MainWindow(QMainWindow):
             sharpen,
             compression,
             face_recovery,
+        )
+
+    def create_upscale_task(self, source: Path, force: bool = False) -> UpscaleTask:
+        source = self.normalized_path(source)
+        engine_input = self.normalized_path(self.display_source_path(source))
+        engine = self.current_engine()
+        scale = self.effective_scale(source)
+        denoise = self.current_engine_denoise()
+        tile = self.current_engine_tile_size()
+        model = self.current_engine_model()
+        sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+        key = (
+            self.normalized_path_text(source),
+            engine,
+            scale,
+            denoise,
+            tile,
+            model,
+            sharpen,
+            compression,
+            face_recovery,
+        )
+        if engine == ENGINE_REALESRGAN:
+            raw_cache_name = f"realesrgan_{model}"
+        elif engine == ENGINE_GIGAPIXEL:
+            raw_cache_name = f"gigapixel_{model}_d{denoise}_s{sharpen}_c{compression}_f{face_recovery}"
+        else:
+            raw_cache_name = "realcugan"
+        cache_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_cache_name)
+        archive_mode = self.archive_mode_active()
+        cache_folder = engine_input.parent / f"{cache_name}_x{scale}"
+        output_name = engine_input.with_suffix(".png").name if engine == ENGINE_GIGAPIXEL else engine_input.name
+        cache_path = None if archive_mode else cache_folder / output_name
+        return UpscaleTask(
+            source=source,
+            engine_input=engine_input,
+            key=key,
+            engine=engine,
+            engine_label=ENGINE_LABELS.get(engine, ENGINE_LABELS[ENGINE_REALCUGAN]),
+            command_template=self.active_command_template(),
+            scale=scale,
+            denoise=denoise,
+            tile=tile,
+            model=model,
+            sharpen=sharpen,
+            compression=compression,
+            face_recovery=face_recovery,
+            cache_path=cache_path,
+            read_cache=bool(not archive_mode and self.use_scale_cache_check.isChecked()),
+            save_to_cache=bool(not archive_mode and self.save_scale_check.isChecked()),
+            force=bool(force),
+            skip_tall_images=bool(self.skip_tall_check.isChecked()),
+            skip_height_threshold=int(self.skip_height_spin.value()),
+            hdr_tonemap_brightness=float(self.config_data.hdr_tonemap_brightness),
         )
 
     def save_active_command_template(self) -> None:
@@ -8164,6 +8344,7 @@ class MainWindow(QMainWindow):
         self.prefetch_engine_done_paths.clear()
         self.colorize_plan = []
         self.colorize_done_paths.clear()
+        self.clear_work_queue()
         self.clear_colorize_queue()
         self.prefetch_generation += 1
         self.update_prefetch_progress_bars()
@@ -8196,6 +8377,7 @@ class MainWindow(QMainWindow):
         self.prefetch_engine_done_paths.clear()
         self.colorize_plan = []
         self.colorize_done_paths.clear()
+        self.clear_work_queue()
         self.clear_colorize_queue()
         self.prefetch_generation += 1
         self.update_prefetch_progress_bars()
@@ -8276,9 +8458,14 @@ class MainWindow(QMainWindow):
     def collect_folder_images_async(self, folder: Path, selected_path: Path) -> None:
         def worker() -> None:
             started = time.perf_counter()
-            images = self.collect_images(folder)
+            try:
+                images = self.collect_images(folder)
+                resolved_selected = selected_path.resolve()
+            except Exception:
+                images = []
+                resolved_selected = selected_path
             self.signals.profile_event.emit("フォルダ画像列挙", (time.perf_counter() - started) * 1000)
-            self.signals.folder_images_ready.emit(images, selected_path.resolve())
+            self.signals.folder_images_ready.emit(images, resolved_selected)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -8394,7 +8581,7 @@ class MainWindow(QMainWindow):
                 entry_processed = (
                     processed
                     if entry_path == path and processed is not None
-                    else self.processed_cache.get(self.processing_key(entry_path))
+                    else self.processed_image_from_cache(self.processing_key(entry_path))
                 )
                 names.append(self.display_name(entry_path))
                 before_parts.append(f"{entry_source.width()}x{entry_source.height()}")
@@ -8414,7 +8601,7 @@ class MainWindow(QMainWindow):
         if source is None:
             source = self.load_original(self.display_source_path(path))
         if processed is None:
-            processed = self.processed_cache.get(self.processing_key(path))
+            processed = self.processed_image_from_cache(self.processing_key(path))
         is_skipped = skipped if skipped is not None else self.should_skip_realcugan(path)
         if processed and not processed.isNull():
             after = f"{processed.width()}x{processed.height()}"
@@ -8442,6 +8629,14 @@ class MainWindow(QMainWindow):
         while len(self.original_cache) > max(6, self.config_data.viewer_prefetch_count * 2 + 3):
             self.original_cache.popitem(last=False)
         return image
+
+    def processed_image_from_cache(self, key: tuple) -> QImage | None:
+        return self.processed_cache.get(key)
+
+    def cache_processed_image(self, key: tuple, image: QImage) -> None:
+        if image.isNull():
+            return
+        self.processed_cache[key] = image
 
     def should_skip_realcugan(self, path: Path) -> bool:
         source_path = self.display_source_path(path)
@@ -8488,14 +8683,14 @@ class MainWindow(QMainWindow):
         source_path = self.display_source_path(path)
         source = self.load_original(source_path)
         cache_key = self.processing_key(path)
-        processed = self.processed_cache.get(cache_key)
+        processed = self.processed_image_from_cache(cache_key)
         skipped = False
         if processed is None:
             existing = self.existing_processed_path(path)
             if existing is not None:
                 processed = load_image(existing, self.config_data.hdr_tonemap_brightness)
                 if not processed.isNull():
-                    self.processed_cache[cache_key] = processed
+                    self.cache_processed_image(cache_key, processed)
         if processed is None or processed.isNull():
             if self.should_skip_realcugan(path):
                 skipped = True
@@ -8995,7 +9190,7 @@ class MainWindow(QMainWindow):
 
     def hide_side_panel(self) -> None:
         self.set_overlay_side_panel_visible(False)
-        self.persist_config()
+        self.schedule_persist_config()
 
     def show_side_panel(self) -> None:
         if self.pin_button.isChecked():
@@ -9008,7 +9203,7 @@ class MainWindow(QMainWindow):
             self.position_overlay_side_panel()
             self.side_panel.raise_()
             self.request_borderless_fullscreen_enforce()
-            self.persist_config()
+            self.schedule_persist_config()
 
     def toggle_side_panel(self) -> None:
         self.pin_button.setChecked(not self.pin_button.isChecked())
@@ -9204,9 +9399,8 @@ class MainWindow(QMainWindow):
             handle.hide()
             return
         handle_width = 18
-        handle_gap = 4
         panel_rect = self.side_panel.geometry()
-        x = panel_rect.right() + 1 + handle_gap if self.side_panel_on_left() else panel_rect.left() - handle_gap - handle_width
+        x = panel_rect.right() + 1 if self.side_panel_on_left() else panel_rect.left() - handle_width
         handle.setGeometry(x, panel_rect.top(), handle_width, panel_rect.height())
         handle.show()
         handle.raise_()
@@ -9564,7 +9758,7 @@ class MainWindow(QMainWindow):
     def hide_overlay_side_panel_if_needed(self) -> None:
         if self.should_hide_overlay_panel():
             self.set_overlay_side_panel_visible(False)
-            self.persist_config()
+            self.schedule_persist_config()
 
     def on_side_panel_pin_changed(self, pinned: bool) -> None:
         self.pin_button.setText(self.tr_ui("固定中" if pinned else "自動表示"))
@@ -9675,7 +9869,7 @@ class MainWindow(QMainWindow):
             self.compare_shift_check.isChecked(),
         )
         self.update_compare_controls_enabled()
-        self.persist_config()
+        self.schedule_persist_config()
 
     def on_background_changed(self) -> None:
         color = self.background_edit.text().strip()
@@ -9855,19 +10049,24 @@ class MainWindow(QMainWindow):
                 "このチェックをオンのまま終了した場合に実行されます。",
             )
 
+    def on_command_template_changed(self) -> None:
+        self.save_active_command_template()
+        self.on_processing_settings_changed()
+
     def on_processing_settings_changed(self) -> None:
         self.apply_engine_ui()
         self.persist_config()
         self.processed_cache.clear()
         self.prefetching_processed_keys.clear()
         self.prefetch_engine_done_paths.clear()
+        self.clear_work_queue()
         self.prefetch_generation += 1
         if self.image_paths:
             self.display_current_image()
 
     def on_viewer_prefetch_changed(self) -> None:
         self.persist_config()
-        self.viewer.set_pixmap_cache_limit(self.viewer_prefetch_spin.value() * 2 + 8)
+        self.viewer.set_pixmap_cache_limit(viewer_pixmap_cache_limit(self.viewer_prefetch_spin.value()))
         if self.image_paths:
             self.request_schedule_prefetch(0)
 
@@ -9925,6 +10124,11 @@ class MainWindow(QMainWindow):
         with self.prefetch_io_queue.mutex:
             self.prefetch_io_queue.queue.clear()
 
+    def clear_work_queue(self) -> None:
+        with self.work_queue.mutex:
+            self.work_queue.queue.clear()
+            self.queued_tasks.clear()
+
     def clear_colorize_queue(self) -> None:
         with self.colorize_queue.mutex:
             self.colorize_queue.queue.clear()
@@ -9946,23 +10150,26 @@ class MainWindow(QMainWindow):
             processed: dict[tuple, QImage] = {}
             attempted_originals: list[Path] = []
             attempted_processed: list[tuple] = []
-            if kind == "original":
-                path = self.normalized_path(Path(source))
-                attempted_originals.append(path)
-                image = load_image(path, self.config_data.hdr_tonemap_brightness)
-                if not image.isNull():
-                    originals[path] = image
-                self.signals.profile_event.emit("元画像IO", (time.perf_counter() - started) * 1000)
-            elif kind == "processed":
-                processed_key = key
-                if isinstance(processed_key, tuple):
-                    attempted_processed.append(processed_key)
-                    target_path = Path(target)
-                    if target_path.exists():
-                        image = load_image(target_path, self.config_data.hdr_tonemap_brightness)
-                        if not image.isNull():
-                            processed[processed_key] = image
-                    self.signals.profile_event.emit("拡大画像IO", (time.perf_counter() - started) * 1000)
+            try:
+                if kind == "original":
+                    path = self.normalized_path(Path(source))
+                    attempted_originals.append(path)
+                    image = load_image(path, self.config_data.hdr_tonemap_brightness)
+                    if not image.isNull():
+                        originals[path] = image
+                    self.signals.profile_event.emit("元画像IO", (time.perf_counter() - started) * 1000)
+                elif kind == "processed":
+                    processed_key = key
+                    if isinstance(processed_key, tuple):
+                        attempted_processed.append(processed_key)
+                        target_path = Path(target)
+                        if target_path.exists():
+                            image = load_image(target_path, self.config_data.hdr_tonemap_brightness)
+                            if not image.isNull():
+                                processed[processed_key] = image
+                        self.signals.profile_event.emit("拡大画像IO", (time.perf_counter() - started) * 1000)
+            except Exception:
+                pass
             if originals or processed or attempted_originals or attempted_processed:
                 self.signals.prefetch_done.emit(
                     generation,
@@ -10095,7 +10302,7 @@ class MainWindow(QMainWindow):
         engine_plan_paths = {self.normalized_path(path) for path in self.prefetch_engine_plan}
         for key, image in processed.items():
             if self.is_current_processing_key(key, current_path_strings) and key not in self.processed_cache:
-                self.processed_cache[key] = image
+                self.cache_processed_image(key, image)
                 added_processed += 1
             processed_source = self.normalized_path(Path(key[0]))
             if processed_source in engine_plan_paths:
@@ -10149,17 +10356,23 @@ class MainWindow(QMainWindow):
         check_skip: bool = True,
     ) -> None:
         path = self.normalized_path(path)
-        if check_existing and not force and self.has_processed_result(path):
+        task = self.create_upscale_task(path, force=force)
+        if not force and task.key in self.processed_cache:
+            return
+        if check_existing and not force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
             return
         if check_skip and self.should_skip_realcugan(path):
             return
-        if path in self.processing_paths:
+        if self.processing_task_keys.get(path) == task.key:
             return
-        if path in self.queued_paths:
+        if path in self.queued_tasks:
+            queued_task = self.queued_tasks[path]
+            if not (queued_task.key == task.key and queued_task.force and not task.force):
+                self.queued_tasks[path] = task
             if front:
                 self.promote_work_item(path)
             return
-        self.queued_paths.add(path)
+        self.queued_tasks[path] = task
         if front:
             with self.work_queue.mutex:
                 self.work_queue.queue.appendleft(path)
@@ -10193,49 +10406,87 @@ class MainWindow(QMainWindow):
             path = self.work_queue.get()
             if path is None or getattr(self, "closing", False):
                 return
-            self.queued_paths.discard(path)
-            if self.has_processed_result(path):
+            task = self.queued_tasks.pop(path, None)
+            if task is None:
                 continue
-            if self.should_skip_upscale_in_worker(path):
+            if self.should_skip_upscale_in_worker(task):
+                self.signals.process_done.emit({
+                    "path": path,
+                    "skipped": True,
+                    "key": task.key,
+                    "engine_label": task.engine_label,
+                })
                 continue
+            if not task.force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
+                image = load_image(task.cache_path, task.hdr_tonemap_brightness)
+                if not image.isNull():
+                    self.signals.process_done.emit({
+                        "path": path,
+                        "code": 0,
+                        "output": "",
+                        "image": image,
+                        "key": task.key,
+                        "engine_label": task.engine_label,
+                        "elapsed_ms": 0.0,
+                    })
+                    continue
             self.processing_paths.add(path)
-            self.signals.process_started.emit(str(path))
-            result = self.run_upscale_engine(path)
-            self.processing_paths.discard(path)
+            self.processing_task_keys[path] = task.key
+            self.signals.process_started.emit(task)
+            try:
+                result = self.run_upscale_engine(task)
+            except Exception as exc:
+                result = {
+                    "path": path,
+                    "code": 1,
+                    "output": str(exc),
+                    "image": QImage(),
+                    "key": task.key,
+                    "engine_label": task.engine_label,
+                }
+            finally:
+                self.processing_paths.discard(path)
+                self.processing_task_keys.pop(path, None)
             self.signals.process_done.emit(result)
 
-    def should_skip_upscale_in_worker(self, path: Path) -> bool:
-        source_path = self.display_source_path(path)
+    def should_skip_upscale_in_worker(self, task: UpscaleTask) -> bool:
+        source_path = task.engine_input
         if is_hdr_image_path(source_path):
             return True
-        if not self.config_data.skip_realcugan_for_tall_images:
+        if not task.skip_tall_images:
             return False
         size = read_image_size(source_path)
         if size.isValid() and size.height() > 0:
-            return size.height() >= self.config_data.skip_realcugan_height_threshold
-        image = load_image(source_path, self.config_data.hdr_tonemap_brightness)
-        return not image.isNull() and image.height() >= self.config_data.skip_realcugan_height_threshold
+            return size.height() >= task.skip_height_threshold
+        image = load_image(source_path, task.hdr_tonemap_brightness)
+        return not image.isNull() and image.height() >= task.skip_height_threshold
 
-    def run_upscale_engine(self, source: Path) -> dict:
-        engine = self.current_engine()
-        processing_key = self.processing_key(source)
-        engine_input = self.display_source_path(source)
-        output_path, temporary_output = self.prepare_output_path(engine_input)
-        sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+    def run_upscale_engine(self, task: UpscaleTask) -> dict:
+        source = task.source
+        if task.save_to_cache and task.cache_path is not None:
+            task.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path = task.cache_path
+            temporary_output = False
+        else:
+            fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
+            os.close(fd)
+            output_path = Path(text_path)
+            output_path.unlink(missing_ok=True)
+            temporary_output = True
         values = {
-            "input": str(engine_input),
+            "input": str(task.engine_input),
             "output": str(output_path),
             "output_dir": str(output_path.parent),
-            "scale": self.effective_scale(source),
-            "denoise": self.current_engine_denoise(),
-            "tile": self.current_engine_tile_size(),
-            "model": self.current_engine_model(),
-            "sharpen": sharpen,
-            "compression": compression,
-            "face_recovery": face_recovery,
+            "scale": task.scale,
+            "denoise": task.denoise,
+            "tile": task.tile,
+            "model": task.model,
+            "sharpen": task.sharpen,
+            "compression": task.compression,
+            "face_recovery": task.face_recovery,
         }
-        command = self.active_command_template().format(**values)
         try:
+            command = task.command_template.format(**values)
             started = time.perf_counter()
             started_wall_time = time.time()
             completed = subprocess.run(
@@ -10250,23 +10501,32 @@ class MainWindow(QMainWindow):
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 check=False,
             )
-            if completed.returncode == 0 and engine == ENGINE_GIGAPIXEL and not output_path.exists():
-                generated_output = self.find_gigapixel_output(engine_input, output_path.parent, started_wall_time)
+            if completed.returncode == 0 and task.engine == ENGINE_GIGAPIXEL and not output_path.exists():
+                generated_output = self.find_gigapixel_output(task.engine_input, output_path.parent, started_wall_time)
                 if generated_output is not None:
                     shutil.move(str(generated_output), str(output_path))
-            image = load_image(output_path, self.config_data.hdr_tonemap_brightness) if completed.returncode == 0 and output_path.exists() else QImage()
-            if temporary_output and output_path.exists():
-                output_path.unlink(missing_ok=True)
+            image = load_image(output_path, task.hdr_tonemap_brightness) if completed.returncode == 0 and output_path.exists() else QImage()
             return {
                 "path": source,
                 "code": completed.returncode,
                 "output": completed.stdout.strip(),
                 "image": image,
-                "key": processing_key,
+                "key": task.key,
+                "engine_label": task.engine_label,
                 "elapsed_ms": (time.perf_counter() - started) * 1000,
             }
         except Exception as exc:
-            return {"path": source, "code": 1, "output": str(exc), "image": QImage(), "key": processing_key}
+            return {
+                "path": source,
+                "code": 1,
+                "output": str(exc),
+                "image": QImage(),
+                "key": task.key,
+                "engine_label": task.engine_label,
+            }
+        finally:
+            if temporary_output:
+                output_path.unlink(missing_ok=True)
 
     def find_gigapixel_output(self, source: Path, output_dir: Path, started: float) -> Path | None:
         source_stem = source.stem.casefold()
@@ -10288,29 +10548,44 @@ class MainWindow(QMainWindow):
             return None
         return max(candidates, key=lambda path: path.stat().st_mtime)
 
-    def on_process_started(self, path_text: str) -> None:
-        path = Path(path_text)
-        self.append_log(f"{self.engine_label()} started: {self.display_name(path)}")
+    def on_process_started(self, task: object) -> None:
+        if isinstance(task, UpscaleTask):
+            path = task.source
+            engine_label = task.engine_label
+        else:
+            path = Path(str(task))
+            engine_label = self.engine_label()
+        self.append_log(f"{engine_label} started: {self.display_name(path)}")
         self.update_window_title()
 
     def on_process_done(self, result: dict) -> None:
         path: Path = result["path"]
+        engine_label = str(result.get("engine_label") or self.engine_label())
+        if result.get("skipped"):
+            key = result.get("key")
+            if isinstance(key, tuple) and self.is_current_processing_key(key):
+                self.prefetch_engine_done_paths.add(self.normalized_path(path))
+            self.update_prefetch_progress_bars()
+            return
         output = result.get("output") or ""
         if output:
             self.append_log(output)
         if result["code"] == 0 and not result["image"].isNull():
-            self.record_profile(f"{self.engine_label()}処理", float(result.get("elapsed_ms", 0.0)))
+            self.record_profile(f"{engine_label}処理", float(result.get("elapsed_ms", 0.0)))
             self.append_log(f"Done: {self.display_name(path)}")
+            normalized = self.normalized_path(path)
+            if normalized not in self.image_path_set:
+                self.update_prefetch_progress_bars()
+                return
             key = result.get("key")
             if not isinstance(key, tuple):
                 key = self.processing_key(path)
-            self.processed_cache[key] = result["image"]
+            self.cache_processed_image(key, result["image"])
             current_result = self.is_current_processing_key(key)
             if current_result:
                 self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
             if current_result and self.current_index >= 0:
-                normalized = self.normalized_path(path)
                 current_normalized = self.normalized_path(self.image_paths[self.current_index])
                 secondary_index = self.secondary_page_index()
                 secondary_normalized = (
@@ -10347,14 +10622,6 @@ class MainWindow(QMainWindow):
             return None
         path = self.cache_output_path(self.display_source_path(source), create_dir=False)
         return path if path.exists() else None
-
-    def prepare_output_path(self, source: Path) -> tuple[Path, bool]:
-        if self.save_scale_check.isChecked() and not self.archive_mode_active():
-            return self.cache_output_path(source, create_dir=True), False
-        fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
-        os.close(fd)
-        Path(text_path).unlink(missing_ok=True)
-        return Path(text_path), True
 
     def cache_output_path(self, source: Path, create_dir: bool) -> Path:
         engine_model = self.cache_model_name()
@@ -10660,6 +10927,13 @@ class MainWindow(QMainWindow):
         for entry in list(temp_root.iterdir()):
             try:
                 if entry.is_dir() and entry.name.startswith((TEMP_ARCHIVE_PREFIX, TEMP_WORK_PREFIX)):
+                    lock_path = entry / TEMP_LOCK_FILE
+                    try:
+                        owner_pid = int(lock_path.read_text(encoding="utf-8").strip())
+                    except (OSError, ValueError):
+                        owner_pid = 0
+                    if process_is_running(owner_pid):
+                        continue
                     shutil.rmtree(entry, ignore_errors=True)
             except OSError:
                 pass
