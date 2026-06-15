@@ -103,7 +103,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.2.3"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -143,6 +143,17 @@ DEFAULT_NOVELAI_SAMPLER = "k_euler_ancestral"
 DEFAULT_NOVELAI_SCHEDULER = "karras"
 DEFAULT_NOVELAI_GENERATED_DIR = APP_DIR / "RAIV_generated"
 MAX_NOVELAI_SEED = 4294967295
+NOVELAI_MAX_BATCH_BY_PIXELS = (
+    (360448, 8),
+    (409600, 6),
+    (3145728, 4),
+)
+NOVELAI_OUTPUT_NAME_TEMPLATES = {
+    "seed": "{seed}",
+    "date_seed": "{date}/{seed}",
+    "date_time": "{date}/{time}",
+    "date_time_seed": "{date}/{time}_{seed}",
+}
 NOVELAI_FURRY_DATASET_TAG = "fur dataset"
 NOVELAI_DATASET_MODE_OPTIONS = [
     ("anime", "アニメモード"),
@@ -1148,12 +1159,22 @@ UI_TEXT_EN = {
     "NovelAIの永続APIトークンを使い、テキストから画像を生成してRAIVへ取り込みます。バイブストランスファー、画像から画像生成、インペイントは未対応です。": "Generate text2img images with a NovelAI Persistent API Token and import them into RAIV. Vibe Transfer, img2img, and inpaint are not supported yet.",
     "永続APIトークン": "Persistent API Token",
     "保存先": "Output folder",
-    "日付ごとにサブフォルダを生成する": "Create subfolder for each date",
+    "日付": "Date",
     "ファイル名": "Filename",
-    "シード値.png": "Seed.png",
-    "日付_時刻.png": "Date_Time.png",
-    "時刻.png": "Time only.png",
+    "日付_時刻": "Date_Time",
+    "時刻": "Time only",
+    "日付/シード値": "Date/Seed",
+    "日付/時刻": "Date/Time",
+    "日付/時刻_シード値": "Date/Time_Seed",
+    "カスタム": "Custom",
+    "使用できる変数:\n{YYYY}: 年（4桁）\n{MM}: 月（2桁）\n{DD}: 日（2桁）\n{HH}: 時（2桁）\n{mm}: 分（2桁）\n{ss}: 秒（2桁）\n{date}: 日付まとめ（YYYYMMDD）\n{time}: 時刻まとめ（HHMMSS）\n{seed}: 生成シード値\n/ または \\: フォルダ区切り（入れ子可能）\n末尾がフォルダ区切りの場合、ファイル名に {seed} を補います。\n例: {date}/{time}_{seed}": "Available variables:\n{YYYY}: Year (4 digits)\n{MM}: Month (2 digits)\n{DD}: Day (2 digits)\n{HH}: Hour (2 digits)\n{mm}: Minute (2 digits)\n{ss}: Second (2 digits)\n{date}: Full date (YYYYMMDD)\n{time}: Full time (HHMMSS)\n{seed}: Generation seed\n/ or \\: Folder separator (nested folders supported)\nIf the template ends with a folder separator, {seed} is appended as the filename.\nExample: {date}/{time}_{seed}",
     "プロンプトを分解する": "Split prompts into tags",
+    "再構築したプロンプトを表示する": "Show reconstructed prompts",
+    "プロンプト": "Prompt",
+    "プロンプト >": "Prompt >",
+    "プロンプト v": "Prompt v",
+    "除外したい要素 >": "Undesired Content >",
+    "除外したい要素 v": "Undesired Content v",
     "タグプリセット": "Tag preset",
     "読込": "Load",
     "追加": "Add",
@@ -1339,16 +1360,19 @@ class AppConfig:
     colorize_negative_prompt: str = DEFAULT_COLORIZE_NEGATIVE_PROMPT
     novelai_api_token: str = ""
     novelai_output_dir: str = str(DEFAULT_NOVELAI_GENERATED_DIR)
-    novelai_date_subfolders: bool = False
-    novelai_filename_mode: str = "seed"
+    novelai_output_name_mode: str = "seed"
+    novelai_output_name_template: str = "{seed}"
     novelai_prompt: str = ""
     novelai_negative_prompt: str = ""
     novelai_split_prompts: bool = False
+    novelai_show_reconstructed_prompts: bool = False
     novelai_add_prompt_items_at_top: bool = False
     novelai_prompt_items: list[dict[str, object]] = field(default_factory=list)
     novelai_negative_prompt_items: list[dict[str, object]] = field(default_factory=list)
     novelai_prompt_editor_height: int = 260
     novelai_negative_prompt_editor_height: int = 220
+    novelai_prompt_expanded: bool = True
+    novelai_negative_prompt_expanded: bool = True
     novelai_enter_to_generate: bool = True
     novelai_delete_folder_contents: bool = False
     novelai_quality_tags: bool = True
@@ -1714,8 +1738,30 @@ def load_config() -> AppConfig:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
         if not config.novelai_output_dir:
             config.novelai_output_dir = str(DEFAULT_NOVELAI_GENERATED_DIR)
-        if config.novelai_filename_mode not in {"seed", "time", "time_only"}:
-            config.novelai_filename_mode = "seed"
+        if "novelai_output_name_template" not in filtered_data:
+            legacy_filename_mode = str(data.get("novelai_filename_mode", "seed"))
+            filename_template = str(data.get("novelai_filename_template", "{seed}")).strip() or "{seed}"
+            legacy_filename_templates = {
+                "time": "{YYYY}{MM}{DD}_{HH}{mm}{ss}",
+                "time_only": "{HH}{mm}{ss}",
+            }
+            if legacy_filename_mode in legacy_filename_templates:
+                filename_template = legacy_filename_templates[legacy_filename_mode]
+            if bool(data.get("novelai_date_subfolders", False)):
+                subfolder_template = str(data.get("novelai_subfolder_template", "{YYYY}-{MM}-{DD}")).strip().rstrip("/\\")
+                config.novelai_output_name_template = f"{subfolder_template}/{filename_template}"
+            else:
+                config.novelai_output_name_template = filename_template
+        config.novelai_output_name_template = str(config.novelai_output_name_template).strip() or "{seed}"
+        matching_mode = next(
+            (mode for mode, template in NOVELAI_OUTPUT_NAME_TEMPLATES.items() if template == config.novelai_output_name_template),
+            "custom",
+        )
+        if "novelai_output_name_mode" not in filtered_data or config.novelai_output_name_mode not in {
+            *NOVELAI_OUTPUT_NAME_TEMPLATES,
+            "custom",
+        }:
+            config.novelai_output_name_mode = matching_mode
         if config.novelai_uc_preset not in {key for key, _label in NOVELAI_UC_PRESET_OPTIONS}:
             config.novelai_uc_preset = "strong"
         if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
@@ -2355,6 +2401,26 @@ class NovelAIClientAdapter:
             raise ValueError("NovelAI did not return an image")
         return list(images)
 
+    def image_seed(self, image: object) -> int | None:
+        try:
+            from novelai.utils.metadata import extract_metadata
+
+            metadata = extract_metadata(image)
+            for source in (metadata.alpha_info, metadata.png_info):
+                if not isinstance(source, dict):
+                    continue
+                comment = source.get("Comment")
+                if isinstance(comment, str):
+                    try:
+                        comment = json.loads(comment)
+                    except json.JSONDecodeError:
+                        continue
+                if isinstance(comment, dict) and "seed" in comment:
+                    return int(comment["seed"]) % (MAX_NOVELAI_SEED + 1)
+        except Exception:
+            return None
+        return None
+
     def _build_params(self, request: dict[str, object]):
         kwargs: dict[str, object] = {
             "prompt": str(request.get("prompt", "")),
@@ -2873,6 +2939,7 @@ class NovelAIPromptFolderRow(QWidget):
 
 class NovelAIPromptTreeWidget(QTreeWidget):
     itemsMoved = Signal(object)
+    dragStateChanged = Signal(bool)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -2915,12 +2982,14 @@ class NovelAIPromptTreeWidget(QTreeWidget):
         row = self.itemWidget(item, 0) if item is not None else None
         self.drag_source_row = row
         self.set_dragging(True)
+        self.dragStateChanged.emit(True)
         try:
             super().startDrag(supported_actions)
         finally:
             self.clear_drag_target()
             self.drag_source_row = None
             self.set_dragging(False)
+            self.dragStateChanged.emit(False)
 
     def clear_drag_target(self) -> None:
         self.drag_folder_row = None
@@ -2990,7 +3059,12 @@ class NovelAIPromptTreeWidget(QTreeWidget):
         data = self.item_data_map()
         self.clear_drag_target()
         super().dropEvent(event)
-        self.itemsMoved.emit(self.nodes_from_items(data))
+        self.itemsMoved.emit(
+            {
+                "items": self.nodes_from_items(data),
+                "scroll_value": self.verticalScrollBar().value(),
+            }
+        )
 
 
 class NovelAIPromptListEditor(QWidget):
@@ -3051,8 +3125,16 @@ class NovelAIPromptListEditor(QWidget):
         self.emit_changed()
 
     def on_items_moved(self, items: object) -> None:
+        scroll_value: int | None = None
+        if isinstance(items, dict):
+            scroll_value = int(items.get("scroll_value", 0))
+            items = items.get("items")
         if isinstance(items, list):
             self.set_items(items)
+            if scroll_value is not None:
+                scroll_bar = self.list_widget.verticalScrollBar()
+                scroll_bar.setValue(scroll_value)
+                QTimer.singleShot(0, lambda bar=scroll_bar, value=scroll_value: bar.setValue(value))
         self.emit_changed()
 
     def refresh_tag_item(self, item: QTreeWidgetItem, row: NovelAIPromptTagRow) -> None:
@@ -4466,6 +4548,7 @@ class MainWindow(QMainWindow):
         self.side_panel_visible_before_fullscreen = True
         self.side_panel_width = int(self.config_data.side_panel_width)
         self.fullscreen_cursor_hidden = False
+        self.fullscreen_cursor_hide_suspended = False
         self.side_panel_overlay = False
         self.borderless_fullscreen = False
         self.before_fullscreen_geometry = QRect()
@@ -4476,6 +4559,8 @@ class MainWindow(QMainWindow):
         self.fullscreen_enforce_pending = False
         self.overlay_resizing = False
         self.overlay_modal_guard = False
+        self.novelai_prompt_drag_active = False
+        self.novelai_filename_tooltip_active = False
         self.overlay_hide_suppressed_until = 0.0
         self.adjusting_splitter = False
         self.closing = False
@@ -5395,10 +5480,17 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(content)
         layout.addWidget(self.help_label("NovelAIの永続APIトークンを使い、テキストから画像を生成してRAIVへ取り込みます。バイブストランスファー、画像から画像生成、インペイントは未対応です。"))
 
+        prompt_mode_row = QHBoxLayout()
         self.novelai_split_prompts_check = QCheckBox("プロンプトを分解する")
         self.novelai_split_prompts_check.setChecked(self.config_data.novelai_split_prompts)
         self.novelai_split_prompts_check.stateChanged.connect(self.on_novelai_split_prompts_changed)
-        layout.addWidget(self.novelai_split_prompts_check)
+        prompt_mode_row.addWidget(self.novelai_split_prompts_check)
+        self.novelai_show_reconstructed_prompts_check = QCheckBox("再構築したプロンプトを表示する")
+        self.novelai_show_reconstructed_prompts_check.setChecked(self.config_data.novelai_show_reconstructed_prompts)
+        self.novelai_show_reconstructed_prompts_check.stateChanged.connect(self.on_novelai_show_reconstructed_prompts_changed)
+        prompt_mode_row.addWidget(self.novelai_show_reconstructed_prompts_check)
+        prompt_mode_row.addStretch(1)
+        layout.addLayout(prompt_mode_row)
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("タグプリセット"))
         self.novelai_prompt_preset_combo = QComboBox()
@@ -5416,9 +5508,13 @@ class MainWindow(QMainWindow):
         self.refresh_novelai_prompt_preset_combo()
 
         prompt_heading_row = QHBoxLayout()
-        self.novelai_prompt_label = QLabel("プロンプト")
-        prompt_heading_row.addWidget(self.novelai_prompt_label)
-        prompt_heading_row.addStretch(1)
+        self.novelai_prompt_toggle_button = QPushButton("プロンプト v")
+        self.novelai_prompt_toggle_button.setCheckable(True)
+        self.novelai_prompt_toggle_button.setChecked(bool(self.config_data.novelai_prompt_expanded))
+        self.novelai_prompt_toggle_button.clicked.connect(
+            lambda checked: self.on_novelai_prompt_section_toggled("prompt", checked)
+        )
+        prompt_heading_row.addWidget(self.novelai_prompt_toggle_button, 1)
         self.novelai_add_prompt_items_at_top_check = QCheckBox("先頭に追加する")
         self.novelai_add_prompt_items_at_top_check.setChecked(self.config_data.novelai_add_prompt_items_at_top)
         self.novelai_add_prompt_items_at_top_check.stateChanged.connect(self.on_novelai_add_prompt_items_at_top_changed)
@@ -5434,26 +5530,40 @@ class MainWindow(QMainWindow):
         self.novelai_prompt_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_prompt_edit)
         self.novelai_prompt_list_edit = NovelAIPromptListEditor("")
+        self.novelai_prompt_list_edit.list_widget.dragStateChanged.connect(self.on_novelai_prompt_drag_state_changed)
         self.novelai_prompt_list_edit.set_items(self.config_data.novelai_prompt_items, self.config_data.novelai_prompt)
         self.novelai_prompt_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_prompt_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_prompt_list_edit)
+        self.novelai_reconstructed_prompt_label = self.help_label("")
+        self.novelai_reconstructed_prompt_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.novelai_reconstructed_prompt_label)
         self.novelai_prompt_resize_handle = VerticalResizeHandle()
         self.novelai_prompt_resize_handle.resized.connect(
             lambda delta: self.resize_novelai_prompt_editor("prompt", delta)
         )
         layout.addWidget(self.novelai_prompt_resize_handle)
-        layout.addWidget(QLabel("除外したい要素"))
+        self.novelai_negative_prompt_toggle_button = QPushButton("除外したい要素 v")
+        self.novelai_negative_prompt_toggle_button.setCheckable(True)
+        self.novelai_negative_prompt_toggle_button.setChecked(bool(self.config_data.novelai_negative_prompt_expanded))
+        self.novelai_negative_prompt_toggle_button.clicked.connect(
+            lambda checked: self.on_novelai_prompt_section_toggled("negative", checked)
+        )
+        layout.addWidget(self.novelai_negative_prompt_toggle_button)
         self.novelai_negative_edit = PromptSubmitTextEdit(self.config_data.novelai_negative_prompt)
         self.novelai_negative_edit.setMinimumHeight(0)
         self.novelai_negative_edit.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_negative_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_edit)
         self.novelai_negative_list_edit = NovelAIPromptListEditor("")
+        self.novelai_negative_list_edit.list_widget.dragStateChanged.connect(self.on_novelai_prompt_drag_state_changed)
         self.novelai_negative_list_edit.set_items(self.config_data.novelai_negative_prompt_items, self.config_data.novelai_negative_prompt)
         self.novelai_negative_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_negative_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_list_edit)
+        self.novelai_reconstructed_negative_prompt_label = self.help_label("")
+        self.novelai_reconstructed_negative_prompt_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        layout.addWidget(self.novelai_reconstructed_negative_prompt_label)
         self.on_novelai_add_prompt_items_at_top_changed(persist=False)
         self.novelai_negative_resize_handle = VerticalResizeHandle()
         self.novelai_negative_resize_handle.resized.connect(
@@ -5489,6 +5599,10 @@ class MainWindow(QMainWindow):
         size_row.addWidget(self.novelai_width_spin)
         size_row.addWidget(QLabel("x"))
         size_row.addWidget(self.novelai_height_spin)
+        self.novelai_resolution_limit_label = QLabel("")
+        self.novelai_resolution_limit_label.setStyleSheet("color: #e06060;")
+        self.novelai_resolution_limit_label.setVisible(False)
+        size_row.addWidget(self.novelai_resolution_limit_label)
         size_row.addStretch(1)
         size_form.addRow("幅 / 高さ", size_row)
         layout.addLayout(size_form)
@@ -5544,22 +5658,29 @@ class MainWindow(QMainWindow):
         output_row.addWidget(self.novelai_output_dir_edit, 1)
         output_row.addWidget(output_button)
         output_form.addRow("保存先", output_row)
-        output_options_row = QHBoxLayout()
-        self.novelai_date_subfolders_check = QCheckBox("日付ごとにサブフォルダを生成する")
-        self.novelai_date_subfolders_check.setChecked(self.config_data.novelai_date_subfolders)
-        self.novelai_date_subfolders_check.stateChanged.connect(self.on_novelai_settings_changed)
-        output_options_row.addWidget(self.novelai_date_subfolders_check)
-        output_options_row.addSpacing(12)
-        output_options_row.addWidget(QLabel("ファイル名"))
+        filename_row = QHBoxLayout()
         self.novelai_filename_combo = QComboBox()
-        self.novelai_filename_combo.addItem("シード値.png", "seed")
-        self.novelai_filename_combo.addItem("日付_時刻.png", "time")
-        self.novelai_filename_combo.addItem("時刻.png", "time_only")
-        self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_filename_mode)
-        self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
-        output_options_row.addWidget(self.novelai_filename_combo)
-        output_options_row.addStretch(1)
-        output_form.addRow(output_options_row)
+        self.novelai_filename_combo.addItem("シード値", "seed")
+        self.novelai_filename_combo.addItem("日付/シード値", "date_seed")
+        self.novelai_filename_combo.addItem("日付/時刻", "date_time")
+        self.novelai_filename_combo.addItem("日付/時刻_シード値", "date_time_seed")
+        self.novelai_filename_combo.addItem("カスタム", "custom")
+        self.set_combo_by_data(self.novelai_filename_combo, self.config_data.novelai_output_name_mode)
+        self.novelai_filename_combo.currentIndexChanged.connect(self.on_novelai_filename_preset_changed)
+        filename_row.addWidget(self.novelai_filename_combo)
+        self.novelai_filename_template_edit = QLineEdit(self.config_data.novelai_output_name_template)
+        self.novelai_filename_template_edit.setToolTip(
+            "使用できる変数:\n{YYYY}: 年（4桁）\n{MM}: 月（2桁）\n{DD}: 日（2桁）\n"
+            "{HH}: 時（2桁）\n{mm}: 分（2桁）\n{ss}: 秒（2桁）\n"
+            "{date}: 日付まとめ（YYYYMMDD）\n{time}: 時刻まとめ（HHMMSS）\n"
+            "{seed}: 生成シード値\n/ または \\: フォルダ区切り（入れ子可能）\n"
+            "末尾がフォルダ区切りの場合、ファイル名に {seed} を補います。\n例: {date}/{time}_{seed}"
+        )
+        self.novelai_filename_template_edit.installEventFilter(self)
+        self.novelai_filename_template_edit.textEdited.connect(self.on_novelai_filename_template_edited)
+        filename_row.addWidget(self.novelai_filename_template_edit, 1)
+        filename_row.addWidget(QLabel(".png"))
+        output_form.addRow("ファイル名", filename_row)
         detail_layout.addLayout(output_form)
         detail_auth_form = QFormLayout()
         self.saved_novelai_api_token = load_novelai_api_token()
@@ -5689,6 +5810,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.novelai_status_label)
         layout.addStretch(1)
         self.sync_novelai_size_preset()
+        self.update_novelai_batch_buttons()
         self.update_novelai_anlas_preview()
         self.update_novelai_continuous_delay_visibility()
         return content
@@ -5746,6 +5868,21 @@ class MainWindow(QMainWindow):
         if folder:
             self.novelai_output_dir_edit.setText(folder)
             self.on_novelai_settings_changed()
+
+    def on_novelai_filename_preset_changed(self, *_args) -> None:
+        mode = str(self.novelai_filename_combo.currentData() or "custom")
+        template = NOVELAI_OUTPUT_NAME_TEMPLATES.get(mode)
+        if template is not None:
+            self.novelai_filename_template_edit.setText(template)
+        self.on_novelai_settings_changed()
+
+    def on_novelai_filename_template_edited(self, _text: str) -> None:
+        custom_index = self.novelai_filename_combo.findData("custom")
+        if custom_index >= 0 and self.novelai_filename_combo.currentIndex() != custom_index:
+            self.novelai_filename_combo.blockSignals(True)
+            self.novelai_filename_combo.setCurrentIndex(custom_index)
+            self.novelai_filename_combo.blockSignals(False)
+        self.on_novelai_settings_changed()
 
     def refresh_novelai_prompt_preset_combo(self, selected_name: str = "") -> None:
         combo = getattr(self, "novelai_prompt_preset_combo", None)
@@ -5844,11 +5981,57 @@ class MainWindow(QMainWindow):
             self.novelai_height_spin.setValue(height)
             self.novelai_width_spin.blockSignals(False)
             self.novelai_height_spin.blockSignals(False)
+        self.update_novelai_batch_buttons()
         self.on_novelai_settings_changed()
 
     def on_novelai_size_changed(self, *_args) -> None:
         self.sync_novelai_size_preset()
+        self.update_novelai_batch_buttons()
         self.on_novelai_settings_changed()
+
+    def novelai_max_batch_count(self, width: int | None = None, height: int | None = None) -> int:
+        if width is None:
+            width = self.novelai_width_spin.value()
+        if height is None:
+            height = self.novelai_height_spin.value()
+        pixels = max(1, int(width)) * max(1, int(height))
+        for pixel_limit, batch_limit in NOVELAI_MAX_BATCH_BY_PIXELS:
+            if pixels <= pixel_limit:
+                return batch_limit
+        return 0
+
+    def update_novelai_batch_buttons(self) -> None:
+        group = getattr(self, "novelai_batch_group", None)
+        if group is None:
+            return
+        maximum = self.novelai_max_batch_count()
+        if maximum > 0:
+            tooltip = (
+                f"この解像度では1回に最大{maximum}枚まで生成できます。"
+                if self.ui_language() == "ja"
+                else f"This resolution supports up to {maximum} images per request."
+            )
+        else:
+            tooltip = (
+                "この解像度はNovelAIの対応上限を超えています。"
+                if self.ui_language() == "ja"
+                else "This resolution exceeds NovelAI's supported limit."
+            )
+        for value in range(1, 9):
+            button = group.button(value)
+            if button is not None:
+                button.setEnabled(value <= maximum)
+                button.setToolTip("" if value <= maximum else tooltip)
+        selected = group.checkedId()
+        if maximum > 0 and selected > maximum:
+            button = group.button(maximum)
+            if button is not None:
+                button.setChecked(True)
+        resolution_label = getattr(self, "novelai_resolution_limit_label", None)
+        if resolution_label is not None:
+            resolution_label.setText(tooltip if maximum == 0 else "")
+            resolution_label.setVisible(maximum == 0)
+        self.update_novelai_generate_button_text()
 
     def on_novelai_random_seed_changed(self, *_args) -> None:
         if hasattr(self, "novelai_seed_spin"):
@@ -5888,6 +6071,38 @@ class MainWindow(QMainWindow):
 
     def novelai_split_prompts_enabled(self) -> bool:
         return bool(getattr(self, "novelai_split_prompts_check", None) and self.novelai_split_prompts_check.isChecked())
+
+    def on_novelai_prompt_section_toggled(self, target: str, checked: bool) -> None:
+        checked = bool(checked)
+        if target == "prompt":
+            self.config_data.novelai_prompt_expanded = checked
+        else:
+            self.config_data.novelai_negative_prompt_expanded = checked
+        self.update_novelai_prompt_editor_visibility()
+        if not getattr(self, "initializing", False):
+            self.persist_config()
+
+    def on_novelai_show_reconstructed_prompts_changed(self, *_args) -> None:
+        self.update_novelai_reconstructed_prompt_labels()
+        self.update_novelai_prompt_editor_visibility()
+        self.on_novelai_settings_changed()
+
+    def update_novelai_reconstructed_prompt_labels(self) -> None:
+        if not hasattr(self, "novelai_reconstructed_prompt_label"):
+            return
+        self.novelai_reconstructed_prompt_label.setText(self.novelai_prompt_list_edit.to_text())
+        self.novelai_reconstructed_negative_prompt_label.setText(self.novelai_negative_list_edit.to_text())
+
+    def on_novelai_prompt_drag_state_changed(self, active: bool) -> None:
+        self.novelai_prompt_drag_active = bool(active)
+        if active:
+            self.overlay_hide_suppressed_until = float("inf")
+            if self.side_panel_overlay and not self.pin_button.isChecked():
+                self.set_overlay_side_panel_visible(True)
+                self.side_panel.raise_()
+        else:
+            self.overlay_hide_suppressed_until = time.monotonic() + SIDE_PANEL_HIDE_GRACE_SEC
+            QTimer.singleShot(SIDE_PANEL_HIDE_DELAY_MS, self.hide_overlay_side_panel_if_needed)
 
     def active_novelai_text_from_editor(self, editor: NovelAIPromptListEditor, text: str) -> str:
         return editor.active_text_from_text(text)
@@ -5964,10 +6179,23 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "novelai_prompt_list_edit"):
             return
         split_enabled = self.novelai_split_prompts_enabled()
-        self.novelai_prompt_edit.setVisible(not split_enabled)
-        self.novelai_negative_edit.setVisible(not split_enabled)
-        self.novelai_prompt_list_edit.setVisible(split_enabled)
-        self.novelai_negative_list_edit.setVisible(split_enabled)
+        prompt_expanded = self.novelai_prompt_toggle_button.isChecked()
+        negative_expanded = self.novelai_negative_prompt_toggle_button.isChecked()
+        self.update_novelai_reconstructed_prompt_labels()
+        self.novelai_prompt_toggle_button.setText(self.tr_ui("プロンプト v" if prompt_expanded else "プロンプト >"))
+        self.novelai_negative_prompt_toggle_button.setText(
+            self.tr_ui("除外したい要素 v" if negative_expanded else "除外したい要素 >")
+        )
+        self.novelai_prompt_edit.setVisible(prompt_expanded and not split_enabled)
+        self.novelai_negative_edit.setVisible(negative_expanded and not split_enabled)
+        self.novelai_prompt_list_edit.setVisible(prompt_expanded and split_enabled)
+        self.novelai_negative_list_edit.setVisible(negative_expanded and split_enabled)
+        show_reconstructed = split_enabled and self.novelai_show_reconstructed_prompts_check.isChecked()
+        self.novelai_show_reconstructed_prompts_check.setEnabled(split_enabled)
+        self.novelai_reconstructed_prompt_label.setVisible(prompt_expanded and show_reconstructed)
+        self.novelai_reconstructed_negative_prompt_label.setVisible(negative_expanded and show_reconstructed)
+        self.novelai_prompt_resize_handle.setVisible(prompt_expanded)
+        self.novelai_negative_resize_handle.setVisible(negative_expanded)
         if hasattr(self, "novelai_add_prompt_items_at_top_check"):
             self.novelai_add_prompt_items_at_top_check.setVisible(split_enabled)
         if hasattr(self, "novelai_enter_generate_check"):
@@ -6005,6 +6233,7 @@ class MainWindow(QMainWindow):
         if not self.novelai_split_prompts_enabled():
             return
         self.sync_novelai_text_from_lists()
+        self.update_novelai_reconstructed_prompt_labels()
         self.on_novelai_settings_changed()
 
     def sync_novelai_text_from_lists(self) -> None:
@@ -6224,6 +6453,7 @@ class MainWindow(QMainWindow):
         self.novelai_seed_spin.setEnabled(True)
         self.set_novelai_seed_value(metadata.get("seed", self.novelai_seed_value()))
         self.set_novelai_number_of_images(max(1, min(8, int(metadata.get("n_samples", 1)))))
+        self.update_novelai_batch_buttons()
         self.novelai_variety_boost_check.setChecked(bool(metadata.get("variety_boost", False)))
         self.novelai_quality_tags_check.setChecked(quality_enabled)
         self.set_combo_by_data(self.novelai_uc_preset_combo, uc_preset)
@@ -6292,15 +6522,30 @@ class MainWindow(QMainWindow):
             current = self.novelai_filename_combo.currentData() or "seed"
             self.novelai_filename_combo.blockSignals(True)
             self.novelai_filename_combo.clear()
-            self.novelai_filename_combo.addItem(self.tr_ui("シード値.png"), "seed")
-            self.novelai_filename_combo.addItem(self.tr_ui("日付_時刻.png"), "time")
-            self.novelai_filename_combo.addItem(self.tr_ui("時刻.png"), "time_only")
+            self.novelai_filename_combo.addItem(self.tr_ui("シード値"), "seed")
+            self.novelai_filename_combo.addItem(self.tr_ui("日付/シード値"), "date_seed")
+            self.novelai_filename_combo.addItem(self.tr_ui("日付/時刻"), "date_time")
+            self.novelai_filename_combo.addItem(self.tr_ui("日付/時刻_シード値"), "date_time_seed")
+            self.novelai_filename_combo.addItem(self.tr_ui("カスタム"), "custom")
             self.set_combo_by_data(self.novelai_filename_combo, current)
             self.novelai_filename_combo.blockSignals(False)
+        if hasattr(self, "novelai_filename_template_edit"):
+            self.novelai_filename_template_edit.setToolTip(
+                self.tr_ui(
+                    "使用できる変数:\n{YYYY}: 年（4桁）\n{MM}: 月（2桁）\n{DD}: 日（2桁）\n"
+                    "{HH}: 時（2桁）\n{mm}: 分（2桁）\n{ss}: 秒（2桁）\n"
+                    "{date}: 日付まとめ（YYYYMMDD）\n{time}: 時刻まとめ（HHMMSS）\n"
+                    "{seed}: 生成シード値\n/ または \\: フォルダ区切り（入れ子可能）\n"
+                    "末尾がフォルダ区切りの場合、ファイル名に {seed} を補います。\n例: {date}/{time}_{seed}"
+                )
+            )
+        self.update_novelai_batch_buttons()
         for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
             editor = getattr(self, editor_name, None)
             if isinstance(editor, NovelAIPromptListEditor):
                 editor.apply_language(self.ui_language())
+        if hasattr(self, "novelai_prompt_toggle_button"):
+            self.update_novelai_prompt_editor_visibility()
         if hasattr(self, "novelai_continuous_delay_spin"):
             self.novelai_continuous_delay_spin.setSuffix(f" {self.tr_ui('秒')}")
         off_text = "0 (Off)" if self.ui_language() == "en" else "0 (オフ)"
@@ -6678,7 +6923,7 @@ class MainWindow(QMainWindow):
                 enabled = False
             else:
                 text = "生成"
-                enabled = True
+                enabled = self.novelai_max_batch_count() > 0
             self.novelai_generate_button.setText(self.tr_ui(text))
             self.novelai_generate_button.setEnabled(enabled)
 
@@ -6769,6 +7014,13 @@ class MainWindow(QMainWindow):
         if self.novelai_generation_running:
             self.novelai_status_label.setText("NovelAI生成は実行中です。")
             return
+        maximum_count = self.novelai_max_batch_count()
+        if maximum_count == 0:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
+            self.novelai_status_label.setText("現在の解像度はNovelAIの対応上限を超えています。")
+            return
         token = self.novelai_token_edit.text().strip()
         if not token:
             self.set_novelai_continuous_generation_enabled(False)
@@ -6783,12 +7035,22 @@ class MainWindow(QMainWindow):
             self.update_novelai_generate_button_text()
             QMessageBox.information(self, APP_NAME, "Promptを入力してください。")
             return
+        selected_count = self.novelai_number_of_images()
+        if selected_count > maximum_count:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
+            message = (
+                f"現在の解像度では1回に最大{maximum_count}枚まで生成できます。\n"
+                f"生成枚数を{maximum_count}枚以下に変更してください。"
+            )
+            QMessageBox.information(self, APP_NAME, message)
+            return
         output_dir = Path(self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR))
         task = {
             "api_token": token,
             "output_dir": output_dir,
-            "date_subfolders": self.novelai_date_subfolders_check.isChecked(),
-            "filename_mode": self.novelai_filename_combo.currentData() or "seed",
+            "output_name_template": self.novelai_filename_template_edit.text().strip() or "{seed}",
             "request": self.current_novelai_request(),
             "random_seed": bool(self.novelai_continuous_generation_enabled or self.novelai_random_seed_check.isChecked()),
             "save_metadata_json": self.novelai_metadata_check.isChecked(),
@@ -6816,29 +7078,48 @@ class MainWindow(QMainWindow):
 
     def run_novelai_generation(self, task: dict[str, object]) -> dict[str, object]:
         output_dir = Path(task["output_dir"])
-        if bool(task.get("date_subfolders", False)):
-            output_dir = output_dir / time.strftime("%Y-%m-%d")
+        timestamp = time.localtime()
         request = dict(task["request"])  # type: ignore[arg-type]
         random_seed_enabled = bool(task.get("random_seed", True))
         save_metadata_json = bool(task.get("save_metadata_json", True))
-        adapter = NovelAIClientAdapter(str(task.get("api_token", "")))
         generated_paths: list[Path] = []
         started = time.perf_counter()
-        output_dir.mkdir(parents=True, exist_ok=True)
+        maximum_count = self.novelai_max_batch_count(int(request.get("width", 832)), int(request.get("height", 1216)))
+        requested_count = int(request.get("n_samples", 1))
+        if requested_count > maximum_count:
+            if maximum_count > 0:
+                raise ValueError(f"現在の解像度では1回に最大{maximum_count}枚まで生成できます。")
+            raise ValueError("現在の解像度はNovelAIの対応上限を超えています。")
+        adapter = NovelAIClientAdapter(str(task.get("api_token", "")))
         seed = random.randint(0, MAX_NOVELAI_SEED) if random_seed_enabled else int(request.get("seed", 0)) % (MAX_NOVELAI_SEED + 1)
         request = {**request, "seed": seed, "n_samples": max(1, min(8, int(request.get("n_samples", 1))))}
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_name_template = str(task.get("output_name_template", "{seed}"))
+        self.unique_novelai_output_path(output_dir, timestamp, seed, output_name_template)
         images = adapter.generate_images(request)
         for index, image in enumerate(images, start=1):
-            output_path = self.unique_novelai_output_path(output_dir, timestamp, seed, str(task.get("filename_mode", "seed")), index if len(images) > 1 else None)
+            image_seed = adapter.image_seed(image)
+            if image_seed is None:
+                image_seed = (seed + index - 1) % (MAX_NOVELAI_SEED + 1)
+            output_path = self.unique_novelai_output_path(
+                output_dir,
+                timestamp,
+                image_seed,
+                output_name_template,
+                index if len(images) > 1 else None,
+            )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             image.save(str(output_path))
             generated_paths.append(output_path)
             if save_metadata_json:
+                image_request = {**request, "seed": image_seed, "n_samples": 1}
                 metadata = {
                     "source": "NovelAI",
                     "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "request": request,
+                    "request": image_request,
+                    "batch_request": request,
                     "image_index": index,
+                    "seed": image_seed,
                     "estimated_anlas": adapter.estimate_anlas(request, bool(task.get("is_opus", False))),
                 }
                 atomic_write_text(
@@ -6854,21 +7135,63 @@ class MainWindow(QMainWindow):
             "elapsed_ms": (time.perf_counter() - started) * 1000,
         }
 
-    def unique_novelai_output_path(self, output_dir: Path, timestamp: str, seed: int, filename_mode: str = "seed", image_index: int | None = None) -> Path:
-        if filename_mode == "seed":
+    def unique_novelai_output_path(self, output_dir: Path, timestamp, seed: int, filename_template: str = "{seed}", image_index: int | None = None) -> Path:
+        raw_template = str(filename_template or "{seed}")
+        normalized = raw_template.replace("\\", "/")
+        if normalized.startswith("/") or any(re.match(r"^[A-Za-z]:", part) for part in normalized.split("/")):
+            raise ValueError("保存名には絶対パスやドライブ指定を使用できません。")
+        if normalized.endswith("/"):
+            normalized += "{seed}"
+        raw_parts = [part for part in normalized.split("/") if part]
+        if any(part in {".", ".."} for part in raw_parts):
+            raise ValueError("保存名には . または .. を使用できません。")
+        expanded_parts = [self.expand_novelai_name_template(part, timestamp, seed) for part in raw_parts]
+        safe_parts = [self.sanitize_novelai_path_part(part) for part in expanded_parts]
+        if not safe_parts:
+            safe_parts = [str(seed)]
+        base = safe_parts[-1]
+        if base.casefold().endswith(".png"):
+            base = base[:-4]
+        if not base:
             base = str(seed)
-        elif filename_mode == "time_only":
-            base = timestamp.split("_", 1)[1] if "_" in timestamp else timestamp
-        else:
-            base = timestamp
         if image_index is not None:
             base = f"{base}_{image_index:02d}"
-        path = output_dir / f"{base}.png"
+        output_root = output_dir.resolve()
+        parent = output_dir.joinpath(*safe_parts[:-1])
+        path = parent / f"{base}.png"
+        if not path.resolve().is_relative_to(output_root):
+            raise ValueError("保存名が保存先フォルダの外を指しています。")
         suffix = 1
         while path.exists():
-            path = output_dir / f"{base}_{suffix}.png"
+            path = parent / f"{base}_{suffix}.png"
             suffix += 1
         return path
+
+    def sanitize_novelai_path_part(self, value: str) -> str:
+        part = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", str(value or ""))
+        part = re.sub(r"[ .]+$", lambda match: "_" * len(match.group(0)), part)
+        if not part:
+            return "_"
+        reserved_name = part.split(".", 1)[0].upper()
+        reserved_names = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
+        return f"_{part}" if reserved_name in reserved_names else part
+
+    def expand_novelai_name_template(self, template: str, timestamp, seed: int) -> str:
+        values = {
+            "YYYY": time.strftime("%Y", timestamp),
+            "MM": time.strftime("%m", timestamp),
+            "DD": time.strftime("%d", timestamp),
+            "HH": time.strftime("%H", timestamp),
+            "mm": time.strftime("%M", timestamp),
+            "ss": time.strftime("%S", timestamp),
+            "date": time.strftime("%Y%m%d", timestamp),
+            "time": time.strftime("%H%M%S", timestamp),
+            "seed": str(seed),
+        }
+        base = str(template or "")
+        for name, value in values.items():
+            base = base.replace(f"{{{name}}}", value)
+        return base
 
     def on_novelai_generation_started(self, output_dir: str) -> None:
         self.append_log_if_visible(f"NovelAI generation started: {output_dir}")
@@ -7442,16 +7765,19 @@ class MainWindow(QMainWindow):
                     self.append_log_if_visible(f"Failed to save NovelAI token with DPAPI: {exc}")
             self.config_data.novelai_api_token = ""
             self.config_data.novelai_output_dir = self.novelai_output_dir_edit.text().strip() or str(DEFAULT_NOVELAI_GENERATED_DIR)
-            self.config_data.novelai_date_subfolders = self.novelai_date_subfolders_check.isChecked()
-            self.config_data.novelai_filename_mode = self.novelai_filename_combo.currentData() or "seed"
+            self.config_data.novelai_output_name_mode = self.novelai_filename_combo.currentData() or "custom"
+            self.config_data.novelai_output_name_template = self.novelai_filename_template_edit.text().strip() or "{seed}"
             self.config_data.novelai_prompt = self.novelai_prompt_storage_text()
             self.config_data.novelai_negative_prompt = self.novelai_negative_prompt_storage_text()
             self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
+            self.config_data.novelai_show_reconstructed_prompts = self.novelai_show_reconstructed_prompts_check.isChecked()
             self.config_data.novelai_add_prompt_items_at_top = self.novelai_add_prompt_items_at_top_check.isChecked()
             self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
             self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
             self.config_data.novelai_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
             self.config_data.novelai_negative_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_negative_prompt_editor_height)
+            self.config_data.novelai_prompt_expanded = self.novelai_prompt_toggle_button.isChecked()
+            self.config_data.novelai_negative_prompt_expanded = self.novelai_negative_prompt_toggle_button.isChecked()
             self.config_data.novelai_enter_to_generate = self.novelai_enter_generate_check.isChecked()
             self.config_data.novelai_delete_folder_contents = self.novelai_delete_folder_contents_check.isChecked()
             self.config_data.novelai_quality_tags = self.novelai_quality_tags_check.isChecked()
@@ -9257,7 +9583,14 @@ class MainWindow(QMainWindow):
         return False
 
     def should_hide_overlay_panel(self) -> bool:
-        if self.overlay_resizing or self.overlay_modal_guard or self.pin_button.isChecked() or not self.side_panel_overlay:
+        if (
+            self.overlay_resizing
+            or self.overlay_modal_guard
+            or self.novelai_prompt_drag_active
+            or self.novelai_filename_tooltip_active
+            or self.pin_button.isChecked()
+            or not self.side_panel_overlay
+        ):
             return False
         if QApplication.activePopupWidget() is not None:
             return False
@@ -9675,6 +10008,21 @@ class MainWindow(QMainWindow):
             self.position_overlay_side_panel()
 
     def eventFilter(self, watched, event) -> bool:
+        filename_editor = getattr(self, "novelai_filename_template_edit", None)
+        filename_tooltip = getattr(self, "novelai_filename_template_tooltip", None)
+        if watched is filename_editor:
+            if event.type() in {QEvent.Enter, QEvent.ToolTip}:
+                self.show_novelai_filename_template_tooltip()
+                return event.type() == QEvent.ToolTip
+            if event.type() == QEvent.Leave:
+                QTimer.singleShot(100, self.hide_novelai_filename_template_tooltip_if_unused)
+            elif event.type() == QEvent.Hide:
+                self.hide_novelai_filename_template_tooltip()
+        elif watched is filename_tooltip:
+            if event.type() == QEvent.Enter:
+                self.novelai_filename_tooltip_active = True
+            elif event.type() == QEvent.Leave:
+                QTimer.singleShot(100, self.hide_novelai_filename_template_tooltip_if_unused)
         if watched is getattr(self, "novelai_generate_button", None):
             if event.type() in {QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick}:
                 if not self.novelai_generate_button.isEnabled():
@@ -9755,6 +10103,54 @@ class MainWindow(QMainWindow):
                 QTimer.singleShot(1200, self._apply_fullscreen_cursor)
         return super().eventFilter(watched, event)
 
+    def show_novelai_filename_template_tooltip(self) -> None:
+        editor = getattr(self, "novelai_filename_template_edit", None)
+        if editor is None:
+            return
+        tooltip = getattr(self, "novelai_filename_template_tooltip", None)
+        if tooltip is None:
+            tooltip = QLabel(None, Qt.Tool | Qt.FramelessWindowHint)
+            tooltip.setTextFormat(Qt.PlainText)
+            tooltip.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            tooltip.setCursor(Qt.IBeamCursor)
+            tooltip.setMargin(6)
+            tooltip.setStyleSheet(
+                "QLabel { background-color: palette(tool-tip-base); color: palette(tool-tip-text); "
+                "border: 1px solid palette(mid); }"
+            )
+            tooltip.installEventFilter(self)
+            self.novelai_filename_template_tooltip = tooltip
+        tooltip.setText(editor.toolTip())
+        tooltip.adjustSize()
+        position = editor.mapToGlobal(QPoint(0, editor.height() + 4))
+        screen = QApplication.screenAt(editor.mapToGlobal(editor.rect().center()))
+        if screen is not None:
+            available = screen.availableGeometry()
+            if position.y() + tooltip.height() > available.bottom():
+                position.setY(editor.mapToGlobal(QPoint(0, -tooltip.height() - 4)).y())
+            position.setX(min(position.x(), available.right() - tooltip.width()))
+            position.setY(min(position.y(), available.bottom() - tooltip.height()))
+            position.setX(max(position.x(), available.left()))
+            position.setY(max(position.y(), available.top()))
+        tooltip.move(position)
+        self.novelai_filename_tooltip_active = True
+        tooltip.show()
+
+    def hide_novelai_filename_template_tooltip_if_unused(self) -> None:
+        editor = getattr(self, "novelai_filename_template_edit", None)
+        tooltip = getattr(self, "novelai_filename_template_tooltip", None)
+        cursor = QCursor.pos()
+        for widget in (editor, tooltip):
+            if widget is not None and widget.isVisible() and widget.rect().contains(widget.mapFromGlobal(cursor)):
+                return
+        self.hide_novelai_filename_template_tooltip()
+
+    def hide_novelai_filename_template_tooltip(self) -> None:
+        tooltip = getattr(self, "novelai_filename_template_tooltip", None)
+        if tooltip is not None:
+            tooltip.hide()
+        self.novelai_filename_tooltip_active = False
+
     def hide_overlay_side_panel_if_needed(self) -> None:
         if self.should_hide_overlay_panel():
             self.set_overlay_side_panel_visible(False)
@@ -9782,6 +10178,9 @@ class MainWindow(QMainWindow):
         self.request_borderless_fullscreen_enforce()
 
     def _apply_fullscreen_cursor(self) -> None:
+        if self.fullscreen_cursor_hide_suspended:
+            self._show_fullscreen_cursor()
+            return
         if self.is_app_fullscreen() and self.hide_cursor_fullscreen_check.isChecked() and not self.fullscreen_cursor_hidden:
             if self.is_cursor_over_cursor_visible_area():
                 QTimer.singleShot(1200, self._apply_fullscreen_cursor)
@@ -10890,7 +11289,13 @@ class MainWindow(QMainWindow):
                     message += f"\n\n{extra_count} processed result(s) will also be deleted."
                 else:
                     message += f"\n\n拡大結果 {extra_count} 件も削除されます。"
-            answer = QMessageBox.question(self, APP_NAME, message)
+            self.fullscreen_cursor_hide_suspended = True
+            self._show_fullscreen_cursor()
+            try:
+                answer = QMessageBox.question(self, APP_NAME, message)
+            finally:
+                self.fullscreen_cursor_hide_suspended = False
+                self._apply_fullscreen_cursor()
             if answer != QMessageBox.Yes:
                 return
         deleted_processing_key = self.processing_key(source)
