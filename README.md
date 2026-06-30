@@ -70,6 +70,8 @@ python .\raiv.py
 
 画像ファイルを開いた場合は、まずその画像を表示し、同じフォルダ内の画像一覧はあとから取得します。
 
+アニメーションGIFとアニメーションPNG（APNG）は表示中に再生できます。サムネイルは先頭フレームを表示し、アニメーション画像は拡大エンジンとAI彩色の処理対象外です。
+
 JPEG XR / HD Photo 系の `.jxr`、`.wdp`、`.hdp` も表示できます。これらのHDR画像は、アプリやモニタへHDR信号として出力するのではなく、白飛びや黒つぶれを抑えるためにSDR表示用の色域・階調へトーンマッピングして互換表示します。HDR画像は表示互換を目的とするため、拡大エンジンの処理対象外です。
 HDR画像を表示している時は、画像調整タブの `HDR互換表示の明るさ` でSDR互換表示へ変換する時の明るさを調整できます。100%が自動トーンマップの基準値で、`100%に戻す` でリセットできます。
 
@@ -361,6 +363,8 @@ Logs can be shown or hidden from `Show log` in the General tab.
 - Press `F` to select a folder
 
 When an image file is opened, RAIV displays it first and then collects the rest of the images in the same folder.
+
+Animated GIF and animated PNG (APNG) files play while displayed. Thumbnails use the first frame, and animated images are excluded from upscaling and AI colorization processing.
 
 RAIV can also display JPEG XR / HD Photo files: `.jxr`, `.wdp`, and `.hdp`. HDR images are not output as an HDR signal by the application; they are tone-mapped into an SDR-compatible color and tonal range to avoid harsh clipping and crushed shadows. HDR image support is intended for compatible viewing, so these files are excluded from processing by the upscaling engines.
 While an HDR image is displayed, the Image Adjustment tab enables `HDR compatible brightness` so you can adjust the brightness used during SDR-compatible conversion. 100% is the baseline for the automatic tone map, and `Reset to 100%` restores it.

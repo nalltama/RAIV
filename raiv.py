@@ -85,10 +85,11 @@ except ImportError:
     py7zr = None
 
 try:
-    from PIL import Image as PILImage, ImageFilter
+    from PIL import Image as PILImage, ImageFilter, ImageSequence
 except ImportError:
     PILImage = None
     ImageFilter = None
+    ImageSequence = None
 
 try:
     import cv2
@@ -103,7 +104,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -330,7 +331,8 @@ GIGAPIXEL_MODELS = [
 ]
 GIGAPIXEL_MODEL_SCALES = {model: [2, 3, 4, 6] for _label, model in GIGAPIXEL_MODELS}
 HDR_IMAGE_EXTENSIONS = {".jxr", ".wdp", ".hdp"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"} | HDR_IMAGE_EXTENSIONS
+ANIMATED_IMAGE_EXTENSIONS = {".gif", ".apng"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".apng"} | HDR_IMAGE_EXTENSIONS
 ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
 TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
 TEMP_WORK_PREFIX = "realcugan_qt_work_"
@@ -379,6 +381,8 @@ RESAMPLE_ALGORITHMS = {
     "area": "Area",
 }
 DEFAULT_RESAMPLE_ALGORITHM = "bicubic"
+DEFAULT_ANIMATION_DELAY_MS = 100
+MIN_ANIMATION_DELAY_MS = 20
 SETTINGS_TAB_IDS = ["realcugan", "general", "image_adjust", "colorize", "novelai", "other", "keyconfig"]
 MODIFIER_MASK = (
     Qt.ControlModifier.value
@@ -465,6 +469,110 @@ def com_release(pointer: ctypes.c_void_p | None) -> None:
 
 def is_hdr_image_path(path: Path) -> bool:
     return path.suffix.lower() in HDR_IMAGE_EXTENSIONS
+
+
+@dataclass
+class AnimationFrame:
+    image: QImage
+    delay_ms: int
+
+
+@dataclass
+class ActiveAnimation:
+    path: Path
+    frames: list[AnimationFrame]
+    index: int
+    next_due_at: float
+
+
+def normalized_animation_delay(delay_ms: int | None) -> int:
+    try:
+        value = int(delay_ms or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if value <= 0:
+        value = DEFAULT_ANIMATION_DELAY_MS
+    return max(MIN_ANIMATION_DELAY_MS, value)
+
+
+def qimage_from_pil(image) -> QImage:
+    rgba = image.convert("RGBA")
+    data = rgba.tobytes("raw", "RGBA")
+    return QImage(data, rgba.width, rgba.height, QImage.Format_RGBA8888).copy()
+
+
+def png_has_animation_control(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+                return False
+            while True:
+                length_bytes = handle.read(4)
+                if len(length_bytes) != 4:
+                    return False
+                length = int.from_bytes(length_bytes, "big")
+                chunk_type = handle.read(4)
+                if len(chunk_type) != 4:
+                    return False
+                if chunk_type == b"acTL":
+                    return True
+                if chunk_type in {b"IDAT", b"IEND"}:
+                    return False
+                handle.seek(length + 4, os.SEEK_CUR)
+    except OSError:
+        return False
+
+
+def is_animated_image_path(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    if suffix == ".gif":
+        reader = QImageReader(str(path))
+        try:
+            return reader.supportsAnimation() and reader.imageCount() > 1
+        except Exception:
+            return False
+    if suffix in {".png", ".apng"}:
+        return png_has_animation_control(path)
+    return False
+
+
+def load_gif_animation_frames(path: Path) -> list[AnimationFrame]:
+    reader = QImageReader(str(path))
+    frames: list[AnimationFrame] = []
+    while reader.canRead():
+        image = reader.read()
+        if image.isNull():
+            break
+        frames.append(AnimationFrame(image.copy(), normalized_animation_delay(reader.nextImageDelay())))
+    return frames if len(frames) > 1 else []
+
+
+def load_apng_animation_frames(path: Path) -> list[AnimationFrame]:
+    if PILImage is None or ImageSequence is None:
+        return []
+    frames: list[AnimationFrame] = []
+    try:
+        with PILImage.open(path) as image:
+            if not bool(getattr(image, "is_animated", False)) or int(getattr(image, "n_frames", 1)) <= 1:
+                return []
+            default_duration = image.info.get("duration", DEFAULT_ANIMATION_DELAY_MS)
+            for frame in ImageSequence.Iterator(image):
+                delay = frame.info.get("duration", default_duration)
+                qimage = qimage_from_pil(frame.copy())
+                if not qimage.isNull():
+                    frames.append(AnimationFrame(qimage, normalized_animation_delay(delay)))
+    except Exception:
+        return []
+    return frames if len(frames) > 1 else []
+
+
+def load_animation_frames(path: Path) -> list[AnimationFrame]:
+    suffix = path.suffix.lower()
+    if suffix == ".gif":
+        return load_gif_animation_frames(path)
+    if suffix in {".png", ".apng"}:
+        return load_apng_animation_frames(path)
+    return []
 
 
 def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
@@ -2685,6 +2793,7 @@ class NovelAIPromptTagRow(QWidget):
         super().__init__(parent)
         self.tag = tag.strip()
         self.active = active
+        self.highlight_style = ""
         self.setFocusPolicy(Qt.NoFocus)
         outer_layout = QHBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -2756,6 +2865,9 @@ class NovelAIPromptTagRow(QWidget):
         self.indent_spacer.setFixedWidth(max(0, depth) * 20)
 
     def set_highlight_style(self, style: str) -> None:
+        if style == self.highlight_style:
+            return
+        self.highlight_style = style
         self.content_widget.setStyleSheet(
             f"#novelaiPromptTagContent {{ {style} }}" if style else ""
         )
@@ -2837,6 +2949,7 @@ class NovelAIPromptFolderRow(QWidget):
         super().__init__(parent)
         self.name = name.strip()
         self.random_enabled = bool(random_enabled)
+        self.highlight_style = ""
         self.setFocusPolicy(Qt.NoFocus)
         outer_layout = QHBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -2902,6 +3015,9 @@ class NovelAIPromptFolderRow(QWidget):
         self.indent_spacer.setFixedWidth(max(0, depth) * 20)
 
     def set_highlight_style(self, style: str) -> None:
+        if style == self.highlight_style:
+            return
+        self.highlight_style = style
         self.content_widget.setStyleSheet(
             f"#novelaiPromptFolderContent {{ {style} }}" if style else ""
         )
@@ -2954,24 +3070,34 @@ class NovelAIPromptTreeWidget(QTreeWidget):
     def refresh_row_highlights(self) -> None:
         rows = {row for _item, row in self.item_widget_pairs()}
         for row in rows:
-            if row is self.drag_source_row:
-                row.set_highlight_style(self.highlight_style(110))
-            elif row is self.drag_folder_row:
-                row.set_highlight_style(self.highlight_style(80))
-            elif not bool(self.property("dragging")) and row is self.hover_row:
-                row.set_highlight_style(self.highlight_style(70))
-            else:
-                row.set_highlight_style("")
+            self.refresh_row_highlight(row)
+
+    def refresh_row_highlight(self, row: QWidget | None) -> None:
+        if not isinstance(row, (NovelAIPromptTagRow, NovelAIPromptFolderRow)):
+            return
+        if row is self.drag_source_row:
+            style = self.highlight_style(110)
+        elif row is self.drag_folder_row:
+            style = self.highlight_style(80)
+        elif not bool(self.property("dragging")) and row is self.hover_row:
+            style = self.highlight_style(70)
+        else:
+            style = ""
+        row.set_highlight_style(style)
 
     def set_hover_row(self, row: object) -> None:
         if isinstance(row, (NovelAIPromptTagRow, NovelAIPromptFolderRow)):
+            previous = self.hover_row
+            if row is previous:
+                return
             self.hover_row = row
-            self.refresh_row_highlights()
+            self.refresh_row_highlight(previous)
+            self.refresh_row_highlight(row)
 
     def clear_hover_row(self, row: object) -> None:
         if row is self.hover_row:
             self.hover_row = None
-            self.refresh_row_highlights()
+            self.refresh_row_highlight(row if isinstance(row, QWidget) else None)
 
     def set_dragging(self, dragging: bool) -> None:
         self.setProperty("dragging", dragging)
@@ -3731,6 +3857,18 @@ class GLImageView(QOpenGLWidget):
         self.clear_resample_cache()
         self.update()
 
+    def set_source_frame(self, source: QImage, page_slot: int = 0) -> None:
+        if page_slot == 1:
+            self.raw_secondary_source_image = source
+            self.secondary_source_image = self.transformed_image(self.adjusted_display_image(self.raw_secondary_source_image))
+            self.secondary_source_pixmap = self.pixmap_for_image(self.raw_secondary_source_image, self.secondary_source_image)
+        else:
+            self.raw_source_image = source
+            self.source_image = self.transformed_image(self.adjusted_display_image(self.raw_source_image))
+            self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
+        self.clear_resample_cache()
+        self.update()
+
     def set_key_bindings(self, bindings: dict[str, dict[str, dict | None]]) -> None:
         self.key_bindings = normalize_key_bindings(bindings)
         self.duplicate_mouse_bindings = duplicate_binding_signatures(self.key_bindings, "mouse")
@@ -4041,11 +4179,12 @@ class GLImageView(QOpenGLWidget):
         self.update()
 
     def resizeGL(self, width: int, height: int) -> None:
-        if abs(self.zoom - 1.0) > 0.0001:
-            return
         content_size = self.current_content_size()
         if content_size.isEmpty() or width <= 0 or height <= 0:
             return
+        if abs(self.zoom - 1.0) > 0.0001:
+            return
+        self.begin_interactive_resample_delay()
         self.fit_scale_anchor = min(width / content_size.width(), height / content_size.height())
         self.fit_image_size = (content_size.width(), content_size.height())
         self.zoomChanged.emit(self.current_scale())
@@ -4463,6 +4602,11 @@ class MainWindow(QMainWindow):
         self.deferred_page_steps = 0
         self.original_cache: OrderedDict[Path, QImage] = OrderedDict()
         self.image_height_cache: OrderedDict[Path, int] = OrderedDict()
+        self.animated_image_cache: OrderedDict[Path, bool] = OrderedDict()
+        self.active_animations: dict[int, ActiveAnimation] = {}
+        self.animation_timer = QTimer(self)
+        self.animation_timer.setSingleShot(True)
+        self.animation_timer.timeout.connect(self.advance_animation_frames)
         self.processed_cache: OrderedDict[tuple, QImage] = OrderedDict()
         self.processing_paths: set[Path] = set()
         self.processing_task_keys: dict[Path, tuple] = {}
@@ -6965,7 +7109,7 @@ class MainWindow(QMainWindow):
             return
         self.set_novelai_continuous_generation_enabled(not self.novelai_continuous_generation_enabled)
         if self.novelai_continuous_generation_enabled:
-            self.novelai_status_label.setText("連続生成を開始しました。停止するには生成ボタンをもう一度ダブルクリックしてください。連続生成中は常にランダムシードで生成します。")
+            self.novelai_status_label.setText("連続生成を開始しました。停止するには生成ボタンをもう一度ダブルクリックしてください。シードはランダムシード設定に従います。")
             if not self.novelai_generation_running:
                 self.generate_novelai_images()
         else:
@@ -7052,7 +7196,7 @@ class MainWindow(QMainWindow):
             "output_dir": output_dir,
             "output_name_template": self.novelai_filename_template_edit.text().strip() or "{seed}",
             "request": self.current_novelai_request(),
-            "random_seed": bool(self.novelai_continuous_generation_enabled or self.novelai_random_seed_check.isChecked()),
+            "random_seed": self.novelai_random_seed_check.isChecked(),
             "save_metadata_json": self.novelai_metadata_check.isChecked(),
             "auto_open": self.novelai_auto_open_check.isChecked(),
             "auto_upscale": self.novelai_auto_upscale_check.isChecked(),
@@ -7210,7 +7354,7 @@ class MainWindow(QMainWindow):
                 self.novelai_status_label.setText(f"NovelAI生成に失敗しました: {message}")
             return
         paths = [Path(path) for path in result.get("paths", [])]
-        if "seed" in result:
+        if "seed" in result and len(paths) == 1:
             self.set_novelai_seed_value(result.get("seed"))
             self.persist_config()
         if not paths:
@@ -7222,8 +7366,8 @@ class MainWindow(QMainWindow):
         self.append_log_if_visible(f"NovelAI generation done: {len(paths)} image(s)")
         if hasattr(self, "novelai_status_label"):
             self.novelai_status_label.setText(f"NovelAI生成完了: {len(paths)}枚")
-        if result.get("auto_open", True):
-            self.open_path_deferred(paths[-1])
+        if self.novelai_auto_open_check.isChecked():
+            self.open_path_deferred(paths[0])
         else:
             self.refresh_current_folder_after_novelai_generation(paths)
         if result.get("auto_upscale", True):
@@ -7255,6 +7399,8 @@ class MainWindow(QMainWindow):
         if not self.image_paths or self.current_index < 0 or self.current_index >= len(self.image_paths):
             return None
         path = self.image_paths[self.current_index]
+        if self.is_animated_source_or_display(path):
+            return None
         return path if path.is_file() else None
 
     def colorized_output_dir(self, source: Path) -> Path:
@@ -7297,6 +7443,11 @@ class MainWindow(QMainWindow):
         return True, ""
 
     def colorize_current_image_with_comfyui(self) -> None:
+        if self.image_paths and 0 <= self.current_index < len(self.image_paths):
+            path = self.image_paths[self.current_index]
+            if self.is_animated_source_or_display(path):
+                self.comfyui_status_label.setText("アニメーション画像はAI彩色の対象外です。")
+                return
         source = self.current_colorize_input_path()
         if source is None:
             self.comfyui_status_label.setText("彩色する画像がありません。")
@@ -7311,6 +7462,8 @@ class MainWindow(QMainWindow):
 
     def enqueue_colorize(self, path: Path, front: bool = False, force: bool = False, show_result: bool = False) -> None:
         path = self.normalized_path(path)
+        if self.is_animated_source_or_display(path):
+            return
         if not force and self.has_colorized_result(path):
             self.colorize_done_paths.add(path)
             return
@@ -8647,6 +8800,7 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, lambda p=path: self.open_path(p))
 
     def set_image_list(self, images: list[Path], index: int, defer_work: bool = False) -> None:
+        self.stop_animation_playback()
         self.image_paths = images
         self.refresh_image_path_sets()
         self.current_index = index
@@ -8682,6 +8836,7 @@ class MainWindow(QMainWindow):
 
     def set_empty_folder(self, folder: Path) -> None:
         folder = folder.resolve()
+        self.stop_animation_playback()
         self.image_paths = []
         self.refresh_image_path_sets()
         self.current_index = -1
@@ -8839,6 +8994,84 @@ class MainWindow(QMainWindow):
     def normalized_path_text(self, path: Path) -> str:
         return str(self.normalized_path(path))
 
+    def is_animated_image_source(self, path: Path) -> bool:
+        path = self.normalized_path(path)
+        cached = self.animated_image_cache.get(path)
+        if cached is not None:
+            self.animated_image_cache.move_to_end(path)
+            return cached
+        animated = is_animated_image_path(path)
+        self.animated_image_cache[path] = animated
+        while len(self.animated_image_cache) > max(128, self.config_data.viewer_prefetch_count * 4 + 16):
+            self.animated_image_cache.popitem(last=False)
+        return animated
+
+    def is_animated_source_or_display(self, path: Path) -> bool:
+        source_path = self.normalized_path(path)
+        if self.is_animated_image_source(source_path):
+            return True
+        display_path = self.normalized_path(self.display_source_path(source_path))
+        return display_path != source_path and self.is_animated_image_source(display_path)
+
+    def stop_animation_playback(self) -> None:
+        self.animation_timer.stop()
+        self.active_animations.clear()
+
+    def current_animation_slots(self) -> list[tuple[int, Path]]:
+        if not self.image_paths or self.current_index < 0:
+            return []
+        slots = [(0, self.image_paths[self.current_index])]
+        secondary_index = self.secondary_page_index()
+        if secondary_index is not None:
+            slots.append((1, self.image_paths[secondary_index]))
+        return slots
+
+    def start_animation_playback(self) -> None:
+        self.stop_animation_playback()
+        now = time.monotonic()
+        for page_slot, path in self.current_animation_slots():
+            source_path = self.normalized_path(self.display_source_path(path))
+            if not self.is_animated_image_source(source_path):
+                continue
+            started = time.perf_counter()
+            frames = load_animation_frames(source_path)
+            self.record_profile("アニメーション画像読込", (time.perf_counter() - started) * 1000)
+            if len(frames) <= 1:
+                continue
+            first = frames[0].image
+            self.original_cache[source_path] = first
+            if not first.isNull():
+                self.remember_image_height(source_path, first.height())
+            self.viewer.set_source_frame(first, page_slot=page_slot)
+            self.active_animations[page_slot] = ActiveAnimation(
+                path=source_path,
+                frames=frames,
+                index=0,
+                next_due_at=now + frames[0].delay_ms / 1000.0,
+            )
+        self.schedule_next_animation_frame()
+
+    def schedule_next_animation_frame(self) -> None:
+        if not self.active_animations:
+            self.animation_timer.stop()
+            return
+        now = time.monotonic()
+        next_due_at = min(animation.next_due_at for animation in self.active_animations.values())
+        self.animation_timer.start(max(1, int((next_due_at - now) * 1000)))
+
+    def advance_animation_frames(self) -> None:
+        if not self.active_animations:
+            return
+        now = time.monotonic()
+        for page_slot, animation in list(self.active_animations.items()):
+            if animation.next_due_at - now > 0.005:
+                continue
+            animation.index = (animation.index + 1) % len(animation.frames)
+            frame = animation.frames[animation.index]
+            self.viewer.set_source_frame(frame.image, page_slot=page_slot)
+            animation.next_due_at = now + frame.delay_ms / 1000.0
+        self.schedule_next_animation_frame()
+
     def display_current_image(
         self,
         defer_work: bool = False,
@@ -8887,6 +9120,7 @@ class MainWindow(QMainWindow):
         self.update_page_position_slider()
         self.update_hdr_tonemap_controls()
         self.update_window_title(source=source, processed=processed, skipped=skipped)
+        self.start_animation_playback()
         self.update_thumbnail_selection(scroll=scroll_thumbnail)
         self.request_borderless_fullscreen_enforce()
         self.request_schedule_prefetch(0 if defer_work else PREFETCH_DEBOUNCE_MS)
@@ -8904,7 +9138,8 @@ class MainWindow(QMainWindow):
             after_parts: list[str] = []
             for _index, entry_path in display_entries:
                 entry_source = source if entry_path == path and source is not None else self.load_original(self.display_source_path(entry_path))
-                entry_processed = (
+                entry_skipped = self.should_skip_realcugan(entry_path)
+                entry_processed = None if entry_skipped else (
                     processed
                     if entry_path == path and processed is not None
                     else self.processed_image_from_cache(self.processing_key(entry_path))
@@ -8913,7 +9148,7 @@ class MainWindow(QMainWindow):
                 before_parts.append(f"{entry_source.width()}x{entry_source.height()}")
                 if entry_processed and not entry_processed.isNull():
                     after_parts.append(f"{entry_processed.width()}x{entry_processed.height()}")
-                elif self.should_skip_realcugan(entry_path):
+                elif entry_skipped:
                     after_parts.append("Skipped" if self.ui_language() == "en" else "拡大処理対象外")
                 else:
                     after_parts.append("Processing" if self.ui_language() == "en" else "処理中")
@@ -8926,7 +9161,7 @@ class MainWindow(QMainWindow):
             return
         if source is None:
             source = self.load_original(self.display_source_path(path))
-        if processed is None:
+        if processed is None and skipped is not True:
             processed = self.processed_image_from_cache(self.processing_key(path))
         is_skipped = skipped if skipped is not None else self.should_skip_realcugan(path)
         if processed and not processed.isNull():
@@ -8966,7 +9201,7 @@ class MainWindow(QMainWindow):
 
     def should_skip_realcugan(self, path: Path) -> bool:
         source_path = self.display_source_path(path)
-        if is_hdr_image_path(source_path):
+        if is_hdr_image_path(source_path) or self.is_animated_source_or_display(path):
             return True
         if not self.skip_tall_check.isChecked():
             return False
@@ -9008,6 +9243,8 @@ class MainWindow(QMainWindow):
     def image_state_for_display(self, path: Path, front: bool = False) -> tuple[QImage, QImage | None, str, bool]:
         source_path = self.display_source_path(path)
         source = self.load_original(source_path)
+        if self.is_animated_source_or_display(path):
+            return source, None, "対象外", True
         cache_key = self.processing_key(path)
         processed = self.processed_image_from_cache(cache_key)
         skipped = False
@@ -9381,7 +9618,7 @@ class MainWindow(QMainWindow):
             self,
             "画像を開く",
             start,
-            "Images/Archives (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.jxr *.wdp *.hdp *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
+            "Images/Archives (*.png *.apng *.jpg *.jpeg *.webp *.bmp *.gif *.jxr *.wdp *.hdp *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
         )
         if path:
             self.open_path(Path(path))
@@ -10629,6 +10866,9 @@ class MainWindow(QMainWindow):
                 original_paths.append(resolved)
         processed_candidates: list[tuple[tuple, Path]] = []
         for path in viewer_plan:
+            display_source = self.display_source_path(path)
+            if is_hdr_image_path(display_source) or self.is_animated_source_or_display(path):
+                continue
             key = self.processing_key(path)
             if key in self.processed_cache or key in self.prefetching_processed_keys:
                 continue
@@ -10850,7 +11090,7 @@ class MainWindow(QMainWindow):
 
     def should_skip_upscale_in_worker(self, task: UpscaleTask) -> bool:
         source_path = task.engine_input
-        if is_hdr_image_path(source_path):
+        if is_hdr_image_path(source_path) or is_animated_image_path(source_path) or is_animated_image_path(task.source):
             return True
         if not task.skip_tall_images:
             return False
