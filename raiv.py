@@ -104,7 +104,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.5"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -4686,6 +4686,9 @@ class MainWindow(QMainWindow):
         self.prefetching_original_paths: set[Path] = set()
         self.prefetching_processed_keys: set[tuple] = set()
         self.prefetch_viewer_plan: list[Path] = []
+        self.prefetch_viewer_display_paths: set[Path] = set()
+        self.prefetch_processed_plan_keys: set[tuple] = set()
+        self.prefetch_pixmap_plan_keys: set[object] = set()
         self.prefetch_engine_plan: list[Path] = []
         self.prefetch_engine_done_paths: set[Path] = set()
         self.pixmap_prefetch_log_accum = 0
@@ -8673,9 +8676,10 @@ class MainWindow(QMainWindow):
         if not self.show_log_panel:
             return
         engine_plan = engine_plan if engine_plan is not None else self.prefetch_engine_plan
-        original_done = len(self.original_cache)
-        original_pending = sum(1 for path in self.prefetching_original_paths if path not in self.original_cache)
-        original_total = original_done + original_pending
+        original_plan = self.current_prefetch_original_paths()
+        original_done = sum(1 for path in original_plan if path in self.original_cache)
+        original_pending = sum(1 for path in self.prefetching_original_paths if path in original_plan and path not in self.original_cache)
+        original_total = len(original_plan) if original_plan else original_done + original_pending
         self.set_progress_bar(self.original_prefetch_bar, original_done, original_total, "拡大前メモリ読込")
 
         colorize_total = len(self.colorize_plan)
@@ -8686,14 +8690,27 @@ class MainWindow(QMainWindow):
         engine_done = sum(1 for path in engine_plan if self.normalized_path(path) in self.prefetch_engine_done_paths)
         self.set_progress_bar(self.upscale_progress_bar, engine_done, engine_total, "拡大画像生成")
 
-        processed_done = len(self.processed_cache)
+        processed_done = sum(1 for key in self.prefetch_processed_plan_keys if key in self.processed_cache)
         processed_pending = sum(1 for key in self.prefetching_processed_keys if key not in self.processed_cache)
         processed_total = processed_done + processed_pending
         self.set_progress_bar(self.processed_prefetch_bar, processed_done, processed_total, "拡大後メモリ読込")
 
-        pixmap_done = len(self.viewer.pixmap_cache)
-        pixmap_total = pixmap_done + len(self.viewer.pixmap_prefetch_keys)
+        pixmap_keys = self.prefetch_pixmap_plan_keys | self.viewer.pixmap_prefetch_keys
+        pixmap_done = sum(1 for key in pixmap_keys if key in self.viewer.pixmap_prefetch_done_keys)
+        pixmap_pending = sum(1 for key in self.viewer.pixmap_prefetch_keys if key not in self.viewer.pixmap_prefetch_done_keys)
+        pixmap_total = pixmap_done + pixmap_pending
         self.set_progress_bar(self.pixmap_prefetch_bar, pixmap_done, pixmap_total, "表示用QPixmap")
+
+    def current_prefetch_original_paths(self) -> set[Path]:
+        paths = set(self.prefetch_viewer_display_paths)
+        if self.image_paths and 0 <= self.current_index < len(self.image_paths):
+            paths.add(self.normalized_path(self.display_source_path(self.image_paths[self.current_index])))
+            if self.dual_page_enabled:
+                secondary_index = self.current_index + 1
+                if secondary_index < len(self.image_paths):
+                    paths.add(self.normalized_path(self.display_source_path(self.image_paths[secondary_index])))
+        paths.update(path for path in self.prefetching_original_paths)
+        return paths
 
     def pixmap_progress_key(self, kind: str, path: Path) -> tuple:
         return (
@@ -8709,6 +8726,19 @@ class MainWindow(QMainWindow):
             self.viewer.display_flip_horizontal,
             self.viewer.display_flip_vertical,
         )
+
+    def seed_current_pixmap_progress_keys(self) -> None:
+        if not self.image_paths or self.current_index < 0:
+            return
+        indexes = [self.current_index]
+        if self.dual_page_enabled and self.current_index + 1 < len(self.image_paths):
+            indexes.append(self.current_index + 1)
+        for index in indexes:
+            if 0 <= index < len(self.image_paths):
+                path = self.image_paths[index]
+                self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", path))
+                if self.processing_key(path) in self.processed_cache:
+                    self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", path))
 
     def on_pixmap_prefetch_progress(self, warmed: int, remaining: int, cache_count: int, elapsed_ms: float) -> None:
         self.record_profile("QPixmap生成(UI)", elapsed_ms)
@@ -8820,6 +8850,9 @@ class MainWindow(QMainWindow):
         self.prefetching_original_paths.clear()
         self.prefetching_processed_keys.clear()
         self.prefetch_viewer_plan = []
+        self.prefetch_viewer_display_paths.clear()
+        self.prefetch_processed_plan_keys.clear()
+        self.prefetch_pixmap_plan_keys.clear()
         self.prefetch_engine_plan = []
         self.prefetch_engine_done_paths.clear()
         self.colorize_plan = []
@@ -8854,6 +8887,9 @@ class MainWindow(QMainWindow):
         self.prefetching_original_paths.clear()
         self.prefetching_processed_keys.clear()
         self.prefetch_viewer_plan = []
+        self.prefetch_viewer_display_paths.clear()
+        self.prefetch_processed_plan_keys.clear()
+        self.prefetch_pixmap_plan_keys.clear()
         self.prefetch_engine_plan = []
         self.prefetch_engine_done_paths.clear()
         self.colorize_plan = []
@@ -9102,13 +9138,17 @@ class MainWindow(QMainWindow):
             dual_page_reversed=self.dual_page_reversed(),
         )
         self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", path))
+        self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", path))
         if processed is not None and not processed.isNull():
             self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+            self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", path))
         if secondary_index is not None:
             secondary_path = self.image_paths[secondary_index]
             self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", secondary_path))
+            self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", secondary_path))
             if secondary_processed is not None and not secondary_processed.isNull():
                 self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", secondary_path))
+                self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", secondary_path))
         display_entries = self.current_display_index_entries()
         if len(display_entries) > 1:
             page_text = f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)}"
@@ -10821,19 +10861,35 @@ class MainWindow(QMainWindow):
         self.prefetch_generation += 1
         self.prefetching_original_paths.clear()
         self.prefetching_processed_keys.clear()
+        self.prefetch_processed_plan_keys.clear()
+        self.prefetch_pixmap_plan_keys.clear()
+        self.seed_current_pixmap_progress_keys()
         self.clear_prefetch_io_queue()
         self.clear_colorize_queue()
         realcugan_plan = self.make_plan(self.realcugan_prefetch_spin.value())
+        upscale_plan: list[Path] = []
+        upscale_prefetch_plan: list[Path] = []
+        for position, path in enumerate(realcugan_plan):
+            if self.should_skip_realcugan(path):
+                continue
+            upscale_plan.append(path)
+            if position > 0:
+                upscale_prefetch_plan.append(path)
         viewer_plan = self.make_prefetch_plan(self.viewer_prefetch_spin.value())
         self.prefetch_viewer_plan = viewer_plan
-        self.prefetch_engine_plan = realcugan_plan[1:]
+        self.prefetch_engine_plan = upscale_prefetch_plan
         self.prefetch_engine_done_paths = {
             self.normalized_path(path)
             for path in self.prefetch_engine_plan
             if self.processing_key(path) in self.processed_cache
         }
         if self.colorize_prefetch_check.isChecked():
-            self.colorize_plan = self.make_plan(self.colorize_prefetch_spin.value())
+            colorize_ready, _message = self.colorize_ready()
+            self.colorize_plan = [
+                path
+                for path in self.make_plan(self.colorize_prefetch_spin.value())
+                if colorize_ready and not self.is_animated_source_or_display(path)
+            ]
             self.colorize_done_paths = {
                 self.normalized_path(path)
                 for path in self.colorize_plan
@@ -10847,11 +10903,15 @@ class MainWindow(QMainWindow):
             self.colorize_done_paths.clear()
         self.start_viewer_prefetch(viewer_plan)
         self.update_prefetch_progress_bars()
-        for position, path in enumerate(realcugan_plan):
+        for position, path in enumerate(upscale_plan):
             self.enqueue_realcugan(path, front=position == 0, check_existing=False, check_skip=False)
-        self.reorder_work_queue(realcugan_plan)
+        self.reorder_work_queue(upscale_plan)
 
     def start_viewer_prefetch(self, viewer_plan: list[Path]) -> None:
+        self.prefetch_viewer_display_paths = {
+            self.normalized_path(self.display_source_path(path))
+            for path in viewer_plan
+        }
         if not viewer_plan:
             self.update_prefetch_progress_bars(viewer_plan)
             return
@@ -10861,21 +10921,23 @@ class MainWindow(QMainWindow):
         before_pixmaps = len(self.viewer.pixmap_cache)
         original_paths: list[Path] = []
         for path in viewer_plan:
-            resolved = self.normalized_path(path)
+            resolved = self.normalized_path(self.display_source_path(path))
             if resolved not in self.original_cache and resolved not in self.prefetching_original_paths:
                 original_paths.append(resolved)
         processed_candidates: list[tuple[tuple, Path]] = []
-        for path in viewer_plan:
-            display_source = self.display_source_path(path)
-            if is_hdr_image_path(display_source) or self.is_animated_source_or_display(path):
-                continue
-            key = self.processing_key(path)
-            if key in self.processed_cache or key in self.prefetching_processed_keys:
-                continue
-            if self.archive_mode_active() or not self.use_scale_cache_check.isChecked():
-                continue
-            processed_candidates.append((key, self.cache_output_path(path, create_dir=False)))
+        if not self.archive_mode_active() and self.use_scale_cache_check.isChecked():
+            for path in viewer_plan:
+                if self.should_skip_realcugan(path):
+                    continue
+                task = self.create_upscale_task(path)
+                key = task.key
+                if key in self.processed_cache or key in self.prefetching_processed_keys:
+                    continue
+                if task.cache_path is None:
+                    continue
+                processed_candidates.append((key, task.cache_path))
         if not original_paths and not processed_candidates:
+            self.prefetch_processed_plan_keys = set()
             self.update_prefetch_progress_bars(viewer_plan)
             self.append_log_if_visible(
                 f"Viewer prefetch: ready originals={before_originals}, processed={before_processed}, pixmaps={before_pixmaps}"
@@ -10883,6 +10945,7 @@ class MainWindow(QMainWindow):
             return
         self.prefetching_original_paths.update(original_paths)
         self.prefetching_processed_keys.update(key for key, _path in processed_candidates)
+        self.prefetch_processed_plan_keys = {key for key, _path in processed_candidates}
         self.update_prefetch_progress_bars(viewer_plan)
         self.append_log_if_visible(
             "Viewer prefetch start: "
@@ -10890,7 +10953,10 @@ class MainWindow(QMainWindow):
             f"cache originals={before_originals}, processed={before_processed}, pixmaps={before_pixmaps}"
         )
 
-        priority_rank = {self.normalized_path(path): index for index, path in enumerate(viewer_plan)}
+        priority_rank: dict[Path, int] = {}
+        for index, path in enumerate(viewer_plan):
+            priority_rank[self.normalized_path(path)] = index
+            priority_rank[self.normalized_path(self.display_source_path(path))] = index
         for path in original_paths:
             self.queue_prefetch_io_task(
                 generation,
@@ -10919,18 +10985,19 @@ class MainWindow(QMainWindow):
         attempted_originals: list[Path],
         attempted_processed: list[tuple],
     ) -> None:
+        if generation != self.prefetch_generation:
+            return
         for path in attempted_originals:
             self.prefetching_original_paths.discard(path)
         for key in attempted_processed:
             self.prefetching_processed_keys.discard(key)
-        if generation != self.prefetch_generation:
-            return
         started = time.perf_counter()
         current_paths = self.image_path_set
+        current_display_paths = self.prefetch_viewer_display_paths
         current_path_strings = self.image_path_string_set
         added_originals = 0
         for path, image in originals.items():
-            if path in current_paths and path not in self.original_cache:
+            if (path in current_paths or path in current_display_paths) and path not in self.original_cache:
                 self.original_cache[path] = image
                 if not image.isNull():
                     self.remember_image_height(path, image.height())
@@ -10949,7 +11016,7 @@ class MainWindow(QMainWindow):
         warm_items: list[tuple[object, QImage]] = [
             (self.pixmap_progress_key("original", path), image)
             for path, image in originals.items()
-            if path in current_paths and not image.isNull()
+            if (path in current_paths or path in current_display_paths) and not image.isNull()
         ]
         warm_items.extend(
             (self.pixmap_progress_key("processed", Path(key[0])), image)
@@ -10957,6 +11024,7 @@ class MainWindow(QMainWindow):
             if self.is_current_processing_key(key, current_path_strings) and not image.isNull()
         )
         if warm_items:
+            self.prefetch_pixmap_plan_keys.update(key for key, _image in warm_items)
             self.viewer.queue_pixmap_prefetch(warm_items)
         self.update_prefetch_progress_bars()
         if not self.prefetching_original_paths and not self.prefetching_processed_keys:
@@ -10975,12 +11043,22 @@ class MainWindow(QMainWindow):
 
     def make_plan(self, count: int) -> list[Path]:
         plan = [self.image_paths[self.current_index]]
+        remaining = max(0, int(count))
         directions = (1, -1) if self.last_navigation_step >= 0 else (-1, 1)
-        for offset in range(1, count + 1):
+        for offset in range(1, len(self.image_paths) + 1):
+            if remaining <= 0:
+                break
+            added = False
             for direction in directions:
                 index = self.current_index + offset * direction
                 if 0 <= index < len(self.image_paths):
                     plan.append(self.image_paths[index])
+                    remaining -= 1
+                    added = True
+                    if remaining <= 0:
+                        break
+            if not added and self.current_index - offset < 0 and self.current_index + offset >= len(self.image_paths):
+                break
         return plan
 
     def make_prefetch_plan(self, count: int) -> list[Path]:

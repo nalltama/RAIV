@@ -111,7 +111,7 @@ Real-ESRGAN モデル:
 
 - エンジンに応じたモデル、倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
 - Gigapixel AIのDenoise、Sharpen、Fix Compression、Face Recovery
-- エンジン先読み枚数
+- エンジン先読み枚数（現在ページの周辺で先読みする最大枚数）
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
 - 拡大結果を倍率フォルダへ保存
@@ -119,7 +119,7 @@ Real-ESRGAN モデル:
 
 全般:
 
-- ビューアー先読み枚数
+- ビューアー先読み枚数（現在ページの周辺で表示用に先読みする最大枚数）
 - 背景色
 - 見開き表示による漫画の左右2枚表示
 - 横長画像を既に見開きのページとして扱う1枚表示
@@ -156,7 +156,7 @@ AI彩色:
 - 彩色結果を `RAIV_colorized` フォルダへ保存するか、一時ファイルとして表示
 - `RAIV_colorized` に彩色済み画像があれば表示に使用
 - 彩色結果を表示に使うかどうかのオン/オフ
-- AI彩色の先行処理オン/オフと先読み枚数設定
+- AI彩色の先行処理オン/オフと先読み枚数設定（現在ページの周辺で処理する最大枚数）
 - 彩色強度、線画保持、彩度補正、輝度保持、Positive/Negative promptの調整
 - 手動彩色時は既存の彩色結果を上書きし、先行処理時は彩色済みページをスキップ
 
@@ -405,7 +405,7 @@ Engine settings:
 
 - Engine-specific model, scale, denoise, and tile options (0 is automatic; smaller tile values can be set for low-memory GPUs)
 - Gigapixel AI Denoise, Sharpen, Fix Compression, and Face Recovery
-- Engine prefetch count
+- Engine prefetch count (maximum number of nearby pages to prefetch)
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold
 - Save processed images to a scale folder
@@ -413,7 +413,7 @@ Engine settings:
 
 General:
 
-- Viewer prefetch count
+- Viewer prefetch count (maximum number of nearby pages to preload for display)
 - Background color
 - Spread view for manga pages
 - Show landscape images as a single page when they are already spread pages
@@ -450,7 +450,7 @@ AI Colorize:
 - Save colorized results to the `RAIV_colorized` folder or display them as temporary files
 - Use existing colorized images in `RAIV_colorized` for display
 - Toggle whether colorized results are used for display
-- Toggle AI colorization prefetch and set its prefetch count
+- Toggle AI colorization prefetch and set its prefetch count (maximum number of nearby pages to process)
 - Adjust color strength, line preservation, saturation correction, luminance preservation, and positive/negative prompts
 - Manual colorization overwrites existing results; prefetch skips already colorized pages
 
