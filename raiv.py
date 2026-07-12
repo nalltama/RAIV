@@ -104,7 +104,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.5"
+APP_VERSION = "1.2.6"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -285,23 +285,36 @@ GIGAPIXEL_EXE_CANDIDATES = [
 ]
 DEFAULT_GIGAPIXEL_EXE = next((path for path in GIGAPIXEL_EXE_CANDIDATES if path.exists()), GIGAPIXEL_EXE_CANDIDATES[0])
 LEGACY_REALCUGAN_TEMPLATE = 'realcugan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -n {denoise} -t {tile}'
-DEFAULT_REALCUGAN_TEMPLATE = (
+LEGACY_BUNDLED_REALCUGAN_TEMPLATE = (
     f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}'
+)
+DEFAULT_REALCUGAN_TEMPLATE = (
+    f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -f {{output_format}}'
     if BUNDLED_REALCUGAN_EXE.exists()
-    else LEGACY_REALCUGAN_TEMPLATE
+    else f'{LEGACY_REALCUGAN_TEMPLATE} -f {{output_format}}'
 )
 LEGACY_REALESRGAN_TEMPLATE = 'realesrgan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -t {tile} -n {model}'
-DEFAULT_REALESRGAN_TEMPLATE = (
+LEGACY_BUNDLED_REALESRGAN_TEMPLATE = (
     f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}}'
-    if BUNDLED_REALESRGAN_EXE.exists()
-    else LEGACY_REALESRGAN_TEMPLATE
 )
-DEFAULT_GIGAPIXEL_TEMPLATE = (
+DEFAULT_REALESRGAN_TEMPLATE = (
+    f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} -f {{output_format}}'
+    if BUNDLED_REALESRGAN_EXE.exists()
+    else f'{LEGACY_REALESRGAN_TEMPLATE} -f {{output_format}}'
+)
+LEGACY_DEFAULT_GIGAPIXEL_TEMPLATE = (
     f'"{DEFAULT_GIGAPIXEL_EXE}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
     '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
     if DEFAULT_GIGAPIXEL_EXE.exists()
     else 'gigapixel.exe -i "{input}" -o "{output_dir}" --scale {scale} --model "{model}" '
     '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
+)
+DEFAULT_GIGAPIXEL_TEMPLATE = (
+    f'"{DEFAULT_GIGAPIXEL_EXE}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
+    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format {output_format}'
+    if DEFAULT_GIGAPIXEL_EXE.exists()
+    else 'gigapixel.exe -i "{input}" -o "{output_dir}" --scale {scale} --model "{model}" '
+    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format {output_format}'
 )
 LEGACY_GIGAPIXEL_TEMPLATE = (
     'gigapixel.exe -i "{input}" -o "{output}" --scale {scale} --model "{model}" '
@@ -310,6 +323,12 @@ LEGACY_GIGAPIXEL_TEMPLATE = (
 ENGINE_REALCUGAN = "realcugan"
 ENGINE_REALESRGAN = "realesrgan"
 ENGINE_GIGAPIXEL = "gigapixel"
+OUTPUT_FORMAT_PNG = "png"
+OUTPUT_FORMAT_PRESERVE = "preserve"
+OUTPUT_FORMAT_OPTIONS = [
+    ("PNG", OUTPUT_FORMAT_PNG),
+    ("元画像の形式を引き継ぐ", OUTPUT_FORMAT_PRESERVE),
+]
 ENGINE_LABELS = {
     ENGINE_REALCUGAN: "Real-CUGAN",
     ENGINE_REALESRGAN: "Real-ESRGAN",
@@ -1161,11 +1180,14 @@ UI_TEXT_EN = {
     "拡大結果を倍率フォルダに保存": "Save processed results to scale folder",
     "倍率フォルダがあれば表示に使う": "Use scale folder when available",
     "現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。": "Only the scale folder that exactly matches the current engine, model, and scale is used for display. Results from another engine or scale are not used as fallback.",
+    "出力形式": "Output format",
+    "元画像の形式を引き継ぐ": "Preserve source format",
+    "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、Gigapixel AIはCLIのpreserve指定を使います。独自のコマンドテンプレートでは {output_format} を含めてください。": "Output format: PNG always saves PNG. Preserve source format uses JPG/PNG/WebP for Real-CUGAN/Real-ESRGAN and Gigapixel AI's CLI preserve option. Include {output_format} in custom command templates.",
     "アーカイブ表示中は保存先フォルダがないため、倍率フォルダ保存と倍率フォルダ読み込みは無効です。": "Scale-folder saving/loading is disabled while viewing archives because there is no output folder.",
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
     "エンジンexeを選択": "Select engine exe",
-    "使用できる置換: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}": "Available placeholders: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}",
+    "使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}": "Available placeholders: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "アプリの二重起動を禁止する": "Prevent multiple app instances",
     "AI彩色を表示しない": "Hide AI Colorize tab",
@@ -1322,6 +1344,10 @@ UI_TEXT_EN = {
     "生成枚数": "Number of Images",
     "ランダムシード": "Random Seed",
     "シード値": "Seed",
+    "現在表示している画像のシード値を読み込む": "Load the seed from the currently displayed image",
+    "現在表示している画像がありません。": "No image is currently displayed.",
+    "現在画像のシード値を読み込みました": "Loaded seed from current image",
+    "現在画像からシード値を読み込めませんでした。": "Could not load a seed from the current image.",
     "Enterで生成する（改行はShift+Enter）": "Generate with Enter (Shift+Enter inserts a line break)",
     "フォルダ削除時、中身ごと消す": "Delete folder contents with folder",
     "品質タグを追加する": "Add quality tags",
@@ -1443,6 +1469,9 @@ class AppConfig:
     realcugan_command_template: str = DEFAULT_REALCUGAN_TEMPLATE
     realesrgan_command_template: str = DEFAULT_REALESRGAN_TEMPLATE
     gigapixel_command_template: str = DEFAULT_GIGAPIXEL_TEMPLATE
+    realcugan_output_format: str = OUTPUT_FORMAT_PNG
+    realesrgan_output_format: str = OUTPUT_FORMAT_PNG
+    gigapixel_output_format: str = OUTPUT_FORMAT_PNG
     scale: int = 2
     realesrgan_scale: int = 4
     gigapixel_scale: int = 2
@@ -1582,6 +1611,7 @@ class UpscaleTask:
     engine: str
     engine_label: str
     command_template: str
+    output_format: str
     scale: int
     denoise: int
     tile: int
@@ -1816,13 +1846,13 @@ def load_config() -> AppConfig:
         ):
             config.novelai_prompt_editor_height = legacy_prompt_splitter_sizes[0]
             config.novelai_negative_prompt_editor_height = legacy_prompt_splitter_sizes[1]
-        if config.command_template == LEGACY_REALCUGAN_TEMPLATE and BUNDLED_REALCUGAN_EXE.exists():
+        if config.command_template in {LEGACY_REALCUGAN_TEMPLATE, LEGACY_BUNDLED_REALCUGAN_TEMPLATE} and BUNDLED_REALCUGAN_EXE.exists():
             config.command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
+        if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, LEGACY_BUNDLED_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
+        if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, LEGACY_BUNDLED_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
-        if not config.gigapixel_command_template or config.gigapixel_command_template == LEGACY_GIGAPIXEL_TEMPLATE:
+        if not config.gigapixel_command_template or config.gigapixel_command_template in {LEGACY_GIGAPIXEL_TEMPLATE, LEGACY_DEFAULT_GIGAPIXEL_TEMPLATE}:
             config.gigapixel_command_template = DEFAULT_GIGAPIXEL_TEMPLATE
         if "realcugan_command_template" not in data:
             config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
@@ -1833,6 +1863,9 @@ def load_config() -> AppConfig:
         gigapixel_model_ids = {model for _label, model in GIGAPIXEL_MODELS}
         if config.gigapixel_model not in gigapixel_model_ids:
             config.gigapixel_model = GIGAPIXEL_MODELS[0][1]
+        for field_name in ("realcugan_output_format", "realesrgan_output_format", "gigapixel_output_format"):
+            if getattr(config, field_name) not in {OUTPUT_FORMAT_PNG, OUTPUT_FORMAT_PRESERVE}:
+                setattr(config, field_name, OUTPUT_FORMAT_PNG)
         config.scale = min(REALCUGAN_SCALES, key=lambda value: abs(value - int(config.scale)))
         realesrgan_scales = REALESRGAN_MODEL_SCALES[config.realesrgan_model]
         config.realesrgan_scale = min(realesrgan_scales, key=lambda value: abs(value - int(config.realesrgan_scale)))
@@ -4931,6 +4964,9 @@ class MainWindow(QMainWindow):
         self.engine_combo.currentTextChanged.connect(self.on_engine_changed)
         form.addRow("エンジン", self.engine_combo)
         self.engine_form = form
+        self.output_format_combo = QComboBox()
+        self.output_format_combo.currentIndexChanged.connect(self.on_output_format_changed)
+        form.addRow("出力形式", self.output_format_combo)
         self.realesrgan_model_combo = QComboBox()
         self.realesrgan_model_combo.currentIndexChanged.connect(self.on_engine_model_changed)
         form.addRow("モデル", self.realesrgan_model_combo)
@@ -4991,6 +5027,12 @@ class MainWindow(QMainWindow):
         self.gigapixel_help = self.help_label("Gigapixel AI CLIはProライセンスが必要です。各補正は0で無効、1～100で強度を指定します。")
         realcugan_layout.addWidget(self.gigapixel_help)
 
+        self.output_format_help = self.help_label(
+            "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、"
+            "Gigapixel AIはCLIのpreserve指定を使います。独自のコマンドテンプレートでは {output_format} を含めてください。"
+        )
+        realcugan_layout.addWidget(self.output_format_help)
+
         self.tile_help = self.help_label("tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。")
         realcugan_layout.addWidget(self.tile_help)
         realcugan_layout.addWidget(self.separator())
@@ -5043,7 +5085,7 @@ class MainWindow(QMainWindow):
         exe_button = QPushButton("エンジンexeを選択")
         exe_button.clicked.connect(self.choose_engine_exe)
         realcugan_layout.addWidget(exe_button)
-        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {output_dir} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}"))
+        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}"))
         realcugan_layout.addStretch(1)
         realcugan_tab.setWidget(realcugan_content)
 
@@ -5783,8 +5825,12 @@ class MainWindow(QMainWindow):
         self.novelai_seed_spin.textChanged.connect(self.on_novelai_settings_changed)
         self.novelai_seed_spin.editingFinished.connect(self.normalize_novelai_seed_input)
         self.novelai_seed_spin.setEnabled(not self.config_data.novelai_random_seed)
+        self.novelai_load_seed_button = QPushButton("読込")
+        self.novelai_load_seed_button.setToolTip("現在表示している画像のシード値を読み込む")
+        self.novelai_load_seed_button.clicked.connect(self.load_novelai_seed_from_current_image)
         seed_row.addWidget(self.novelai_random_seed_check)
         seed_row.addWidget(self.novelai_seed_spin)
+        seed_row.addWidget(self.novelai_load_seed_button)
         seed_row.addStretch(1)
         basic_form.addRow("シード値", seed_row)
         layout.addLayout(basic_form)
@@ -6202,6 +6248,64 @@ class MainWindow(QMainWindow):
     def normalize_novelai_seed_input(self) -> None:
         self.set_novelai_seed_value(self.novelai_seed_value())
 
+    def current_novelai_seed_candidate_paths(self) -> list[Path]:
+        if not self.image_paths or self.current_index < 0 or self.current_index >= len(self.image_paths):
+            return []
+        source_path = self.normalized_path(self.image_paths[self.current_index])
+        paths = [self.normalized_path(self.display_source_path(source_path)), source_path]
+        unique_paths: list[Path] = []
+        seen: set[str] = set()
+        for path in paths:
+            key = str(path)
+            if key not in seen:
+                unique_paths.append(path)
+                seen.add(key)
+        return unique_paths
+
+    def novelai_seed_from_metadata(self, metadata: dict[str, object]) -> int:
+        seed_value = metadata.get("seed")
+        if seed_value is None:
+            request = metadata.get("request")
+            if isinstance(request, dict):
+                seed_value = request.get("seed")
+        if seed_value is None:
+            raise ValueError("seedが見つかりません。")
+        try:
+            return max(0, min(MAX_NOVELAI_SEED, int(seed_value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("seedの形式が不正です。") from exc
+
+    def read_novelai_seed_for_image(self, path: Path) -> int:
+        return self.novelai_seed_from_metadata(self.read_novelai_metadata(path))
+
+    def load_novelai_seed_from_current_image(self) -> None:
+        candidate_paths = self.current_novelai_seed_candidate_paths()
+        if not candidate_paths:
+            if hasattr(self, "novelai_status_label"):
+                self.novelai_status_label.setText(self.tr_ui("現在表示している画像がありません。"))
+            return
+        last_error = ""
+        for path in candidate_paths:
+            if not path.is_file():
+                continue
+            try:
+                seed = self.read_novelai_seed_for_image(path)
+            except Exception as exc:
+                last_error = str(exc)
+                continue
+            self.novelai_random_seed_check.setChecked(False)
+            self.novelai_seed_spin.setEnabled(True)
+            self.set_novelai_seed_value(seed)
+            if hasattr(self, "novelai_status_label"):
+                self.novelai_status_label.setText(f"{self.tr_ui('現在画像のシード値を読み込みました')}: {seed}")
+            self.persist_config()
+            return
+        message = self.tr_ui("現在画像からシード値を読み込めませんでした。")
+        if last_error:
+            message = f"{message}: {last_error}"
+        if hasattr(self, "novelai_status_label"):
+            self.novelai_status_label.setText(message)
+
     def on_novelai_detail_toggled(self, checked: bool) -> None:
         if hasattr(self, "novelai_detail_widget"):
             self.novelai_detail_widget.setVisible(bool(checked))
@@ -6504,13 +6608,47 @@ class MainWindow(QMainWindow):
             raise RuntimeError("Pillow is not available")
         with PILImage.open(path) as image:
             info = dict(image.info)
-        comment = info.get("Comment") or info.get("comment") or info.get("parameters")
-        if not isinstance(comment, str) or not comment.strip():
+            sdk_metadata = self.read_novelai_metadata_with_sdk(image)
+            if sdk_metadata is not None:
+                return sdk_metadata
+        metadata = self.novelai_metadata_from_info(info)
+        if metadata is None:
             raise ValueError("Comment JSONが見つかりません。")
-        data = json.loads(comment)
+        return metadata
+
+    def read_novelai_metadata_with_sdk(self, image: object) -> dict[str, object] | None:
+        try:
+            from novelai.utils.metadata import extract_metadata
+        except ImportError:
+            return None
+        try:
+            metadata = extract_metadata(image)
+        except Exception:
+            return None
+        for source in (metadata.alpha_info, metadata.png_info):
+            if not isinstance(source, dict):
+                continue
+            try:
+                data = self.novelai_metadata_from_info(source)
+            except Exception:
+                continue
+            if data is not None:
+                return data
+        return None
+
+    def novelai_metadata_from_info(self, info: dict[str, object]) -> dict[str, object] | None:
+        comment = info.get("Comment") or info.get("comment") or info.get("parameters")
+        if isinstance(comment, str):
+            if not comment.strip():
+                return None
+            data = json.loads(comment)
+        elif isinstance(comment, dict):
+            data = dict(comment)
+        else:
+            return None
         if not isinstance(data, dict):
             raise ValueError("Comment JSONの形式が不正です。")
-        data["_source_text"] = str(info.get("Source") or "")
+        data["_source_text"] = str(info.get("Source") or data.get("_source_text") or "")
         return data
 
     def novelai_model_from_metadata(self, metadata: dict[str, object]) -> str:
@@ -6645,6 +6783,14 @@ class MainWindow(QMainWindow):
             self.set_combo_by_data(self.theme_combo, current)
             self.theme_combo.blockSignals(False)
             self.theme_label.setText(self.tr_ui("テーマ"))
+        if hasattr(self, "output_format_combo"):
+            current = self.current_output_format()
+            self.output_format_combo.blockSignals(True)
+            self.output_format_combo.clear()
+            for label, value in OUTPUT_FORMAT_OPTIONS:
+                self.output_format_combo.addItem(self.tr_ui(label), value)
+            self.set_combo_by_data(self.output_format_combo, current)
+            self.output_format_combo.blockSignals(False)
         if hasattr(self, "version_label"):
             self.update_version_label()
             self.render_update_check_result()
@@ -6686,6 +6832,8 @@ class MainWindow(QMainWindow):
                     "末尾がフォルダ区切りの場合、ファイル名に {seed} を補います。\n例: {date}/{time}_{seed}"
                 )
             )
+        if hasattr(self, "novelai_load_seed_button"):
+            self.novelai_load_seed_button.setToolTip(self.tr_ui("現在表示している画像のシード値を読み込む"))
         self.update_novelai_batch_buttons()
         for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
             editor = getattr(self, editor_name, None)
@@ -8359,6 +8507,29 @@ class MainWindow(QMainWindow):
             return self.config_data.gigapixel_model
         return ""
 
+    def configured_output_format_for_engine(self, engine: str) -> str:
+        if engine == ENGINE_REALESRGAN:
+            return self.config_data.realesrgan_output_format
+        if engine == ENGINE_GIGAPIXEL:
+            return self.config_data.gigapixel_output_format
+        return self.config_data.realcugan_output_format
+
+    def current_output_format(self) -> str:
+        combo = getattr(self, "output_format_combo", None)
+        value = combo.currentData() if combo is not None else self.configured_output_format_for_engine(self.current_engine())
+        return value if value in {OUTPUT_FORMAT_PNG, OUTPUT_FORMAT_PRESERVE} else OUTPUT_FORMAT_PNG
+
+    def populate_output_format_combo(self, engine: str) -> None:
+        selected = self.configured_output_format_for_engine(engine)
+        if selected not in {OUTPUT_FORMAT_PNG, OUTPUT_FORMAT_PRESERVE}:
+            selected = OUTPUT_FORMAT_PNG
+        self.output_format_combo.blockSignals(True)
+        self.output_format_combo.clear()
+        for label, value in OUTPUT_FORMAT_OPTIONS:
+            self.output_format_combo.addItem(self.tr_ui(label), value)
+        self.set_combo_by_data(self.output_format_combo, selected)
+        self.output_format_combo.blockSignals(False)
+
     def current_engine_model(self) -> str:
         data = self.realesrgan_model_combo.currentData() if hasattr(self, "realesrgan_model_combo") else None
         return str(data or "")
@@ -8498,6 +8669,7 @@ class MainWindow(QMainWindow):
             sharpen,
             compression,
             face_recovery,
+            self.current_output_format(),
         )
 
     def create_upscale_task(self, source: Path, force: bool = False) -> UpscaleTask:
@@ -8509,6 +8681,7 @@ class MainWindow(QMainWindow):
         tile = self.current_engine_tile_size()
         model = self.current_engine_model()
         sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+        output_format = self.current_output_format()
         key = (
             self.normalized_path_text(source),
             engine,
@@ -8519,6 +8692,7 @@ class MainWindow(QMainWindow):
             sharpen,
             compression,
             face_recovery,
+            output_format,
         )
         if engine == ENGINE_REALESRGAN:
             raw_cache_name = f"realesrgan_{model}"
@@ -8529,7 +8703,7 @@ class MainWindow(QMainWindow):
         cache_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_cache_name)
         archive_mode = self.archive_mode_active()
         cache_folder = engine_input.parent / f"{cache_name}_x{scale}"
-        output_name = engine_input.with_suffix(".png").name if engine == ENGINE_GIGAPIXEL else engine_input.name
+        output_name = self.output_name_for_source(engine_input, output_format)
         cache_path = None if archive_mode else cache_folder / output_name
         return UpscaleTask(
             source=source,
@@ -8538,6 +8712,7 @@ class MainWindow(QMainWindow):
             engine=engine,
             engine_label=ENGINE_LABELS.get(engine, ENGINE_LABELS[ENGINE_REALCUGAN]),
             command_template=self.active_command_template(),
+            output_format=output_format,
             scale=scale,
             denoise=denoise,
             tile=tile,
@@ -8569,11 +8744,13 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "scale_combo") or not self.scale_combo.currentText():
             return
         scale = int(self.scale_combo.currentText())
+        output_format = self.current_output_format()
         if engine == ENGINE_REALESRGAN:
             model = self.current_engine_model()
             if model in REALESRGAN_MODELS:
                 self.config_data.realesrgan_model = model
             self.config_data.realesrgan_scale = scale
+            self.config_data.realesrgan_output_format = output_format
         elif engine == ENGINE_GIGAPIXEL:
             model = self.current_engine_model()
             if model in {value for _label, value in GIGAPIXEL_MODELS}:
@@ -8583,14 +8760,17 @@ class MainWindow(QMainWindow):
             self.config_data.gigapixel_sharpen = self.gigapixel_sharpen_spin.value()
             self.config_data.gigapixel_compression = self.gigapixel_compression_spin.value()
             self.config_data.gigapixel_face_recovery = self.gigapixel_face_recovery_spin.value()
+            self.config_data.gigapixel_output_format = output_format
         else:
             self.config_data.scale = scale
             self.config_data.denoise = int(self.denoise_combo.currentText())
+            self.config_data.realcugan_output_format = output_format
 
     def apply_engine_ui(self) -> None:
         if not hasattr(self, "engine_combo"):
             return
         engine = self.current_engine()
+        self.populate_output_format_combo(engine)
         self.populate_engine_model_combo(engine)
         self.populate_scale_combo(engine)
         scales = self.available_scales(engine)
@@ -10715,6 +10895,10 @@ class MainWindow(QMainWindow):
         self.populate_scale_combo(engine)
         self.on_processing_settings_changed()
 
+    def on_output_format_changed(self, *_args) -> None:
+        self.save_engine_controls(self.current_engine())
+        self.on_processing_settings_changed()
+
     def on_cleanup_changed(self) -> None:
         self.persist_config()
         if self.cleanup_check.isChecked():
@@ -10773,14 +10957,14 @@ class MainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(self, title, self.config_data.last_dir or str(APP_DIR), "Executable (*.exe);;All files (*.*)")
         if path:
             if engine == ENGINE_REALESRGAN:
-                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}}')
+                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} -f {{output_format}}')
             elif engine == ENGINE_GIGAPIXEL:
                 self.command_edit.setText(
                     f'"{path}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
-                    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format png'
+                    '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format {output_format}'
                 )
             else:
-                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}')
+                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -f {{output_format}}')
             self.persist_config()
 
     def force_reprocess(self) -> None:
@@ -11036,7 +11220,7 @@ class MainWindow(QMainWindow):
         self.record_profile("先読み反映(UI)", (time.perf_counter() - started) * 1000)
 
     def is_current_processing_key(self, key: tuple, current_paths: set[str] | None = None) -> bool:
-        if len(key) != 9:
+        if len(key) != 10:
             return False
         current_paths = current_paths or self.image_path_string_set
         return key[0] in current_paths and key == self.processing_settings_tuple(Path(key[0]))
@@ -11185,7 +11369,11 @@ class MainWindow(QMainWindow):
             output_path = task.cache_path
             temporary_output = False
         else:
-            fd, text_path = tempfile.mkstemp(prefix=TEMP_OUTPUT_PREFIX, suffix=".png", dir=self.process_temp_dir)
+            fd, text_path = tempfile.mkstemp(
+                prefix=TEMP_OUTPUT_PREFIX,
+                suffix=self.output_suffix_for_source(task.engine_input, task.output_format),
+                dir=self.process_temp_dir,
+            )
             os.close(fd)
             output_path = Path(text_path)
             output_path.unlink(missing_ok=True)
@@ -11194,6 +11382,7 @@ class MainWindow(QMainWindow):
             "input": str(task.engine_input),
             "output": str(output_path),
             "output_dir": str(output_path.parent),
+            "output_format": self.command_output_format(task),
             "scale": task.scale,
             "denoise": task.denoise,
             "tile": task.tile,
@@ -11244,6 +11433,14 @@ class MainWindow(QMainWindow):
         finally:
             if temporary_output:
                 output_path.unlink(missing_ok=True)
+
+    def command_output_format(self, task: UpscaleTask) -> str:
+        if task.output_format != OUTPUT_FORMAT_PRESERVE:
+            return OUTPUT_FORMAT_PNG
+        if task.engine == ENGINE_GIGAPIXEL:
+            return OUTPUT_FORMAT_PRESERVE
+        suffix = task.engine_input.suffix.lower().lstrip(".")
+        return "jpg" if suffix == "jpeg" else suffix
 
     def find_gigapixel_output(self, source: Path, output_dir: Path, started: float) -> Path | None:
         source_stem = source.stem.casefold()
@@ -11346,8 +11543,19 @@ class MainWindow(QMainWindow):
         folder = source.parent / folder_name
         if create_dir:
             folder.mkdir(parents=True, exist_ok=True)
-        output_name = source.with_suffix(".png").name if self.current_engine() == ENGINE_GIGAPIXEL else source.name
-        return folder / output_name
+        return folder / self.output_name_for_source(source)
+
+    def output_name_for_source(self, source: Path, output_format: str | None = None) -> str:
+        output_format = output_format or self.current_output_format()
+        if output_format == OUTPUT_FORMAT_PRESERVE or source.suffix.lower() == ".png":
+            return source.name
+        return f"{source.name}.png"
+
+    def output_suffix_for_source(self, source: Path, output_format: str | None = None) -> str:
+        output_format = output_format or self.current_output_format()
+        if output_format == OUTPUT_FORMAT_PRESERVE and source.suffix:
+            return source.suffix
+        return ".png"
 
     def processing_key(self, source: Path) -> tuple:
         return self.processing_settings_tuple(source)
@@ -11579,12 +11787,14 @@ class MainWindow(QMainWindow):
             entries = list(folder.iterdir())
         except OSError:
             return []
+        candidate_names = {source.name, self.output_name_for_source(source, OUTPUT_FORMAT_PNG)}
         for entry in entries:
             if not entry.is_dir() or not self.is_raiv_scale_folder(entry):
                 continue
-            candidate = entry / source.name
-            if candidate.exists():
-                paths.append(candidate)
+            for name in candidate_names:
+                candidate = entry / name
+                if candidate.exists():
+                    paths.append(candidate)
         return paths
 
     def delete_current_image(self) -> None:
