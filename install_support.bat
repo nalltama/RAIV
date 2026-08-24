@@ -8,7 +8,7 @@ where py >nul 2>nul
 if %errorlevel% equ 0 (
     py -m pip install --upgrade pip
     if %errorlevel% neq 0 exit /b %errorlevel%
-    py -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.9.1
+    py -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.12.0
     if %errorlevel% neq 0 exit /b %errorlevel%
     py -m pip install opencv-python-headless
     if %errorlevel% neq 0 echo Optional OpenCV install failed. Lanczos4 will fall back to Lanczos3.
@@ -19,7 +19,7 @@ where python >nul 2>nul
 if %errorlevel% equ 0 (
     python -m pip install --upgrade pip
     if %errorlevel% neq 0 exit /b %errorlevel%
-    python -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.9.1
+    python -m pip install PySide6 Pillow py7zr rarfile novelai-sdk==0.12.0
     if %errorlevel% neq 0 exit /b %errorlevel%
     python -m pip install opencv-python-headless
     if %errorlevel% neq 0 echo Optional OpenCV install failed. Lanczos4 will fall back to Lanczos3.

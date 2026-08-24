@@ -114,7 +114,7 @@ Real-ESRGAN モデル:
 - エンジンに応じたモデル、倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
 - Gigapixel AIのDenoise、Sharpen、Fix Compression、Face Recovery
 - エンジンごとの出力形式（PNGまたは元画像の形式を引き継ぐ）
-- エンジン先読み枚数（現在ページの周辺で先読みする最大枚数）
+- エンジン先読み枚数（現在画像から後続画像をファイル名順で優先し、残り枠は直前の画像から前方向へ拡大処理。ページ移動時は待機中の先読みキューを現在位置から再構築）
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
 - 拡大結果を倍率フォルダへ保存
@@ -166,8 +166,9 @@ AI彩色:
 NovelAI生成:
 
 - 永続APIトークンを使ったNovelAIのテキストから画像生成
+- NovelAI Diffusion V5 Curated / Fullに対応。新規設定の既定値はV5 Curated、28 steps、プロンプトガイダンス7です。既存の保存済みモデルと生成値は維持されます
 - 保存先フォルダ指定（既定は `RAIV_generated`）と保存名テンプレート。`{YYYY}`、`{MM}`、`{DD}`、`{HH}`、`{mm}`、`{ss}`、`{date}`、`{time}`、`{seed}` を年、月、日、時、分、秒、日付まとめ（YYYYMMDD）、時刻まとめ（HHmmss）、シード値へ置換できます。`/` または `\` でサブフォルダを入れ子にでき、シード値、日付/シード値、日付/時刻、日付/時刻_シード値、カスタムのプリセットを選択できます（既定はシード値）
-- プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定。現在表示している画像のメタデータからシード値だけを読み込んで設定できます。解像度から1回に生成可能な枚数を計算し、上限を超える枚数は選択不可。解像度変更で上限が下がった場合だけ選択枚数を上限へ合わせ、解像度自体が上限外の場合は入力欄の隣へ表示
+- プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定。V5ではノイズスケジュールをKarrasへ固定し、多様性を無効化します。V5へ切り替えた時にDDIMが選択されている場合はEuler Ancestralへ変更します。現在表示している画像のメタデータからシード値だけを読み込んで設定できます。SDKの対応範囲に合わせ、幅と高さは64～1600の64の倍数、ステップ数は1～50、プロンプトガイダンスは0～10であることを生成前に検証し、範囲外の保存済み設定は書き換えず理由を表示します。解像度から1回に生成可能な枚数を計算し、上限を超える枚数は選択不可。解像度変更で上限が下がった場合だけ選択枚数を上限へ合わせます
 - プロンプト欄と除外したい要素欄は個別に折り畳み可能。開閉状態は設定へ保存
 - プロンプト分解モードで再構築したプロンプトと除外したい要素を各一覧の下に表示可能
 - 保存先、保存名、APIトークン、品質タグ、モデル、サンプラーなどを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
@@ -177,13 +178,15 @@ NovelAI生成:
 - 分解モードのフォルダ構造は、通常モードではRAIV専用マーカー `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>` で保持されます。ランダム設定も専用の `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` マーカーで保持します。フォルダ名はマーカー内へ安全に符号化され、NovelAI送信時にはフォルダマーカーを除外してランダム選択構文へ変換します。ユーザーが直接入力した `||...|...||` を自動でフォルダ化することはありません。
 - 「フォルダ削除時、中身ごと消す」は既定でオフです。オフではフォルダだけを削除して中のタグやフォルダを同じ位置へ残し、オンでは中身もまとめて削除します。
 - タグプリセットの保存、読込、削除（`setting.json` とは別の `novelai_prompt_presets.json` に保存）
-- 品質タグ追加と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定
+- 品質タグ（標準、軽い、指定なし）と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定。V5では品質タグの「軽い」と除外プリセットの「弱い」に、現在の公式V5プリセットを使用します
 - Enterで生成、Shift+Enterで改行する入力オプション
-- NovelAI標準に近いサイズプリセットと自由な幅 / 高さ入力
+- NovelAI標準に近いサイズプリセットと幅 / 高さ入力
+- アカウント情報の手動更新と生成成功後の自動更新により、契約プラン、有効状態、残りAnlasを表示。取得成功時はOpus判定を推定消費Anlasへ反映し、取得に失敗した場合は手動のOpus設定を使用
 - `novelai-sdk` による推定消費Anlas表示（実際の消費量と完全一致する保証はありません）
+- V5の透過背景生成。生成画像のアルファチャンネルは、RAIVで選択中の背景色に重ねて表示
 - 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入
 - 生成設定を画像ごとのJSONサイドカーに保存
-- NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映。通常のPNGメタデータに加え、NovelAI SDKが対応する埋め込みメタデータも読み込みます
+- NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映。通常のPNGメタデータに加え、NovelAI SDKが対応する埋め込みメタデータも読み込みます。V5画像は埋め込みモデルハッシュからFull／Curatedを判別します
 
 永続APIトークンは `setting.json` ではなく、Windows DPAPIで暗号化した `novelai_token.dat` に保存されます。タグプリセットは `novelai_prompt_presets.json` に保存されます。共有PCや配布用ZIPを作る場合は、これらの個人設定ファイルを同梱しないでください。
 
@@ -411,7 +414,7 @@ Engine settings:
 - Engine-specific model, scale, denoise, and tile options (0 is automatic; smaller tile values can be set for low-memory GPUs)
 - Gigapixel AI Denoise, Sharpen, Fix Compression, and Face Recovery
 - Per-engine output format (PNG or preserve source format)
-- Engine prefetch count (maximum number of nearby pages to prefetch)
+- Engine prefetch count (prioritizes the current and following images in filename order, then fills remaining slots with preceding images from nearest to farthest; navigation rebuilds the pending queue from the current position)
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold
 - Save processed images to a scale folder
@@ -463,8 +466,9 @@ AI Colorize:
 NovelAI Generation:
 
 - NovelAI text2img generation using a Persistent API Token
+- Supports NovelAI Diffusion V5 Curated and Full. New settings default to V5 Curated, 28 steps, and Prompt Guidance 7. Existing saved model and generation values are preserved.
 - Configurable output folder (default: `RAIV_generated`) and output-name template. `{YYYY}`, `{MM}`, `{DD}`, `{HH}`, `{mm}`, `{ss}`, `{date}`, `{time}`, and `{seed}` expand to the date/time components, full date (YYYYMMDD), full time (HHmmss), and generation seed. Use `/` or `\` to create nested subfolders, with Seed, Date/Seed, Date/Time, Date/Time_Seed, and Custom presets (default: Seed)
-- Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings. The seed can be loaded from the currently displayed image metadata. The per-request image limit is calculated from the resolution, unsupported counts are disabled, and the selected count is reduced only when a resolution change lowers the limit. Resolutions beyond the supported limit are indicated beside the size fields.
+- Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings. V5 fixes the Noise Schedule to Karras and disables Variety Boost. If DDIM is selected when switching to V5, the sampler changes to Euler Ancestral. The seed can be loaded from the currently displayed image metadata. Before generation, RAIV validates the SDK limits: width and height must each be 64-1600 and multiples of 64, Steps must be 1-50, and Prompt Guidance must be 0-10. Existing saved values outside those limits are left unchanged and shown with an explanation. The per-request image limit is calculated from the resolution, unsupported counts are disabled, and the selected count is reduced only when a resolution change lowers the limit.
 - Prompt and Undesired Content sections can be collapsed independently, with their expanded states saved in settings
 - Optionally show the reconstructed Prompt and Undesired Content below each list in prompt decomposition mode
 - Output folder, output name, API token, quality tags, model, and sampler settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
@@ -474,13 +478,15 @@ NovelAI Generation:
 - Folder structure from prompt decomposition mode is preserved in normal mode with RAIV-specific markers: `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>`. Random folder settings are preserved with a separate `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` marker. Folder names are safely encoded in the marker; when sending prompts to NovelAI, the markers are removed and random folders are converted to random-choice syntax. User-written `||...|...||` syntax is never converted into a folder automatically.
 - `Delete folder contents with folder` is off by default. When off, deleting a folder keeps its tags and nested folders at the same position; when on, its contents are deleted with it.
 - Save, load, and delete tag presets. Presets are stored in `novelai_prompt_presets.json`, separate from `setting.json`.
-- Add Quality Tags and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None)
+- Quality Tags preset selection (Standard, Light, None) and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None). V5 Light uses the current official V5 Quality Tags and Undesired Content preset.
 - Enter-to-generate option, with Shift+Enter inserting a line break
-- NovelAI-like size presets plus custom width / height input
+- NovelAI-like size presets plus width / height input
+- Manually refresh account information and automatically refresh it after successful generation to show the subscription tier, active status, and remaining Anlas. A successful lookup applies the detected Opus status to the Anlas estimate; the manual Opus setting remains available as a fallback when lookup fails.
 - Estimated Anlas cost using `novelai-sdk` (not guaranteed to exactly match the actual charge)
+- V5 transparent-background generation. RAIV displays the resulting alpha channel over the selected background color.
 - Automatically display generated images and enqueue them for the selected upscaling engine
 - Save generation settings as a JSON sidecar for each generated image
-- Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings. In addition to standard PNG metadata, RAIV reads embedded metadata supported by the NovelAI SDK.
+- Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings. In addition to standard PNG metadata, RAIV reads embedded metadata supported by the NovelAI SDK. V5 images are identified as Full or Curated from their embedded model hash.
 
 The Persistent API Token is stored in `novelai_token.dat` encrypted with Windows DPAPI, not in `setting.json`. Tag presets are stored in `novelai_prompt_presets.json`. On shared PCs or when creating release ZIPs, do not include these personal files.
 

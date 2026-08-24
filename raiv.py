@@ -104,7 +104,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.7"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -131,7 +131,8 @@ DEFAULT_COLORIZE_NEGATIVE_PROMPT = (
     "monochrome, grayscale, muddy colors, oversaturated, neon colors, "
     "low quality, blurry, broken lineart, warped text, unreadable text, watermark, logo"
 )
-DEFAULT_NOVELAI_MODEL = "nai-diffusion-4-5-curated"
+DEFAULT_NOVELAI_MODEL = "nai-diffusion-5-curated"
+DEFAULT_NOVELAI_METADATA_MODEL = "nai-diffusion-4-5-curated"
 THEME_SYSTEM = "system"
 THEME_LIGHT = "light"
 THEME_DARK = "dark"
@@ -144,6 +145,13 @@ DEFAULT_NOVELAI_SAMPLER = "k_euler_ancestral"
 DEFAULT_NOVELAI_SCHEDULER = "karras"
 DEFAULT_NOVELAI_GENERATED_DIR = APP_DIR / "RAIV_generated"
 MAX_NOVELAI_SEED = 4294967295
+NOVELAI_MIN_DIMENSION = 64
+NOVELAI_MAX_DIMENSION = 1600
+NOVELAI_DIMENSION_STEP = 64
+NOVELAI_MIN_STEPS = 1
+NOVELAI_MAX_STEPS = 50
+NOVELAI_MIN_GUIDANCE = 0.0
+NOVELAI_MAX_GUIDANCE = 10.0
 NOVELAI_MAX_BATCH_BY_PIXELS = (
     (360448, 8),
     (409600, 6),
@@ -160,13 +168,27 @@ NOVELAI_DATASET_MODE_OPTIONS = [
     ("anime", "アニメモード"),
     ("furry", "ケモノモード"),
 ]
+NOVELAI_QUALITY_PRESET_OPTIONS = [
+    ("standard", "標準"),
+    ("light", "軽い"),
+    ("none", "指定なし"),
+]
+NOVELAI_QUALITY_PRESET_VALUES = {key for key, _label in NOVELAI_QUALITY_PRESET_OPTIONS}
 NOVELAI_QUALITY_TAGS_SUFFIX = ", very aesthetic, masterpiece, no text"
+NOVELAI_QUALITY_TAGS_LIGHT_SUFFIX = ", very aesthetic, amazing quality, no text"
 NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL = {
+    "nai-diffusion-5-full": [
+        ", very aesthetic, masterpiece, no text",
+    ],
+    "nai-diffusion-5-curated": [
+        ", very aesthetic, masterpiece, no text",
+    ],
     "nai-diffusion-4-5-full": [
         ", very aesthetic, masterpiece, no text",
         ", location, very aesthetic, masterpiece, no text",
     ],
     "nai-diffusion-4-5-curated": [
+        ", very aesthetic, masterpiece, no text, -0.8::feet::, rating:general",
         ", location, masterpiece, no text, -0.8::feet::, rating:general",
     ],
     "nai-diffusion-4-full": [
@@ -178,6 +200,10 @@ NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL = {
     "nai-diffusion-3": [
         ", best quality, amazing quality, very aesthetic, absurdres",
     ],
+}
+NOVELAI_QUALITY_TAGS_LIGHT_SUFFIXES_BY_MODEL = {
+    "nai-diffusion-5-full": [NOVELAI_QUALITY_TAGS_LIGHT_SUFFIX],
+    "nai-diffusion-5-curated": [NOVELAI_QUALITY_TAGS_LIGHT_SUFFIX],
 }
 RAIV_DISABLED_PROMPT_START = "<<RAIV_DISABLED_PROMPT>>"
 RAIV_DISABLED_PROMPT_END = "<</RAIV_DISABLED_PROMPT>>"
@@ -191,7 +217,25 @@ NOVELAI_UC_PRESET_OPTIONS = [
     ("human_focus", "人間に重点を置く"),
     ("none", "指定なし"),
 ]
+NOVELAI_V5_UC_PRESET_TEXTS = {
+    "strong": [
+        "nsfw, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page",
+        "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page",
+    ],
+    "light": [
+        "lowres, bad hands, bad anatomy, artistic error, sepia, white haze, worst quality, very displeasing, jpeg artifacts, 0::ai-generated::",
+        "lowres, artistic error, scan artifacts, worst quality, bad quality, jpeg artifacts, multiple views, very displeasing, too many watermarks, negative space, blank page",
+    ],
+    "furry_focus": [
+        "{worst quality}, distracting watermark, unfinished, bad quality, {widescreen}, upscale, {sequence}, {{grandfathered content}}, blurred foreground, chromatic aberration, sketch, everyone, [sketch background], simple, [flat colors], ych (character), outline, multiple scenes, [[horror (theme)]], comic",
+    ],
+    "human_focus": [
+        "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, @_@, mismatched pupils, glowing eyes, bad anatomy",
+    ],
+}
 NOVELAI_UC_PRESET_TEXTS_BY_MODEL = {
+    "nai-diffusion-5-full": NOVELAI_V5_UC_PRESET_TEXTS,
+    "nai-diffusion-5-curated": NOVELAI_V5_UC_PRESET_TEXTS,
     "nai-diffusion-4-5-full": {
         "strong": [
             "nsfw, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page",
@@ -258,12 +302,17 @@ NOVELAI_SIZE_PRESETS = {
     "Small Square 640x640": (640, 640),
 }
 NOVELAI_MODEL_OPTIONS = [
+    "nai-diffusion-5-full",
+    "nai-diffusion-5-curated",
     "nai-diffusion-4-5-full",
     "nai-diffusion-4-5-curated",
     "nai-diffusion-4-full",
     "nai-diffusion-4-curated",
     "nai-diffusion-3",
 ]
+NOVELAI_V5_MODELS = {"nai-diffusion-5-full", "nai-diffusion-5-curated"}
+NOVELAI_V5_FULL_MODEL_HASHES = {"0adf9ab7", "657484a5"}
+NOVELAI_V5_CURATED_MODEL_HASHES = {"db276663"}
 NOVELAI_SAMPLER_OPTIONS = [
     "k_euler_ancestral",
     "k_euler",
@@ -1167,7 +1216,7 @@ UI_TEXT_EN = {
     "Gigapixel AI CLIはProライセンスが必要です。各補正は0で無効、1～100で強度を指定します。": "Gigapixel AI CLI requires a Pro license. Set each adjustment to 0 to disable it, or 1-100 for its strength.",
     "tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。": "tile: 0 is automatic. If an integrated GPU runs out of memory, smaller values such as 128 or 256 can improve stability, but processing may be slower.",
     "エンジン先読み": "Engine prefetch",
-    "選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Number of images to process ahead with the selected engine. Higher values reduce waiting but increase GPU load and temporary files.",
+    "現在画像から後続画像をファイル名順で優先し、先読み枠が残る場合は直前の画像から前方向へ拡大処理します。ページ移動時は待機中の先読みキューを現在位置から作り直します。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。": "Prioritizes the current image and following images in filename order, then uses any remaining prefetch slots for preceding images from nearest to farthest. When navigating, the pending prefetch queue is rebuilt from the current position. Higher values reduce waiting but increase GPU load and temporary files.",
     "AI彩色を先行処理する": "Prefetch AI colorization",
     "彩色結果をフォルダに保存": "Save colorized results to folder",
     "彩色フォルダがあれば表示に使う": "Use colorized folder when available",
@@ -1350,7 +1399,7 @@ UI_TEXT_EN = {
     "現在画像からシード値を読み込めませんでした。": "Could not load a seed from the current image.",
     "Enterで生成する（改行はShift+Enter）": "Generate with Enter (Shift+Enter inserts a line break)",
     "フォルダ削除時、中身ごと消す": "Delete folder contents with folder",
-    "品質タグを追加する": "Add quality tags",
+    "品質タグ": "Quality Tags",
     "除外プリセット": "Undesired Content preset",
     "モード": "Mode",
     "アニメモード": "Anime mode",
@@ -1359,10 +1408,17 @@ UI_TEXT_EN = {
     "詳細設定 v": "Advanced Settings v",
     "強い": "Strong",
     "弱い": "Light",
+    "標準": "Standard",
+    "軽い": "Light",
     "ケモノモード": "Furry Focus",
     "人間に重点を置く": "Human Focus",
     "指定なし": "None",
     "OpusプランとしてAnlasを推定": "Estimate Anlas as Opus plan",
+    "アカウント情報を更新": "Refresh account info",
+    "契約情報: 未取得": "Account: Not loaded",
+    "契約情報を取得中...": "Loading account info...",
+    "透過背景（V5のみ）": "Transparent background (V5 only)",
+    "V5で透過背景を生成します。RAIVでは選択中の背景色に重ねて表示します。": "Generate a transparent background with V5. RAIV displays it over the selected background color.",
     "生成後に自動表示": "Display after generation",
     "生成後に拡大処理キューへ投入": "Enqueue upscaling after generation",
     "生成設定をJSONサイドカーに保存": "Save settings as JSON sidecar",
@@ -1512,7 +1568,7 @@ class AppConfig:
     novelai_negative_prompt_expanded: bool = True
     novelai_enter_to_generate: bool = True
     novelai_delete_folder_contents: bool = False
-    novelai_quality_tags: bool = True
+    novelai_quality_preset: str = "standard"
     novelai_uc_preset: str = "strong"
     novelai_dataset_mode: str = "anime"
     novelai_model: str = DEFAULT_NOVELAI_MODEL
@@ -1523,11 +1579,12 @@ class AppConfig:
     novelai_width: int = 832
     novelai_height: int = 1216
     novelai_steps: int = 28
-    novelai_scale: float = 5.0
+    novelai_scale: float = 7.0
     novelai_cfg_rescale: float = 0.0
     novelai_variety_boost: bool = False
     novelai_batch_count: int = 1
     novelai_is_opus: bool = False
+    novelai_transparent_background: bool = False
     novelai_auto_open: bool = True
     novelai_auto_upscale: bool = True
     novelai_save_metadata_json: bool = False
@@ -1623,6 +1680,7 @@ class UpscaleTask:
     read_cache: bool
     save_to_cache: bool
     force: bool
+    prefetch_managed: bool
     skip_tall_images: bool
     skip_height_threshold: int
     hdr_tonemap_brightness: float
@@ -1903,6 +1961,10 @@ def load_config() -> AppConfig:
             "custom",
         }:
             config.novelai_output_name_mode = matching_mode
+        if "novelai_quality_preset" not in filtered_data:
+            config.novelai_quality_preset = "standard" if bool(data.get("novelai_quality_tags", True)) else "none"
+        if config.novelai_quality_preset not in NOVELAI_QUALITY_PRESET_VALUES:
+            config.novelai_quality_preset = "standard"
         if config.novelai_uc_preset not in {key for key, _label in NOVELAI_UC_PRESET_OPTIONS}:
             config.novelai_uc_preset = "strong"
         if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
@@ -2511,42 +2573,110 @@ class AppSignals(QObject):
     comfyui_colorize_started = Signal(str)
     novelai_generation_started = Signal(str)
     novelai_generation_done = Signal(object)
+    novelai_account_done = Signal(object)
 
 
 class NovelAIClientAdapter:
+    @staticmethod
+    def _import_sdk():
+        try:
+            from novelai import NovelAI
+            from novelai.types import GenerateImageParams
+            from novelai.utils.metadata import extract_metadata
+        except ImportError as exc:
+            raise RuntimeError("novelai-sdk is not installed. Run install_support.bat, then restart RAIV.") from exc
+        return NovelAI, GenerateImageParams, extract_metadata
+
     def __init__(self, api_token: str) -> None:
         self.api_token = api_token.strip()
         if not self.api_token:
             raise ValueError("NovelAI API token is empty")
-        try:
-            from novelai import NovelAI
-            from novelai.types import GenerateImageParams
-        except ImportError as exc:
-            raise RuntimeError("novelai-sdk is not installed. Run install_support.bat, then restart RAIV.") from exc
+        NovelAI, GenerateImageParams, extract_metadata = self._import_sdk()
         self._client_class = NovelAI
         self._params_class = GenerateImageParams
+        self._metadata_extractor = extract_metadata
         self.client = NovelAI(api_key=self.api_token)
+
+    @staticmethod
+    def _anlas_total(estimate: object) -> int:
+        return int(getattr(estimate, "total_anlas", estimate))
+
+    @classmethod
+    def estimate_request_anlas(cls, request: dict[str, object], is_opus: bool) -> int | None:
+        try:
+            _client_class, params_class, _metadata_extractor = cls._import_sdk()
+            params = cls._build_params_with_class(request, params_class)
+            return cls._anlas_total(params.calculate_anlas(is_opus=is_opus))
+        except Exception:
+            return None
+
+    @classmethod
+    def extract_image_metadata(cls, image: object):
+        _client_class, _params_class, metadata_extractor = cls._import_sdk()
+        return metadata_extractor(image)
 
     def estimate_anlas(self, request: dict[str, object], is_opus: bool) -> int | None:
         try:
             params = self._build_params(request)
-            estimate = params.calculate_anlas(is_opus=is_opus)
-            return int(estimate)
+            return self._anlas_total(params.calculate_anlas(is_opus=is_opus))
         except Exception:
             return None
 
     def generate_images(self, request: dict[str, object]) -> list[object]:
-        params = self._build_params(request)
-        images = self.client.image.generate(params)
+        api_request = self._build_api_request(request)
+        images = self.client.api_client.image.generate(api_request)
         if not images:
             raise ValueError("NovelAI did not return an image")
         return list(images)
 
+    def get_account_info(self) -> dict[str, object]:
+        subscription = self.client.user.get_subscription()
+        return {
+            "tier": int(subscription.tier),
+            "tier_name": str(subscription.tier_name),
+            "active": bool(subscription.active),
+            "anlas": int(subscription.anlas),
+            "is_opus": bool(subscription.is_opus),
+        }
+
+    def _build_api_request(self, request: dict[str, object]):
+        params = self._build_params(request)
+        api_request = params.to_api_request(self.client)
+        self._apply_api_request_overrides(api_request, request)
+        return api_request
+
+    @staticmethod
+    def _combined_negative_prompt(negative_prompt: str, preset_text: str) -> str:
+        return ", ".join(part.strip(" ,") for part in (negative_prompt, preset_text) if part.strip(" ,"))
+
+    @classmethod
+    def _apply_api_request_overrides(cls, api_request: object, request: dict[str, object]) -> None:
+        parameters = getattr(api_request, "parameters", None)
+        if parameters is None:
+            return
+        model = str(request.get("model", DEFAULT_NOVELAI_MODEL))
+        uc_preset = str(request.get("uc_preset", "strong"))
+        negative_prompt = str(request.get("negative_prompt", "")).strip()
+        replacement: str | None = None
+        if model in NOVELAI_V5_MODELS and uc_preset == "light":
+            replacement = cls._combined_negative_prompt(
+                negative_prompt,
+                NOVELAI_V5_UC_PRESET_TEXTS["light"][0],
+            )
+        elif uc_preset == "none":
+            replacement = negative_prompt
+            parameters.ucPreset = 4
+        if replacement is None:
+            return
+        parameters.negative_prompt = replacement
+        v4_negative_prompt = getattr(parameters, "v4_negative_prompt", None)
+        caption = getattr(v4_negative_prompt, "caption", None)
+        if caption is not None:
+            caption.base_caption = replacement
+
     def image_seed(self, image: object) -> int | None:
         try:
-            from novelai.utils.metadata import extract_metadata
-
-            metadata = extract_metadata(image)
+            metadata = self._metadata_extractor(image)
             for source in (metadata.alpha_info, metadata.png_info):
                 if not isinstance(source, dict):
                     continue
@@ -2563,29 +2693,53 @@ class NovelAIClientAdapter:
         return None
 
     def _build_params(self, request: dict[str, object]):
+        return self._build_params_with_class(request, self._params_class)
+
+    @staticmethod
+    def _build_params_with_class(request: dict[str, object], params_class):
+        model = str(request.get("model", DEFAULT_NOVELAI_MODEL))
+        is_v5 = model in NOVELAI_V5_MODELS
+        prompt = str(request.get("prompt", ""))
+        quality_preset = str(request.get("quality_preset", ""))
+        if quality_preset not in NOVELAI_QUALITY_PRESET_VALUES:
+            quality_preset = "standard" if bool(request.get("quality", True)) else "none"
+        if quality_preset == "light":
+            prompt = f"{prompt.rstrip()}{NOVELAI_QUALITY_TAGS_LIGHT_SUFFIX}" if prompt.strip() else NOVELAI_QUALITY_TAGS_LIGHT_SUFFIX.strip(" ,")
+        uc_preset = str(request.get("uc_preset", "strong"))
+        if uc_preset not in {key for key, _label in NOVELAI_UC_PRESET_OPTIONS}:
+            uc_preset = "strong"
+        sdk_uc_preset = "light" if uc_preset == "none" else uc_preset
+        sampler = str(request.get("sampler", "")).strip()
+        if is_v5 and sampler == "ddim":
+            sampler = DEFAULT_NOVELAI_SAMPLER
+        scheduler = str(request.get("noise_schedule", request.get("scheduler", ""))).strip()
+        if is_v5:
+            scheduler = DEFAULT_NOVELAI_SCHEDULER
         kwargs: dict[str, object] = {
-            "prompt": str(request.get("prompt", "")),
-            "model": str(request.get("model", DEFAULT_NOVELAI_MODEL)),
+            "prompt": prompt,
+            "model": model,
             "size": (int(request.get("width", 832)), int(request.get("height", 1216))),
             "steps": int(request.get("steps", 28)),
-            "scale": float(request.get("scale", 5.0)),
+            "scale": float(request.get("scale", 7.0)),
             "cfg_rescale": max(0.0, min(1.0, float(request.get("cfg_rescale", 0.0)))),
             "seed": int(request.get("seed", 0)),
             "n_samples": max(1, min(8, int(request.get("n_samples", 1)))),
-            "variety_boost": bool(request.get("variety_boost", False)),
-            "quality": bool(request.get("quality", True)),
-            "uc_preset": str(request.get("uc_preset", "strong")),
+            "variety_boost": False if is_v5 else bool(request.get("variety_boost", False)),
+            "quality": quality_preset == "standard",
+            "uc_preset": sdk_uc_preset,
         }
+        if is_v5:
+            transparent_background = bool(request.get("transparent_background", False))
+            kwargs["straight_alpha"] = transparent_background
+            kwargs["tag_hint_transparent_background"] = transparent_background
         negative_prompt = str(request.get("negative_prompt", "")).strip()
         if negative_prompt:
             kwargs["negative_prompt"] = negative_prompt
-        sampler = str(request.get("sampler", "")).strip()
         if sampler:
             kwargs["sampler"] = sampler
-        scheduler = str(request.get("noise_schedule", request.get("scheduler", ""))).strip()
         if scheduler:
             kwargs["noise_schedule"] = scheduler
-        return self._params_class(**kwargs)
+        return params_class(**kwargs)
 
 
 class PromptSubmitTextEdit(QTextEdit):
@@ -4610,6 +4764,7 @@ class MainWindow(QMainWindow):
         self.signals.comfyui_download_done.connect(self.on_comfyui_download_done)
         self.signals.novelai_generation_started.connect(self.on_novelai_generation_started)
         self.signals.novelai_generation_done.connect(self.on_novelai_generation_done)
+        self.signals.novelai_account_done.connect(self.on_novelai_account_done)
 
         self.image_paths: list[Path] = []
         self.image_path_set: set[Path] = set()
@@ -4693,6 +4848,10 @@ class MainWindow(QMainWindow):
         self.colorize_done_paths: set[Path] = set()
         self.colorized_session_paths: dict[Path, Path] = {}
         self.novelai_generation_running = False
+        self.novelai_account_refresh_running = False
+        self.novelai_account_refresh_serial = 0
+        self.novelai_account_info: dict[str, object] | None = None
+        self.novelai_account_error = ""
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = False
         self.novelai_continuous_delay_timer = QTimer(self)
@@ -5043,7 +5202,7 @@ class MainWindow(QMainWindow):
         self.realcugan_prefetch_spin.setValue(self.config_data.realcugan_prefetch_count)
         self.realcugan_prefetch_spin.valueChanged.connect(self.on_processing_settings_changed)
         form3.addRow("エンジン先読み", self.realcugan_prefetch_spin)
-        form3.addRow(self.help_label("選択中の拡大エンジンで処理を先に進める枚数。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。"))
+        form3.addRow(self.help_label("現在画像から後続画像をファイル名順で優先し、先読み枠が残る場合は直前の画像から前方向へ拡大処理します。ページ移動時は待機中の先読みキューを現在位置から作り直します。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。"))
         self.skip_tall_check = QCheckBox("縦サイズが閾値以上なら拡大処理しない")
         self.skip_tall_check.setChecked(self.config_data.skip_realcugan_for_tall_images)
         self.skip_tall_check.stateChanged.connect(self.on_processing_settings_changed)
@@ -5879,14 +6038,24 @@ class MainWindow(QMainWindow):
         self.saved_novelai_api_token = load_novelai_api_token()
         self.novelai_token_edit = QLineEdit(self.saved_novelai_api_token)
         self.novelai_token_edit.setEchoMode(QLineEdit.Password)
-        self.novelai_token_edit.editingFinished.connect(self.on_novelai_settings_changed)
-        detail_auth_form.addRow("永続APIトークン", self.novelai_token_edit)
+        self.novelai_token_edit.editingFinished.connect(self.on_novelai_token_changed)
+        token_row = QHBoxLayout()
+        token_row.addWidget(self.novelai_token_edit, 1)
+        self.novelai_account_refresh_button = QPushButton(self.tr_ui("アカウント情報を更新"))
+        self.novelai_account_refresh_button.clicked.connect(self.refresh_novelai_account_info)
+        token_row.addWidget(self.novelai_account_refresh_button)
+        detail_auth_form.addRow("永続APIトークン", token_row)
+        self.novelai_account_label = self.help_label(self.tr_ui("契約情報: 未取得"))
+        self.novelai_account_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        detail_auth_form.addRow(self.novelai_account_label)
         detail_layout.addLayout(detail_auth_form)
         quality_form = QFormLayout()
-        self.novelai_quality_tags_check = QCheckBox("品質タグを追加する")
-        self.novelai_quality_tags_check.setChecked(self.config_data.novelai_quality_tags)
-        self.novelai_quality_tags_check.stateChanged.connect(self.on_novelai_settings_changed)
-        quality_form.addRow(self.novelai_quality_tags_check)
+        self.novelai_quality_preset_combo = QComboBox()
+        for key, label in NOVELAI_QUALITY_PRESET_OPTIONS:
+            self.novelai_quality_preset_combo.addItem(label, key)
+        self.set_combo_by_data(self.novelai_quality_preset_combo, self.config_data.novelai_quality_preset)
+        self.novelai_quality_preset_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
+        quality_form.addRow("品質タグ", self.novelai_quality_preset_combo)
         self.novelai_uc_preset_combo = QComboBox()
         for key, label in NOVELAI_UC_PRESET_OPTIONS:
             self.novelai_uc_preset_combo.addItem(label, key)
@@ -5899,6 +6068,13 @@ class MainWindow(QMainWindow):
         self.set_combo_by_data(self.novelai_dataset_mode_combo, self.config_data.novelai_dataset_mode)
         self.novelai_dataset_mode_combo.currentIndexChanged.connect(self.on_novelai_settings_changed)
         quality_form.addRow("モード", self.novelai_dataset_mode_combo)
+        self.novelai_transparent_background_check = QCheckBox(self.tr_ui("透過背景（V5のみ）"))
+        self.novelai_transparent_background_check.setChecked(self.config_data.novelai_transparent_background)
+        self.novelai_transparent_background_check.setToolTip(
+            self.tr_ui("V5で透過背景を生成します。RAIVでは選択中の背景色に重ねて表示します。")
+        )
+        self.novelai_transparent_background_check.stateChanged.connect(self.on_novelai_settings_changed)
+        quality_form.addRow(self.novelai_transparent_background_check)
         detail_layout.addLayout(quality_form)
 
         params_form = QFormLayout()
@@ -5947,6 +6123,12 @@ class MainWindow(QMainWindow):
         self.novelai_cfg_rescale_spin.valueChanged.connect(self.on_novelai_settings_changed)
         params_form.addRow("プロンプトガイダンスの再調整", self.novelai_cfg_rescale_spin)
         detail_layout.addLayout(params_form)
+        self.novelai_api_limits_label = self.help_label("")
+        self.novelai_api_limits_label.setStyleSheet("color: #e06060;")
+        self.novelai_api_limits_label.setWordWrap(True)
+        self.novelai_api_limits_label.setVisible(False)
+        detail_layout.addWidget(self.novelai_api_limits_label)
+        self.apply_novelai_model_constraints()
 
         self.novelai_opus_check = QCheckBox("OpusプランとしてAnlasを推定")
         self.novelai_opus_check.setChecked(self.config_data.novelai_is_opus)
@@ -6187,6 +6369,13 @@ class MainWindow(QMainWindow):
             width = self.novelai_width_spin.value()
         if height is None:
             height = self.novelai_height_spin.value()
+        if (
+            not NOVELAI_MIN_DIMENSION <= int(width) <= NOVELAI_MAX_DIMENSION
+            or not NOVELAI_MIN_DIMENSION <= int(height) <= NOVELAI_MAX_DIMENSION
+            or int(width) % NOVELAI_DIMENSION_STEP != 0
+            or int(height) % NOVELAI_DIMENSION_STEP != 0
+        ):
+            return 0
         pixels = max(1, int(width)) * max(1, int(height))
         for pixel_limit, batch_limit in NOVELAI_MAX_BATCH_BY_PIXELS:
             if pixels <= pixel_limit:
@@ -6206,9 +6395,9 @@ class MainWindow(QMainWindow):
             )
         else:
             tooltip = (
-                "この解像度はNovelAIの対応上限を超えています。"
+                "幅と高さは64～1600、かつ64の倍数にしてください。"
                 if self.ui_language() == "ja"
-                else "This resolution exceeds NovelAI's supported limit."
+                else "Width and height must be 64-1600 and multiples of 64."
             )
         for value in range(1, 9):
             button = group.button(value)
@@ -6222,8 +6411,14 @@ class MainWindow(QMainWindow):
                 button.setChecked(True)
         resolution_label = getattr(self, "novelai_resolution_limit_label", None)
         if resolution_label is not None:
-            resolution_label.setText(tooltip if maximum == 0 else "")
+            resolution_label.setText(
+                ("64～1600 / 64単位" if self.ui_language() == "ja" else "64-1600 / step 64")
+                if maximum == 0
+                else ""
+            )
+            resolution_label.setToolTip(tooltip if maximum == 0 else "")
             resolution_label.setVisible(maximum == 0)
+        self.update_novelai_api_limit_status()
         self.update_novelai_generate_button_text()
 
     def on_novelai_random_seed_changed(self, *_args) -> None:
@@ -6523,9 +6718,42 @@ class MainWindow(QMainWindow):
         return max(1, min(8, int(value if value > 0 else 1)))
 
     def on_novelai_settings_changed(self, *_args) -> None:
+        self.apply_novelai_model_constraints()
+        self.update_novelai_api_limit_status()
         if not getattr(self, "initializing", False):
             self.schedule_persist_config()
             self.novelai_preview_timer.start(NOVELAI_PREVIEW_DEBOUNCE_MS)
+
+    def apply_novelai_model_constraints(self) -> None:
+        required = (
+            "novelai_model_combo",
+            "novelai_sampler_combo",
+            "novelai_scheduler_combo",
+            "novelai_variety_boost_check",
+            "novelai_transparent_background_check",
+        )
+        if not all(hasattr(self, name) for name in required):
+            return
+        is_v5 = self.novelai_model_combo.currentText().strip() in NOVELAI_V5_MODELS
+        if is_v5:
+            if self.novelai_sampler_combo.currentText().strip() == "ddim":
+                self.novelai_sampler_combo.blockSignals(True)
+                self.novelai_sampler_combo.setCurrentText(DEFAULT_NOVELAI_SAMPLER)
+                self.novelai_sampler_combo.blockSignals(False)
+            self.novelai_scheduler_combo.blockSignals(True)
+            self.novelai_scheduler_combo.setCurrentText(DEFAULT_NOVELAI_SCHEDULER)
+            self.novelai_scheduler_combo.blockSignals(False)
+            self.novelai_variety_boost_check.blockSignals(True)
+            self.novelai_variety_boost_check.setChecked(False)
+            self.novelai_variety_boost_check.blockSignals(False)
+        self.novelai_scheduler_combo.setEnabled(not is_v5)
+        self.novelai_variety_boost_check.setEnabled(not is_v5)
+        self.novelai_transparent_background_check.setEnabled(is_v5)
+        ddim_index = self.novelai_sampler_combo.findText("ddim")
+        item_model = self.novelai_sampler_combo.model()
+        ddim_item = item_model.item(ddim_index) if ddim_index >= 0 and hasattr(item_model, "item") else None
+        if ddim_item is not None:
+            ddim_item.setEnabled(not is_v5)
 
     def current_novelai_request(self, seed: int | None = None) -> dict[str, object]:
         return {
@@ -6542,38 +6770,62 @@ class MainWindow(QMainWindow):
             "cfg_rescale": self.novelai_cfg_rescale_spin.value(),
             "variety_boost": self.novelai_variety_boost_check.isChecked(),
             "n_samples": self.novelai_number_of_images(),
-            "quality": self.novelai_quality_tags_check.isChecked(),
+            "quality_preset": self.novelai_quality_preset_combo.currentData() or "standard",
             "uc_preset": self.novelai_uc_preset_combo.currentData() or "strong",
+            "transparent_background": self.novelai_transparent_background_check.isChecked(),
         }
 
+    @staticmethod
+    def novelai_request_validation_errors(request: dict[str, object], english: bool = False) -> list[str]:
+        width = int(request.get("width", 0))
+        height = int(request.get("height", 0))
+        steps = int(request.get("steps", 0))
+        guidance = float(request.get("scale", 0.0))
+        errors: list[str] = []
+        if (
+            not NOVELAI_MIN_DIMENSION <= width <= NOVELAI_MAX_DIMENSION
+            or not NOVELAI_MIN_DIMENSION <= height <= NOVELAI_MAX_DIMENSION
+            or width % NOVELAI_DIMENSION_STEP != 0
+            or height % NOVELAI_DIMENSION_STEP != 0
+        ):
+            errors.append(
+                "Width and height must each be 64-1600 and multiples of 64."
+                if english
+                else "幅と高さはそれぞれ64～1600、かつ64の倍数にしてください。"
+            )
+        if not NOVELAI_MIN_STEPS <= steps <= NOVELAI_MAX_STEPS:
+            errors.append(
+                "Steps must be between 1 and 50."
+                if english
+                else "ステップ数は1～50にしてください。"
+            )
+        if not NOVELAI_MIN_GUIDANCE <= guidance <= NOVELAI_MAX_GUIDANCE:
+            errors.append(
+                "Prompt Guidance must be between 0 and 10."
+                if english
+                else "プロンプトガイダンスは0～10にしてください。"
+            )
+        return errors
+
+    def update_novelai_api_limit_status(self) -> None:
+        label = getattr(self, "novelai_api_limits_label", None)
+        if label is None or not hasattr(self, "novelai_width_spin"):
+            return
+        errors = self.novelai_request_validation_errors(
+            self.current_novelai_request(),
+            english=self.ui_language() == "en",
+        )
+        dimension_prefix = "Width and height" if self.ui_language() == "en" else "幅と高さ"
+        detail_errors = [error for error in errors if not error.startswith(dimension_prefix)]
+        label.setText("\n".join(detail_errors))
+        label.setVisible(bool(detail_errors))
+        self.update_novelai_generate_button_text()
+
     def estimate_novelai_anlas(self) -> int | None:
-        try:
-            from novelai.types import GenerateImageParams
-            request = self.current_novelai_request()
-            kwargs: dict[str, object] = {
-                "prompt": str(request["prompt"]),
-                "model": str(request["model"]),
-                "size": (int(request["width"]), int(request["height"])),
-                "steps": int(request["steps"]),
-                "scale": float(request["scale"]),
-                "cfg_rescale": float(request["cfg_rescale"]),
-                "seed": int(request["seed"]),
-                "n_samples": int(request["n_samples"]),
-                "variety_boost": bool(request["variety_boost"]),
-                "quality": bool(request["quality"]),
-                "uc_preset": str(request["uc_preset"]),
-            }
-            if str(request["negative_prompt"]).strip():
-                kwargs["negative_prompt"] = str(request["negative_prompt"]).strip()
-            if str(request["sampler"]).strip():
-                kwargs["sampler"] = str(request["sampler"]).strip()
-            if str(request["noise_schedule"]).strip():
-                kwargs["noise_schedule"] = str(request["noise_schedule"]).strip()
-            params = GenerateImageParams(**kwargs)
-            estimate = params.calculate_anlas(is_opus=self.novelai_opus_check.isChecked())
-            return int(estimate)
-        except Exception:
-            return None
+        return NovelAIClientAdapter.estimate_request_anlas(
+            self.current_novelai_request(),
+            is_opus=self.novelai_opus_check.isChecked(),
+        )
 
     def update_novelai_anlas_preview(self) -> None:
         if not hasattr(self, "novelai_anlas_label"):
@@ -6583,6 +6835,99 @@ class MainWindow(QMainWindow):
             self.novelai_anlas_label.setText("推定消費Anlas: novelai-sdk未インストール、または現在の設定では推定できません。")
             return
         self.novelai_anlas_label.setText(f"推定消費Anlas: {estimate}（SDKによる推定。実際の消費量と完全一致する保証はありません）")
+
+    def on_novelai_token_changed(self) -> None:
+        self.novelai_account_refresh_serial += 1
+        self.novelai_account_refresh_running = False
+        if hasattr(self, "novelai_account_refresh_button"):
+            self.novelai_account_refresh_button.setEnabled(True)
+        self.novelai_account_info = None
+        self.novelai_account_error = ""
+        self.render_novelai_account_info()
+        self.on_novelai_settings_changed()
+
+    def refresh_novelai_account_info(self, _checked: bool = False, silent: bool = False) -> None:
+        if self.novelai_account_refresh_running:
+            return
+        token = self.novelai_token_edit.text().strip()
+        if not token:
+            if not silent:
+                self.novelai_account_error = (
+                    "Enter a NovelAI Persistent API Token."
+                    if self.ui_language() == "en"
+                    else "NovelAI Persistent API Tokenを入力してください。"
+                )
+                self.render_novelai_account_info()
+            return
+        self.novelai_account_refresh_running = True
+        self.novelai_account_refresh_serial += 1
+        refresh_serial = self.novelai_account_refresh_serial
+        self.novelai_account_error = ""
+        self.novelai_account_refresh_button.setEnabled(False)
+        self.novelai_account_label.setText(self.tr_ui("契約情報を取得中..."))
+
+        def worker() -> None:
+            try:
+                info = NovelAIClientAdapter(token).get_account_info()
+                result: dict[str, object] = {"ok": True, "info": info, "refresh_serial": refresh_serial}
+            except Exception as exc:
+                result = {"ok": False, "message": str(exc), "refresh_serial": refresh_serial}
+            self.signals.novelai_account_done.emit(result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_novelai_account_done(self, result: object) -> None:
+        if (
+            isinstance(result, dict)
+            and int(result.get("refresh_serial", self.novelai_account_refresh_serial))
+            != self.novelai_account_refresh_serial
+        ):
+            return
+        self.novelai_account_refresh_running = False
+        if hasattr(self, "novelai_account_refresh_button"):
+            self.novelai_account_refresh_button.setEnabled(True)
+        if isinstance(result, dict) and result.get("ok") and isinstance(result.get("info"), dict):
+            self.novelai_account_info = dict(result["info"])
+            self.novelai_account_error = ""
+            is_opus = bool(self.novelai_account_info.get("is_opus", False))
+            if self.novelai_opus_check.isChecked() != is_opus:
+                self.novelai_opus_check.blockSignals(True)
+                self.novelai_opus_check.setChecked(is_opus)
+                self.novelai_opus_check.blockSignals(False)
+                self.schedule_persist_config()
+            self.update_novelai_anlas_preview()
+        else:
+            self.novelai_account_info = None
+            self.novelai_account_error = (
+                str(result.get("message", "unknown error"))
+                if isinstance(result, dict)
+                else "unknown error"
+            )
+        self.render_novelai_account_info()
+
+    def render_novelai_account_info(self) -> None:
+        label = getattr(self, "novelai_account_label", None)
+        if label is None:
+            return
+        english = self.ui_language() == "en"
+        if self.novelai_account_info is not None:
+            tier_name = str(self.novelai_account_info.get("tier_name", "Unknown"))
+            active = bool(self.novelai_account_info.get("active", False))
+            anlas = int(self.novelai_account_info.get("anlas", 0))
+            state = "Active" if active and english else "Inactive" if english else "有効" if active else "無効"
+            label.setText(
+                f"Account: {tier_name} ({state}) / Remaining Anlas: {anlas:,}"
+                if english
+                else f"契約情報: {tier_name}（{state}） / 残りAnlas: {anlas:,}"
+            )
+        elif self.novelai_account_error:
+            label.setText(
+                f"Could not load account info: {self.novelai_account_error}"
+                if english
+                else f"契約情報を取得できませんでした: {self.novelai_account_error}"
+            )
+        else:
+            label.setText(self.tr_ui("契約情報: 未取得"))
 
     def import_novelai_metadata_dialog(self) -> None:
         initial = self.config_data.last_dir or self.novelai_output_dir_edit.text().strip() or str(APP_DIR)
@@ -6618,11 +6963,7 @@ class MainWindow(QMainWindow):
 
     def read_novelai_metadata_with_sdk(self, image: object) -> dict[str, object] | None:
         try:
-            from novelai.utils.metadata import extract_metadata
-        except ImportError:
-            return None
-        try:
-            metadata = extract_metadata(image)
+            metadata = NovelAIClientAdapter.extract_image_metadata(image)
         except Exception:
             return None
         for source in (metadata.alpha_info, metadata.png_info):
@@ -6656,13 +6997,25 @@ class MainWindow(QMainWindow):
         if model in NOVELAI_MODEL_OPTIONS:
             return model
         source = str(metadata.get("_source_text") or "").casefold()
+        model_name = str(metadata.get("model_name") or "").casefold()
+        model_hash = str(metadata.get("model_hash") or "").strip().casefold()
+        if "diffusion v5" in source or "diffusion v5" in model_name:
+            if model_hash in NOVELAI_V5_FULL_MODEL_HASHES or any(
+                known_hash in source for known_hash in NOVELAI_V5_FULL_MODEL_HASHES
+            ):
+                return "nai-diffusion-5-full"
+            if model_hash in NOVELAI_V5_CURATED_MODEL_HASHES or any(
+                known_hash in source for known_hash in NOVELAI_V5_CURATED_MODEL_HASHES
+            ):
+                return "nai-diffusion-5-curated"
+            return "nai-diffusion-5-curated"
         if "4.5" in source:
             return "nai-diffusion-4-5-curated" if "curated" in source else "nai-diffusion-4-5-full"
         if "v4" in source or "diffusion 4" in source:
             return "nai-diffusion-4-curated" if "curated" in source else "nai-diffusion-4-full"
         if "v3" in source or "diffusion 3" in source:
             return "nai-diffusion-3"
-        return DEFAULT_NOVELAI_MODEL
+        return DEFAULT_NOVELAI_METADATA_MODEL
 
     def strip_novelai_suffix(self, text: str, suffixes: list[str]) -> tuple[str, bool]:
         stripped = text.rstrip()
@@ -6673,9 +7026,15 @@ class MainWindow(QMainWindow):
                 return stripped[: len(stripped) - len(suffix)].rstrip(), True
         return text, False
 
-    def restore_novelai_quality_tags(self, prompt: str, model: str) -> tuple[str, bool]:
-        suffixes = NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL.get(model, [])
-        return self.strip_novelai_suffix(prompt, suffixes)
+    def restore_novelai_quality_tags(self, prompt: str, model: str) -> tuple[str, str]:
+        for preset, suffixes in (
+            ("standard", NOVELAI_QUALITY_TAGS_SUFFIXES_BY_MODEL.get(model, [])),
+            ("light", NOVELAI_QUALITY_TAGS_LIGHT_SUFFIXES_BY_MODEL.get(model, [])),
+        ):
+            restored, matched = self.strip_novelai_suffix(prompt, suffixes)
+            if matched:
+                return restored, preset
+        return prompt, "none"
 
     def restore_novelai_uc_preset(self, negative: str, model: str) -> tuple[str, str]:
         preset_texts = NOVELAI_UC_PRESET_TEXTS_BY_MODEL.get(model, {})
@@ -6691,7 +7050,7 @@ class MainWindow(QMainWindow):
                 continue
             preset_folded = preset_text.casefold()
             if folded.startswith(preset_folded):
-                remainder = stripped[len(preset_text) :].lstrip(" ,")
+                remainder = stripped[len(preset_text) :].strip(" ,")
                 return remainder, preset
         for preset, preset_text in sorted(candidates, key=lambda item: len(item[1]), reverse=True):
             preset_text = preset_text.strip()
@@ -6719,7 +7078,7 @@ class MainWindow(QMainWindow):
                 negative = str(caption.get("base_caption") or "")
         model = self.novelai_model_from_metadata(metadata)
         prompt, dataset_mode = self.restore_novelai_dataset_mode(prompt)
-        prompt, quality_enabled = self.restore_novelai_quality_tags(prompt, model)
+        prompt, quality_preset = self.restore_novelai_quality_tags(prompt, model)
         negative, uc_preset = self.restore_novelai_uc_preset(negative, model)
         self.novelai_prompt_edit.setPlainText(prompt)
         self.novelai_negative_edit.setPlainText(negative)
@@ -6740,7 +7099,13 @@ class MainWindow(QMainWindow):
         self.set_novelai_number_of_images(max(1, min(8, int(metadata.get("n_samples", 1)))))
         self.update_novelai_batch_buttons()
         self.novelai_variety_boost_check.setChecked(bool(metadata.get("variety_boost", False)))
-        self.novelai_quality_tags_check.setChecked(quality_enabled)
+        transparent_background = bool(
+            metadata.get("transparent_background", False)
+            or metadata.get("straight_alpha", False)
+            or metadata.get("tag_hint_transparent_background", False)
+        )
+        self.novelai_transparent_background_check.setChecked(transparent_background and model in NOVELAI_V5_MODELS)
+        self.set_combo_by_data(self.novelai_quality_preset_combo, quality_preset)
         self.set_combo_by_data(self.novelai_uc_preset_combo, uc_preset)
         self.update_novelai_anlas_preview()
 
@@ -6811,6 +7176,14 @@ class MainWindow(QMainWindow):
                 self.novelai_uc_preset_combo.addItem(self.tr_ui(label), key)
             self.set_combo_by_data(self.novelai_uc_preset_combo, current)
             self.novelai_uc_preset_combo.blockSignals(False)
+        if hasattr(self, "novelai_quality_preset_combo"):
+            current = self.novelai_quality_preset_combo.currentData() or "standard"
+            self.novelai_quality_preset_combo.blockSignals(True)
+            self.novelai_quality_preset_combo.clear()
+            for key, label in NOVELAI_QUALITY_PRESET_OPTIONS:
+                self.novelai_quality_preset_combo.addItem(self.tr_ui(label), key)
+            self.set_combo_by_data(self.novelai_quality_preset_combo, current)
+            self.novelai_quality_preset_combo.blockSignals(False)
         if hasattr(self, "novelai_filename_combo"):
             current = self.novelai_filename_combo.currentData() or "seed"
             self.novelai_filename_combo.blockSignals(True)
@@ -6834,6 +7207,11 @@ class MainWindow(QMainWindow):
             )
         if hasattr(self, "novelai_load_seed_button"):
             self.novelai_load_seed_button.setToolTip(self.tr_ui("現在表示している画像のシード値を読み込む"))
+        if hasattr(self, "novelai_transparent_background_check"):
+            self.novelai_transparent_background_check.setToolTip(
+                self.tr_ui("V5で透過背景を生成します。RAIVでは選択中の背景色に重ねて表示します。")
+            )
+        self.render_novelai_account_info()
         self.update_novelai_batch_buttons()
         for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
             editor = getattr(self, editor_name, None)
@@ -7218,7 +7596,11 @@ class MainWindow(QMainWindow):
                 enabled = False
             else:
                 text = "生成"
-                enabled = self.novelai_max_batch_count() > 0
+                request_valid = not self.novelai_request_validation_errors(
+                    self.current_novelai_request(),
+                    english=self.ui_language() == "en",
+                )
+                enabled = self.novelai_max_batch_count() > 0 and request_valid
             self.novelai_generate_button.setText(self.tr_ui(text))
             self.novelai_generate_button.setEnabled(enabled)
 
@@ -7309,6 +7691,16 @@ class MainWindow(QMainWindow):
         if self.novelai_generation_running:
             self.novelai_status_label.setText("NovelAI生成は実行中です。")
             return
+        validation_errors = self.novelai_request_validation_errors(
+            self.current_novelai_request(),
+            english=self.ui_language() == "en",
+        )
+        if validation_errors:
+            self.set_novelai_continuous_generation_enabled(False)
+            self.novelai_continuous_generation_stopping = False
+            self.update_novelai_generate_button_text()
+            self.novelai_status_label.setText("\n".join(validation_errors))
+            return
         maximum_count = self.novelai_max_batch_count()
         if maximum_count == 0:
             self.set_novelai_continuous_generation_enabled(False)
@@ -7375,6 +7767,9 @@ class MainWindow(QMainWindow):
         output_dir = Path(task["output_dir"])
         timestamp = time.localtime()
         request = dict(task["request"])  # type: ignore[arg-type]
+        validation_errors = self.novelai_request_validation_errors(request)
+        if validation_errors:
+            raise ValueError(" ".join(validation_errors))
         random_seed_enabled = bool(task.get("random_seed", True))
         save_metadata_json = bool(task.get("save_metadata_json", True))
         generated_paths: list[Path] = []
@@ -7523,6 +7918,7 @@ class MainWindow(QMainWindow):
             self.refresh_current_folder_after_novelai_generation(paths)
         if result.get("auto_upscale", True):
             QTimer.singleShot(200, lambda generated=paths: self.enqueue_generated_upscales(generated))
+        self.refresh_novelai_account_info(silent=True)
         self.continue_novelai_generation_if_needed()
 
     def refresh_current_folder_after_novelai_generation(self, paths: list[Path]) -> None:
@@ -8084,7 +8480,7 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_negative_prompt_expanded = self.novelai_negative_prompt_toggle_button.isChecked()
             self.config_data.novelai_enter_to_generate = self.novelai_enter_generate_check.isChecked()
             self.config_data.novelai_delete_folder_contents = self.novelai_delete_folder_contents_check.isChecked()
-            self.config_data.novelai_quality_tags = self.novelai_quality_tags_check.isChecked()
+            self.config_data.novelai_quality_preset = self.novelai_quality_preset_combo.currentData() or "standard"
             self.config_data.novelai_uc_preset = self.novelai_uc_preset_combo.currentData() or "strong"
             self.config_data.novelai_dataset_mode = self.novelai_dataset_mode()
             self.config_data.novelai_model = self.novelai_model_combo.currentText().strip() or DEFAULT_NOVELAI_MODEL
@@ -8100,6 +8496,7 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_variety_boost = self.novelai_variety_boost_check.isChecked()
             self.config_data.novelai_batch_count = self.novelai_number_of_images()
             self.config_data.novelai_is_opus = self.novelai_opus_check.isChecked()
+            self.config_data.novelai_transparent_background = self.novelai_transparent_background_check.isChecked()
             self.config_data.novelai_auto_open = self.novelai_auto_open_check.isChecked()
             self.config_data.novelai_auto_upscale = self.novelai_auto_upscale_check.isChecked()
             self.config_data.novelai_save_metadata_json = self.novelai_metadata_check.isChecked()
@@ -8672,7 +9069,12 @@ class MainWindow(QMainWindow):
             self.current_output_format(),
         )
 
-    def create_upscale_task(self, source: Path, force: bool = False) -> UpscaleTask:
+    def create_upscale_task(
+        self,
+        source: Path,
+        force: bool = False,
+        prefetch_managed: bool = False,
+    ) -> UpscaleTask:
         source = self.normalized_path(source)
         engine_input = self.normalized_path(self.display_source_path(source))
         engine = self.current_engine()
@@ -8724,6 +9126,7 @@ class MainWindow(QMainWindow):
             read_cache=bool(not archive_mode and self.use_scale_cache_check.isChecked()),
             save_to_cache=bool(not archive_mode and self.save_scale_check.isChecked()),
             force=bool(force),
+            prefetch_managed=bool(prefetch_managed),
             skip_tall_images=bool(self.skip_tall_check.isChecked()),
             skip_height_threshold=int(self.skip_height_spin.value()),
             hdr_tonemap_brightness=float(self.config_data.hdr_tonemap_brightness),
@@ -8907,6 +9310,9 @@ class MainWindow(QMainWindow):
             self.viewer.display_flip_vertical,
         )
 
+    def original_pixmap_progress_key(self, display_path: Path) -> tuple:
+        return self.pixmap_progress_key("original", display_path)
+
     def seed_current_pixmap_progress_keys(self) -> None:
         if not self.image_paths or self.current_index < 0:
             return
@@ -8916,9 +9322,26 @@ class MainWindow(QMainWindow):
         for index in indexes:
             if 0 <= index < len(self.image_paths):
                 path = self.image_paths[index]
-                self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", path))
+                self.prefetch_pixmap_plan_keys.add(
+                    self.original_pixmap_progress_key(self.display_source_path(path))
+                )
                 if self.processing_key(path) in self.processed_cache:
                     self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", path))
+
+    def queue_cached_pixmap_prefetch(self, paths: list[Path]) -> None:
+        warm_items: list[tuple[object, QImage]] = []
+        for path in paths:
+            display_path = self.normalized_path(self.display_source_path(path))
+            original = self.original_cache.get(display_path)
+            if original is not None and not original.isNull():
+                warm_items.append((self.original_pixmap_progress_key(display_path), original))
+            processed = self.processed_image_from_cache(self.processing_key(path))
+            if processed is not None and not processed.isNull():
+                warm_items.append((self.pixmap_progress_key("processed", path), processed))
+        if not warm_items:
+            return
+        self.prefetch_pixmap_plan_keys.update(key for key, _image in warm_items)
+        self.viewer.queue_pixmap_prefetch(warm_items)
 
     def on_pixmap_prefetch_progress(self, warmed: int, remaining: int, cache_count: int, elapsed_ms: float) -> None:
         self.record_profile("QPixmap生成(UI)", elapsed_ms)
@@ -9297,6 +9720,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         if not self.image_paths or self.current_index < 0:
             return
+        if navigation:
+            self.clear_prefetch_work_queue()
         profile_start = time.perf_counter()
         path = self.image_paths[self.current_index]
         source, processed, state, skipped = self.image_state_for_display(path, front=True)
@@ -9317,15 +9742,17 @@ class MainWindow(QMainWindow):
             dual_page=self.dual_page_enabled,
             dual_page_reversed=self.dual_page_reversed(),
         )
-        self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", path))
-        self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", path))
+        original_pixmap_key = self.original_pixmap_progress_key(self.display_source_path(path))
+        self.viewer.pixmap_prefetch_done_keys.add(original_pixmap_key)
+        self.prefetch_pixmap_plan_keys.add(original_pixmap_key)
         if processed is not None and not processed.isNull():
             self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
             self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", path))
         if secondary_index is not None:
             secondary_path = self.image_paths[secondary_index]
-            self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("original", secondary_path))
-            self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("original", secondary_path))
+            secondary_original_pixmap_key = self.original_pixmap_progress_key(self.display_source_path(secondary_path))
+            self.viewer.pixmap_prefetch_done_keys.add(secondary_original_pixmap_key)
+            self.prefetch_pixmap_plan_keys.add(secondary_original_pixmap_key)
             if secondary_processed is not None and not secondary_processed.isNull():
                 self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", secondary_path))
                 self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", secondary_path))
@@ -9479,7 +9906,7 @@ class MainWindow(QMainWindow):
                 skipped = True
                 state = "対象外"
             else:
-                self.enqueue_realcugan(path, front=front)
+                self.enqueue_realcugan(path, front=front, prefetch_managed=True)
                 state = f"{self.engine_label()}待ち"
             processed = None
         else:
@@ -10989,6 +11416,21 @@ class MainWindow(QMainWindow):
             self.work_queue.queue.clear()
             self.queued_tasks.clear()
 
+    def clear_prefetch_work_queue(self) -> None:
+        with self.work_queue.mutex:
+            items = [item for item in self.work_queue.queue if item is not None]
+            kept: list[Path] = []
+            for item in items:
+                task = self.queued_tasks.get(item)
+                if task is None or not task.prefetch_managed:
+                    kept.append(item)
+                else:
+                    self.queued_tasks.pop(item, None)
+            self.work_queue.queue.clear()
+            self.work_queue.queue.extend(kept)
+            if kept:
+                self.work_queue.not_empty.notify()
+
     def clear_colorize_queue(self) -> None:
         with self.colorize_queue.mutex:
             self.colorize_queue.queue.clear()
@@ -11050,7 +11492,7 @@ class MainWindow(QMainWindow):
         self.seed_current_pixmap_progress_keys()
         self.clear_prefetch_io_queue()
         self.clear_colorize_queue()
-        realcugan_plan = self.make_plan(self.realcugan_prefetch_spin.value())
+        realcugan_plan = self.make_upscale_plan(self.realcugan_prefetch_spin.value())
         upscale_plan: list[Path] = []
         upscale_prefetch_plan: list[Path] = []
         for position, path in enumerate(realcugan_plan):
@@ -11088,14 +11530,25 @@ class MainWindow(QMainWindow):
         self.start_viewer_prefetch(viewer_plan)
         self.update_prefetch_progress_bars()
         for position, path in enumerate(upscale_plan):
-            self.enqueue_realcugan(path, front=position == 0, check_existing=False, check_skip=False)
-        self.reorder_work_queue(upscale_plan)
+            self.enqueue_realcugan(
+                path,
+                front=position == 0,
+                check_existing=False,
+                check_skip=False,
+                prefetch_managed=True,
+            )
+        displayed_paths = [
+            path
+            for _index, path in sorted(self.current_display_index_entries(), key=lambda entry: entry[0])
+        ]
+        self.rebuild_work_queue([*upscale_plan, *displayed_paths])
 
     def start_viewer_prefetch(self, viewer_plan: list[Path]) -> None:
         self.prefetch_viewer_display_paths = {
             self.normalized_path(self.display_source_path(path))
             for path in viewer_plan
         }
+        self.queue_cached_pixmap_prefetch(viewer_plan)
         if not viewer_plan:
             self.update_prefetch_progress_bars(viewer_plan)
             return
@@ -11198,7 +11651,7 @@ class MainWindow(QMainWindow):
             if processed_source in engine_plan_paths:
                 self.prefetch_engine_done_paths.add(processed_source)
         warm_items: list[tuple[object, QImage]] = [
-            (self.pixmap_progress_key("original", path), image)
+            (self.original_pixmap_progress_key(path), image)
             for path, image in originals.items()
             if (path in current_paths or path in current_display_paths) and not image.isNull()
         ]
@@ -11248,6 +11701,19 @@ class MainWindow(QMainWindow):
     def make_prefetch_plan(self, count: int) -> list[Path]:
         return self.make_plan(count)[1:]
 
+    def make_upscale_plan(self, count: int) -> list[Path]:
+        if not self.image_paths or not (0 <= self.current_index < len(self.image_paths)):
+            return []
+        remaining = max(0, int(count))
+        plan = [self.image_paths[self.current_index]]
+        forward = self.image_paths[self.current_index + 1:self.current_index + 1 + remaining]
+        plan.extend(forward)
+        remaining -= len(forward)
+        if remaining > 0:
+            start = max(0, self.current_index - remaining)
+            plan.extend(reversed(self.image_paths[start:self.current_index]))
+        return plan
+
     def enqueue_realcugan(
         self,
         path: Path,
@@ -11255,9 +11721,10 @@ class MainWindow(QMainWindow):
         force: bool = False,
         check_existing: bool = True,
         check_skip: bool = True,
+        prefetch_managed: bool = False,
     ) -> None:
         path = self.normalized_path(path)
-        task = self.create_upscale_task(path, force=force)
+        task = self.create_upscale_task(path, force=force, prefetch_managed=prefetch_managed)
         if not force and task.key in self.processed_cache:
             return
         if check_existing and not force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
@@ -11268,7 +11735,11 @@ class MainWindow(QMainWindow):
             return
         if path in self.queued_tasks:
             queued_task = self.queued_tasks[path]
-            if not (queued_task.key == task.key and queued_task.force and not task.force):
+            preserve_queued_task = queued_task.key == task.key and (
+                (queued_task.force and not task.force)
+                or (not queued_task.prefetch_managed and task.prefetch_managed)
+            )
+            if not preserve_queued_task:
                 self.queued_tasks[path] = task
             if front:
                 self.promote_work_item(path)
@@ -11290,17 +11761,29 @@ class MainWindow(QMainWindow):
             self.work_queue.queue.appendleft(path)
             self.work_queue.not_empty.notify()
 
-    def reorder_work_queue(self, priority_paths: list[Path]) -> None:
-        priority = [self.normalized_path(path) for path in priority_paths]
-        priority_rank = {path: index for index, path in enumerate(priority)}
+    def rebuild_work_queue(self, priority_paths: list[Path]) -> None:
+        priority = list(dict.fromkeys(self.normalized_path(path) for path in priority_paths))
         with self.work_queue.mutex:
             items = [item for item in self.work_queue.queue if item is not None]
             if not items:
                 return
-            items.sort(key=lambda item: priority_rank.get(self.normalized_path(item), len(priority_rank) + 1))
+            queued_by_path = {self.normalized_path(item): item for item in items}
+            ordered = [queued_by_path[path] for path in priority if path in queued_by_path]
+            ordered_set = set(ordered)
+            preserved: list[Path] = []
+            for item in items:
+                if item in ordered_set:
+                    continue
+                task = self.queued_tasks.get(item)
+                if task is None or not task.prefetch_managed:
+                    preserved.append(item)
+                else:
+                    self.queued_tasks.pop(item, None)
             self.work_queue.queue.clear()
-            self.work_queue.queue.extend(items)
-            self.work_queue.not_empty.notify()
+            self.work_queue.queue.extend(ordered)
+            self.work_queue.queue.extend(preserved)
+            if ordered or preserved:
+                self.work_queue.not_empty.notify()
 
     def _worker_loop(self) -> None:
         while True:
