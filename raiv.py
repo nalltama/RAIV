@@ -105,7 +105,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -1268,7 +1268,7 @@ UI_TEXT_EN = {
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
     "拡大縮小を高品質に補完する": "Use high-quality scaling",
     "表示リサンプル方式": "Display resampling method",
-    "原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images in the background. Prefetched pages switch directly to the finished display, while a cache miss never delays navigation. Turn off for standard fast display.",
+    "原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。拡大エンジンの実行中や待機中は新しい先行処理を止め、拡大キューが空になると再開します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images in the background. New work pauses while the upscaling engine is running or queued, then resumes when the upscaling queue becomes idle. Prefetched pages switch directly to the finished display, while a cache miss never delays navigation. Turn off for standard fast display.",
     "Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。": "Lanczos3: sharp and standard. Lanczos4: sharper but may introduce ringing. Bicubic: softer and natural. Area: stable for large reductions and helps reduce jaggies.",
     "Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。": "Lanczos4 uses OpenCV when available; otherwise it falls back to Lanczos3-equivalent processing.",
     "選択": "Select",
@@ -5266,6 +5266,7 @@ class GLImageView(QOpenGLWidget):
         self.resample_prefetch_queue: queue.PriorityQueue[tuple[int, int, int, object, QImage, int, int, str, object]] = queue.PriorityQueue()
         self.resample_prefetch_pending: dict[object, int] = {}
         self.resample_prefetch_plan_keys: set[object] = set()
+        self.resample_prefetch_paused = False
         self.resample_result_queue: deque[tuple[int, object, QImage, float]] = deque()
         self.resample_result_lock = threading.Lock()
         self.resample_result_timer = QTimer(self)
@@ -5510,6 +5511,7 @@ class GLImageView(QOpenGLWidget):
     ) -> object | None:
         if (
             not self.cpu_resample_cache_enabled
+            or self.resample_prefetch_paused
             or image.isNull()
             or physical_width <= 0
             or physical_height <= 0
@@ -5548,6 +5550,9 @@ class GLImageView(QOpenGLWidget):
             adjustment_snapshot,
         ))
         return key
+
+    def set_resample_prefetch_paused(self, paused: bool) -> None:
+        self.resample_prefetch_paused = bool(paused)
 
     def resample_prefetch_progress_counts(self) -> tuple[int, int]:
         total = len(self.resample_prefetch_plan_keys)
@@ -6453,6 +6458,8 @@ class MainWindow(QMainWindow):
         self.processing_paths: set[Path] = set()
         self.processing_task_keys: dict[Path, tuple] = {}
         self.queued_tasks: dict[Path, UpscaleTask] = {}
+        self.upscale_worker_active = False
+        self.resample_prefetch_suspended_for_upscale = False
         self.work_queue: queue.Queue[Path | None] = queue.Queue()
         self.prefetch_io_queue: queue.PriorityQueue[tuple[int, int, int, str, object, str, str]] = queue.PriorityQueue()
         self.prefetch_io_sequence = 0
@@ -7407,7 +7414,7 @@ class MainWindow(QMainWindow):
         self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
         resample_form.addRow("表示リサンプル方式", self.cpu_resample_combo)
         other_layout.addLayout(resample_form)
-        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。"))
+        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。拡大エンジンの実行中や待機中は新しい先行処理を止め、拡大キューが空になると再開します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。"))
         other_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
         other_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
         other_layout.addWidget(self.separator())
@@ -11109,6 +11116,11 @@ class MainWindow(QMainWindow):
     def schedule_resample_prefetch(self, invalidate: bool = True, include_neighbors: bool = True) -> None:
         if not self.image_paths or self.current_index < 0:
             return
+        if self.upscale_work_active():
+            self.suspend_resample_prefetch_for_upscale()
+            return
+        self.resample_prefetch_suspended_for_upscale = False
+        self.viewer.set_resample_prefetch_paused(False)
         if invalidate or self.resample_prefetch_generation <= 0:
             self.resample_prefetch_generation += 1
             self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
@@ -13237,6 +13249,26 @@ class MainWindow(QMainWindow):
             self.work_queue.queue.clear()
             self.queued_tasks.clear()
 
+    def upscale_work_active(self) -> bool:
+        return bool(self.upscale_worker_active or self.processing_paths or self.queued_tasks)
+
+    def suspend_resample_prefetch_for_upscale(self) -> None:
+        self.resample_prefetch_suspended_for_upscale = True
+        self.viewer.set_resample_prefetch_paused(True)
+        if not self.viewer.resample_prefetch_plan_keys and not self.viewer.resample_prefetch_pending:
+            return
+        self.resample_prefetch_generation += 1
+        self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+        self.update_prefetch_progress_bars()
+
+    def resume_resample_prefetch_after_upscale(self) -> None:
+        if self.upscale_work_active():
+            self.suspend_resample_prefetch_for_upscale()
+            return
+        invalidate = self.resample_prefetch_suspended_for_upscale
+        self.resample_prefetch_suspended_for_upscale = False
+        self.schedule_resample_prefetch(invalidate=invalidate)
+
     def clear_prefetch_work_queue(self) -> None:
         with self.work_queue.mutex:
             items = [item for item in self.work_queue.queue if item is not None]
@@ -13349,8 +13381,6 @@ class MainWindow(QMainWindow):
             self.colorize_plan = []
             self.colorize_done_paths.clear()
         self.start_viewer_prefetch(viewer_plan)
-        self.schedule_resample_prefetch(invalidate=True)
-        self.update_prefetch_progress_bars()
         for position, path in enumerate(upscale_plan):
             self.enqueue_realcugan(
                 path,
@@ -13364,6 +13394,8 @@ class MainWindow(QMainWindow):
             for _index, path in sorted(self.current_display_index_entries(), key=lambda entry: entry[0])
         ]
         self.rebuild_work_queue([*upscale_plan, *displayed_paths])
+        self.schedule_resample_prefetch(invalidate=True)
+        self.update_prefetch_progress_bars()
 
     def start_viewer_prefetch(self, viewer_plan: list[Path]) -> None:
         self.prefetch_viewer_display_paths = {
@@ -13568,6 +13600,7 @@ class MainWindow(QMainWindow):
                 self.promote_work_item(path)
             return
         self.queued_tasks[path] = task
+        self.suspend_resample_prefetch_for_upscale()
         if front:
             with self.work_queue.mutex:
                 self.work_queue.queue.appendleft(path)
@@ -13616,7 +13649,9 @@ class MainWindow(QMainWindow):
             task = self.queued_tasks.pop(path, None)
             if task is None:
                 continue
+            self.upscale_worker_active = True
             if self.should_skip_upscale_in_worker(task):
+                self.upscale_worker_active = False
                 self.signals.process_done.emit({
                     "path": path,
                     "skipped": True,
@@ -13627,6 +13662,7 @@ class MainWindow(QMainWindow):
             if not task.force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
                 image = load_image(task.cache_path, task.hdr_tonemap_brightness)
                 if not image.isNull():
+                    self.upscale_worker_active = False
                     self.signals.process_done.emit({
                         "path": path,
                         "code": 0,
@@ -13654,6 +13690,7 @@ class MainWindow(QMainWindow):
             finally:
                 self.processing_paths.discard(path)
                 self.processing_task_keys.pop(path, None)
+            self.upscale_worker_active = False
             self.signals.process_done.emit(result)
 
     def should_skip_upscale_in_worker(self, task: UpscaleTask) -> bool:
@@ -13786,6 +13823,7 @@ class MainWindow(QMainWindow):
             if isinstance(key, tuple) and self.is_current_processing_key(key):
                 self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
+            self.resume_resample_prefetch_after_upscale()
             return
         output = result.get("output") or ""
         if output:
@@ -13796,6 +13834,7 @@ class MainWindow(QMainWindow):
             normalized = self.normalized_path(path)
             if normalized not in self.image_path_set:
                 self.update_prefetch_progress_bars()
+                self.resume_resample_prefetch_after_upscale()
                 return
             key = result.get("key")
             if not isinstance(key, tuple):
@@ -13830,10 +13869,11 @@ class MainWindow(QMainWindow):
                     name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
                     self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
                     self.update_window_title()
-            self.schedule_resample_prefetch(invalidate=False)
+            self.resume_resample_prefetch_after_upscale()
         else:
             self.append_log(f"Process exited with code {result['code']}: {self.display_name(path)}")
             self.update_prefetch_progress_bars()
+            self.resume_resample_prefetch_after_upscale()
 
     def has_processed_result(self, source: Path) -> bool:
         return self.processing_key(source) in self.processed_cache or self.existing_processed_path(source) is not None

@@ -199,7 +199,7 @@ NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persiste
 - テーマ（Windowsの設定に同期 / ライトテーマ / ダークテーマ）。QtのWindows連携を使い、RAIV独自の配色は使用しません
 - AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
 - 右ペインの左右移動。境界の三本線グリップをドラッグして幅を変更可能
-- 拡大縮小時の高品質補完。先読み済みの周辺ページは表示サイズに合わせた補完結果を低優先度のバックグラウンド処理で準備し、ページ送り直後から完成した表示を使用します。連続ページ送り中は新しい処理の開始を抑え、未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
+- 拡大縮小時の高品質補完。先読み済みの周辺ページは表示サイズに合わせた補完結果を低優先度のバックグラウンド処理で準備し、ページ送り直後から完成した表示を使用します。連続ページ送り中と拡大エンジンの実行中／待機中は新しい処理の開始を抑え、拡大キューが空になると自動的に再開します。未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area。見開き、比較モード、ズームと表示位置の維持、表示補正、DPIを含む表示条件ごとに結果を保持します
 - アプリの二重起動禁止
 - 最後に開いていた画像を次回起動時に開く
@@ -500,7 +500,7 @@ Other:
 - Theme (Follow Windows settings / Light theme / Dark theme). This uses Qt's Windows integration rather than a RAIV-specific color palette.
 - Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
 - Move the side panel between the left and right side, and drag the three-line boundary grip to resize it
-- High-quality scaling for zoomed/resized display. Nearby prefetched pages are resampled for their display size by low-priority background workers and use the finished result from the first frame after navigation. New work is held back during continuous navigation, while a cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
+- High-quality scaling for zoomed/resized display. Nearby prefetched pages are resampled for their display size by low-priority background workers and use the finished result from the first frame after navigation. New work is held back during continuous navigation and while an upscaling engine is running or queued, then resumes automatically when the upscaling queue becomes idle. A cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area. Results are cached for the complete display conditions, including spread view, compare mode, preserved zoom and position, display adjustments, and DPI.
 - Prevent multiple app instances
 - Open the last viewed image on startup
