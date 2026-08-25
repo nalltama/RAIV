@@ -122,7 +122,7 @@ Real-ESRGAN モデル:
 
 全般:
 
-- ビューアー先読み枚数（現在ページの周辺で表示用に先読みする最大枚数）
+- ビューアー先読み枚数（現在ページの周辺で画像読込、表示用QPixmap、高品質表示リサンプリングを先行処理する最大枚数）
 - 背景色
 - 見開き表示による漫画の左右2枚表示
 - 横長画像を既に見開きのページとして扱う1枚表示
@@ -173,10 +173,11 @@ NovelAI生成:
 - プロンプト分解モードで再構築したプロンプトと除外したい要素を各一覧の下に表示可能
 - 保存先、保存名、APIトークン、品質タグ、モデル、サンプラーなどを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
 - アニメモード / ケモノモード切替（ケモノモードでは生成時に `fur dataset` をプロンプト先頭へ追加）
-- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード。名前付きフォルダを入れ子にしてタグを整理し、折りたたみやドラッグによるフォルダ間移動もできます。フォルダの「ランダム」をオンにすると、有効な内容を `|` でつないで全体を `||` で囲み、ランダム選択構文として送信します。タグとフォルダの追加先は選択行に影響されず、既定では一覧の末尾、「先頭に追加する」をオンにすると先頭になります。入力欄に文字がある状態でフォルダ追加を押すと、その文字をフォルダ名に使います（入力欄からのタグ追加は1行扱い。既存テキストの分解時は括弧、`||...|...||` のランダム選択構文、`1.2::tagA, tagB::` や `-1::tag::` などの数値重み指定構文の外側にある`, `を区切りとして扱います。単独の `::` は未閉じの強調/抑制括弧を閉じるものとして扱います）
-- プロンプト分解モードで無効化したタグは、通常モードではRAIV専用マーカー `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>` で保持されます。このマーカー内の内容はNovelAI送信時には除外されます。
+- プロンプトをタグ単位へ分解し、追加、有効/無効、直接編集、強調/抑制、上下ボタン/ドラッグ並び替え、削除を行う編集モード。追加ボタンは入力欄が空でも空のタグ枠を追加します。名前付きフォルダを入れ子にしてタグを整理し、折りたたみやドラッグによるフォルダ間移動もできます。フォルダの「ランダム」をオンにすると、有効な内容を `|` でつないで全体を `||` で囲み、ランダム選択構文として送信します。ランダムフォルダ内の空のタグ枠は「何も選ばない」候補になります。タグとフォルダの追加先は選択行に影響されず、既定では一覧の末尾、「先頭に追加する」をオンにすると先頭になります。入力欄に文字がある状態でフォルダ追加を押すと、その文字をフォルダ名に使います（入力欄からのタグ追加は1行扱い。既存テキストの分解時は括弧、`||...|...||` のランダム選択構文、`1.2::tagA, tagB::` や `-1::tag::` などの数値重み指定構文の外側にある`, `を区切りとして扱います。単独の `::` は未閉じの強調/抑制括弧を閉じるものとして扱います）
+- プロンプト分解モードのタブ表示。プロンプトと除外したい要素は共通のタブモード設定で切り替え、タブ一覧はそれぞれ独立して保持します。オンにすると最上位フォルダを同名タブへ変換し、その配下の入れ子フォルダは維持します。最上位でフォルダに入っていないタグは、元の並びにある連続範囲ごとに `General`、`General 2`、`General 3`…へ分けるため、フォルダとの前後関係も維持されます。最初の `General` は名前を変更できる削除不可のタブです。オフに戻すと、このGeneralの内容は最上位のタグへ、それ以外のタブは同名の最上位フォルダへ戻します。オフ中の編集によって再変換が必要になってもGeneralの変更名は維持し、対応する最上位タグがなければ空のGeneralを左端へ戻します。タブは名前の文字幅に合わせて左詰めで並び、右ペインへ収まらない場合は複数行へ折り返します。多数の場合はタブ領域内を縦スクロールでき、タグ一覧の操作領域を維持します。選択中のタブは背景色と枠で強調します。タブ上のマウスホイールで前後のタブへ切り替えられます。タブ名はダブルクリックするとその場で編集でき、挿入位置を表示しながらドラッグで並び替え、一覧末尾の `+` で追加、General以外はホイールクリックで削除できます。タグやフォルダのドラッグ中は移動内容を半透明で表示し、タグ間へ挿入する場合は挿入位置を横線で示します。一覧の上下端ではドラッグしたままスクロールできます。別タブへドラッグする時は、移動先タブへ重ねると表示が切り替わり、そのままドロップできます。最上位のランダムフォルダをタブへ変換した場合、そのランダム設定は解除されます。
+- プロンプト分解モードで無効化したタグは、通常モードではRAIV専用マーカー `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>` で保持されます。空のタグ枠も専用マーカー `<<RAIV_EMPTY_PROMPT_TAG>>` で保持されます。これらの保持用マーカーはNovelAI送信時には除外されます。
 - 分解モードのフォルダ構造は、通常モードではRAIV専用マーカー `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>` で保持されます。ランダム設定も専用の `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` マーカーで保持します。フォルダ名はマーカー内へ安全に符号化され、NovelAI送信時にはフォルダマーカーを除外してランダム選択構文へ変換します。ユーザーが直接入力した `||...|...||` を自動でフォルダ化することはありません。
-- 「フォルダ削除時、中身ごと消す」は既定でオフです。オフではフォルダだけを削除して中のタグやフォルダを同じ位置へ残し、オンでは中身もまとめて削除します。
+- 「タブ/フォルダ削除時、中身ごと消す」は既定でオフです。オフではフォルダだけを削除して中のタグやフォルダを同じ位置へ残し、タブを削除した場合は中身をGeneralの末尾へ移します。オンではタブやフォルダの中身もまとめて削除します。Generalはこの設定にかかわらず削除できません。
 - タグプリセットの保存、読込、削除（`setting.json` とは別の `novelai_prompt_presets.json` に保存）
 - 品質タグ（標準、軽い、指定なし）と除外プリセット（強い、弱い、ケモノモード、人間に重点を置く、指定なし）の指定。V5では品質タグの「軽い」と除外プリセットの「弱い」に、現在の公式V5プリセットを使用します
 - Enterで生成、Shift+Enterで改行する入力オプション
@@ -198,8 +199,8 @@ NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persiste
 - テーマ（Windowsの設定に同期 / ライトテーマ / ダークテーマ）。QtのWindows連携を使い、RAIV独自の配色は使用しません
 - AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
 - 右ペインの左右移動。境界の三本線グリップをドラッグして幅を変更可能
-- 拡大縮小時の高品質補完
-- 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area
+- 拡大縮小時の高品質補完。先読み済みの周辺ページは表示サイズに合わせた補完結果を低優先度のバックグラウンド処理で準備し、ページ送り直後から完成した表示を使用します。連続ページ送り中は新しい処理の開始を抑え、未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
+- 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area。見開き、比較モード、ズームと表示位置の維持、表示補正、DPIを含む表示条件ごとに結果を保持します
 - アプリの二重起動禁止
 - 最後に開いていた画像を次回起動時に開く
 - フォルダごとに最後に開いていた画像を記録
@@ -422,7 +423,7 @@ Engine settings:
 
 General:
 
-- Viewer prefetch count (maximum number of nearby pages to preload for display)
+- Viewer prefetch count (maximum number of nearby pages to preload for image data, display QPixmaps, and high-quality display resampling)
 - Background color
 - Spread view for manga pages
 - Show landscape images as a single page when they are already spread pages
@@ -473,10 +474,11 @@ NovelAI Generation:
 - Optionally show the reconstructed Prompt and Undesired Content below each list in prompt decomposition mode
 - Output folder, output name, API token, quality tags, model, and sampler settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved
 - Anime / Furry mode switch. Furry mode adds `fur dataset` to the beginning of the generation prompt.
-- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. Tags can be organized in nested named folders, collapsed, and dragged between folders. Enabling Random on a folder joins its active contents with `|` and wraps the result in `||` when sending the prompt. New tags and folders ignore the selected row and are added to the bottom by default, or to the top when Add at top is enabled. When the input field contains text, Add folder uses it as the folder name. Text added as a tag is kept as one row; decomposing existing text splits on `, ` outside brackets, `||...|...||` random-choice syntax, and numeric weight syntax such as `1.2::tagA, tagB::` or `-1::tag::`. A standalone `::` is treated as closing unbalanced emphasis/suppression brackets.
-- Tags disabled in prompt decomposition mode are preserved in normal mode with RAIV-specific markers: `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>`. Content inside those markers is excluded when sending prompts to NovelAI.
+- Optional tag-list prompt editor with add, enable/disable, direct edit, emphasize/suppress, up/down and drag reorder controls, and delete. The Add button creates an empty tag row even when the input field is blank. Tags can be organized in nested named folders, collapsed, and dragged between folders. Enabling Random on a folder joins its active contents with `|` and wraps the result in `||` when sending the prompt. An empty tag row inside a Random folder is treated as a “select nothing” option. New tags and folders ignore the selected row and are added to the bottom by default, or to the top when Add at top is enabled. When the input field contains text, Add folder uses it as the folder name. Text added as a tag is kept as one row; decomposing existing text splits on `, ` outside brackets, `||...|...||` random-choice syntax, and numeric weight syntax such as `1.2::tagA, tagB::` or `-1::tag::`. A standalone `::` is treated as closing unbalanced emphasis/suppression brackets.
+- Optional tabs for prompt decomposition mode. Prompt and Undesired Content share one tab-mode switch while keeping separate tab lists. Enabling tab mode converts top-level folders into same-named tabs and preserves nested folders inside them. Consecutive runs of loose top-level tags become `General`, `General 2`, `General 3`, and so on at their original positions, preserving their order relative to folders. The first `General` tab can be renamed but cannot be deleted. Disabling tab mode restores that General tab as loose top-level tags and every other tab as a same-named top-level folder. If edits made while tab mode is off require reconversion, the renamed General label is retained; an empty General with no corresponding loose tags returns to the left edge. Tabs are left-aligned at widths based on their labels and wrap onto additional rows when the side panel is too narrow. When there are many tabs, the tab area scrolls vertically so the tag list remains usable. The selected tab uses a clearly highlighted background and border. Use the mouse wheel over a tab to switch to the previous or next tab. Double-click a tab to edit its name in place, drag tabs to reorder them with an insertion indicator, use the `+` at the end of the list to add one, and middle-click any tab except General to delete it. While dragging a tag or folder, RAIV shows a translucent preview and a horizontal line at the insertion point between tags; holding it at the top or bottom edge scrolls the list. Hovering over another tab switches to it so the item can be dropped there. Converting a top-level Random folder to a tab clears its Random setting.
+- Tags disabled in prompt decomposition mode are preserved in normal mode with RAIV-specific markers: `<<RAIV_DISABLED_PROMPT>>...<</RAIV_DISABLED_PROMPT>>`. Empty tag rows are preserved with `<<RAIV_EMPTY_PROMPT_TAG>>`. These preservation markers are excluded when sending prompts to NovelAI.
 - Folder structure from prompt decomposition mode is preserved in normal mode with RAIV-specific markers: `<<RAIV_PROMPT_FOLDER:...>>...<</RAIV_PROMPT_FOLDER>>`. Random folder settings are preserved with a separate `<<RAIV_PROMPT_RANDOM_FOLDER:...>>` marker. Folder names are safely encoded in the marker; when sending prompts to NovelAI, the markers are removed and random folders are converted to random-choice syntax. User-written `||...|...||` syntax is never converted into a folder automatically.
-- `Delete folder contents with folder` is off by default. When off, deleting a folder keeps its tags and nested folders at the same position; when on, its contents are deleted with it.
+- `Delete tab/folder contents` is off by default. When off, deleting a folder keeps its tags and nested folders at the same position, while deleting a tab moves its contents to the end of General. When on, contents are deleted with the tab or folder. General cannot be deleted regardless of this setting.
 - Save, load, and delete tag presets. Presets are stored in `novelai_prompt_presets.json`, separate from `setting.json`.
 - Quality Tags preset selection (Standard, Light, None) and Undesired Content preset selection (Strong, Light, Furry Focus, Human Focus, None). V5 Light uses the current official V5 Quality Tags and Undesired Content preset.
 - Enter-to-generate option, with Shift+Enter inserting a line break
@@ -498,8 +500,8 @@ Other:
 - Theme (Follow Windows settings / Light theme / Dark theme). This uses Qt's Windows integration rather than a RAIV-specific color palette.
 - Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
 - Move the side panel between the left and right side, and drag the three-line boundary grip to resize it
-- High-quality scaling for zoomed/resized display
-- Display resampling method: Lanczos3, Lanczos4, Bicubic, Area
+- High-quality scaling for zoomed/resized display. Nearby prefetched pages are resampled for their display size by low-priority background workers and use the finished result from the first frame after navigation. New work is held back during continuous navigation, while a cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
+- Display resampling method: Lanczos3, Lanczos4, Bicubic, Area. Results are cached for the complete display conditions, including spread view, compare mode, preserved zoom and position, display adjustments, and DPI.
 - Prevent multiple app instances
 - Open the last viewed image on startup
 - Remember the last viewed image for each folder

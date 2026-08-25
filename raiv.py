@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import base64
+import copy
 import ctypes
 import io
 import json
@@ -28,8 +29,8 @@ from functools import cmp_to_key
 from pathlib import Path, PurePosixPath
 
 try:
-    from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QTransform
+    from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QMimeData, QTimer, Signal
+    from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
@@ -104,7 +105,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.2.7"
+APP_VERSION = "1.3.0"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -207,9 +208,13 @@ NOVELAI_QUALITY_TAGS_LIGHT_SUFFIXES_BY_MODEL = {
 }
 RAIV_DISABLED_PROMPT_START = "<<RAIV_DISABLED_PROMPT>>"
 RAIV_DISABLED_PROMPT_END = "<</RAIV_DISABLED_PROMPT>>"
+RAIV_EMPTY_PROMPT_TAG = "<<RAIV_EMPTY_PROMPT_TAG>>"
 RAIV_PROMPT_FOLDER_START = "<<RAIV_PROMPT_FOLDER:"
 RAIV_PROMPT_RANDOM_FOLDER_START = "<<RAIV_PROMPT_RANDOM_FOLDER:"
 RAIV_PROMPT_FOLDER_END = "<</RAIV_PROMPT_FOLDER>>"
+NOVELAI_PROMPT_TAB_DRAG_MIME = "application/x-raiv-prompt-node"
+NOVELAI_PROMPT_TAB_REORDER_MIME = "application/x-raiv-prompt-tab"
+NOVELAI_GENERAL_TAB_NAME = "General"
 NOVELAI_UC_PRESET_OPTIONS = [
     ("strong", "強い"),
     ("light", "弱い"),
@@ -460,6 +465,10 @@ MODIFIER_MASK = (
 
 
 def viewer_pixmap_cache_limit(prefetch_count: int) -> int:
+    return max(24, max(0, int(prefetch_count)) * 4 + 8)
+
+
+def viewer_resample_cache_limit(prefetch_count: int) -> int:
     return max(24, max(0, int(prefetch_count)) * 4 + 8)
 
 
@@ -1259,7 +1268,7 @@ UI_TEXT_EN = {
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
     "拡大縮小を高品質に補完する": "Use high-quality scaling",
     "表示リサンプル方式": "Display resampling method",
-    "原寸と異なる表示サイズの画像を、よりきれいに見えるよう作成して保持します。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images when shown at a different size. Turn off for standard fast display.",
+    "原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images in the background. Prefetched pages switch directly to the finished display, while a cache miss never delays navigation. Turn off for standard fast display.",
     "Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。": "Lanczos3: sharp and standard. Lanczos4: sharper but may introduce ringing. Bicubic: softer and natural. Area: stable for large reductions and helps reduce jaggies.",
     "Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。": "Lanczos4 uses OpenCV when available; otherwise it falls back to Lanczos3-equivalent processing.",
     "選択": "Select",
@@ -1399,6 +1408,11 @@ UI_TEXT_EN = {
     "現在画像からシード値を読み込めませんでした。": "Could not load a seed from the current image.",
     "Enterで生成する（改行はShift+Enter）": "Generate with Enter (Shift+Enter inserts a line break)",
     "フォルダ削除時、中身ごと消す": "Delete folder contents with folder",
+    "タブ/フォルダ削除時、中身ごと消す": "Delete tab/folder contents",
+    "タブモード": "Tab mode",
+    "タブ追加": "Add tab",
+    "新しいタブ": "New Tab",
+    "タブ名": "Tab name",
     "品質タグ": "Quality Tags",
     "除外プリセット": "Undesired Content preset",
     "モード": "Mode",
@@ -1440,6 +1454,7 @@ UI_TEXT_EN = {
     "拡大画像生成": "Processed image generation",
     "拡大後メモリ読込": "Processed memory load",
     "表示用QPixmap": "Display QPixmap",
+    "表示リサンプル": "Display resampling",
     "ログ": "Log",
     "内部プロファイリングを表示": "Show internal profiling",
     "設定値をクリックすると割当を変更できます。Escを入力すると未割当に戻ります。Spaceは次ページ、Backspaceは前ページとして固定です。": "Click a binding value to change it. Press Esc to clear it. Space is fixed to next page and Backspace is fixed to previous page.",
@@ -1568,6 +1583,9 @@ class AppConfig:
     novelai_negative_prompt_expanded: bool = True
     novelai_enter_to_generate: bool = True
     novelai_delete_folder_contents: bool = False
+    novelai_prompt_tab_mode: bool = False
+    novelai_prompt_tabs: list[dict[str, object]] = field(default_factory=list)
+    novelai_negative_prompt_tabs: list[dict[str, object]] = field(default_factory=list)
     novelai_quality_preset: str = "standard"
     novelai_uc_preset: str = "strong"
     novelai_dataset_mode: str = "anime"
@@ -1969,6 +1987,15 @@ def load_config() -> AppConfig:
             config.novelai_uc_preset = "strong"
         if config.novelai_dataset_mode not in {key for key, _label in NOVELAI_DATASET_MODE_OPTIONS}:
             config.novelai_dataset_mode = "anime"
+        for field_name in (
+            "novelai_prompt_items",
+            "novelai_negative_prompt_items",
+            "novelai_prompt_tabs",
+            "novelai_negative_prompt_tabs",
+        ):
+            if not isinstance(getattr(config, field_name), list):
+                setattr(config, field_name, [])
+        config.novelai_prompt_tab_mode = bool(config.novelai_prompt_tab_mode)
         config.novelai_prompt_editor_height = max(0, int(config.novelai_prompt_editor_height))
         config.novelai_negative_prompt_editor_height = max(0, int(config.novelai_negative_prompt_editor_height))
         if not config.novelai_model or config.novelai_model not in NOVELAI_MODEL_OPTIONS:
@@ -3240,6 +3267,573 @@ class NovelAIPromptFolderRow(QWidget):
         self.delete_button.setToolTip(labels.get("削除", "削除"))
 
 
+class NovelAIPromptTabRenameEdit(QLineEdit):
+    commitRequested = Signal()
+    cancelRequested = Signal()
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in {Qt.Key_Return, Qt.Key_Enter}:
+            self.commitRequested.emit()
+            event.accept()
+            return
+        if event.key() == Qt.Key_Escape:
+            self.cancelRequested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        super().focusOutEvent(event)
+        self.commitRequested.emit()
+
+
+class NovelAIPromptTabButton(QPushButton):
+    def __init__(self, owner: "NovelAIPromptTabBar", text: str) -> None:
+        super().__init__(text, owner)
+        self.owner = owner
+        self.press_position = QPoint()
+        self.setAcceptDrops(True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip(text)
+        self.clicked.connect(lambda: self.owner.setCurrentIndex(self.owner.index_of_button(self)))
+
+    def mousePressEvent(self, event) -> None:
+        index = self.owner.index_of_button(self)
+        if event.button() == Qt.MiddleButton:
+            if index >= 0:
+                self.owner.middleClicked.emit(index)
+            event.accept()
+            return
+        if event.button() == Qt.LeftButton:
+            self.press_position = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        index = self.owner.index_of_button(self)
+        if event.button() == Qt.LeftButton and index >= 0:
+            self.owner.tabBarDoubleClicked.emit(index)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if (
+            event.buttons() & Qt.LeftButton
+            and (event.position().toPoint() - self.press_position).manhattanLength() >= QApplication.startDragDistance()
+        ):
+            index = self.owner.index_of_button(self)
+            if index >= 0:
+                self.owner.start_tab_drag(index)
+                return
+        super().mouseMoveEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        self.owner.change_tab_from_wheel(event)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            self.owner.clear_reorder_indicator()
+            self.owner.set_drag_hover(self.owner.index_of_button(self))
+            self.owner.update_node_drag_autoscroll(self.mapTo(self.owner, event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+        if self.owner.accepts_tab_reorder(event.mimeData()):
+            self.owner.update_reorder_indicator(self.mapTo(self.owner, event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            self.owner.clear_reorder_indicator()
+            self.owner.set_drag_hover(self.owner.index_of_button(self))
+            self.owner.update_node_drag_autoscroll(self.mapTo(self.owner, event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+        if self.owner.accepts_tab_reorder(event.mimeData()):
+            self.owner.update_reorder_indicator(self.mapTo(self.owner, event.position().toPoint()))
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:
+        self.owner.clear_drag_hover()
+        self.owner.clear_reorder_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        index = self.owner.index_of_button(self)
+        self.owner.clear_drag_hover()
+        self.owner.clear_reorder_indicator()
+        if index < 0:
+            event.ignore()
+            return
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            payload = self.owner.decode_payload(event.mimeData(), NOVELAI_PROMPT_TAB_DRAG_MIME)
+            if payload is None:
+                event.ignore()
+                return
+            self.owner.setCurrentIndex(index)
+            self.owner.tabDropRequested.emit(index, payload)
+            event.acceptProposedAction()
+            return
+        if self.owner.accepts_tab_reorder(event.mimeData()):
+            payload = self.owner.decode_payload(event.mimeData(), NOVELAI_PROMPT_TAB_REORDER_MIME)
+            position = self.mapTo(self.owner, event.position().toPoint())
+            insert_index, _indicator = self.owner.reorder_target(position)
+            if payload is not None and self.owner.drop_reordered_tab_at(payload, insert_index):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
+        super().dropEvent(event)
+
+
+class NovelAIPromptTabBar(QWidget):
+    currentChanged = Signal(int)
+    tabMoved = Signal(int, int)
+    tabBarDoubleClicked = Signal(int)
+    middleClicked = Signal(int)
+    tabDropRequested = Signal(int, object)
+    tabRenameCommitted = Signal(int, str)
+    addRequested = Signal()
+    layoutHeightChanged = Signal(int)
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.entries: list[dict[str, object]] = []
+        self._current_index = -1
+        self.bar_id = uuid.uuid4().hex
+        self.horizontal_spacing = 4
+        self.vertical_spacing = 4
+        self.tab_horizontal_padding = 24
+        self.wrap_width: int | None = None
+        self._hover_index = -1
+        self._hover_timer = QTimer(self)
+        self._hover_timer.setSingleShot(True)
+        self._hover_timer.setInterval(350)
+        self._hover_timer.timeout.connect(self.activate_hovered_tab)
+        self._node_drag_scroll_direction = 0
+        self._node_drag_scroll_timer = QTimer(self)
+        self._node_drag_scroll_timer.setInterval(60)
+        self._node_drag_scroll_timer.timeout.connect(self.perform_node_drag_autoscroll)
+        self.rename_edit = NovelAIPromptTabRenameEdit(self)
+        self.rename_edit.hide()
+        self.rename_edit.commitRequested.connect(lambda: self.finish_tab_rename(True))
+        self.rename_edit.cancelRequested.connect(lambda: self.finish_tab_rename(False))
+        self.rename_index = -1
+        self.reorder_indicator = QFrame(self)
+        self.reorder_indicator.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.reorder_indicator.setFrameShape(QFrame.NoFrame)
+        self.reorder_indicator.hide()
+        self.add_button = QPushButton("+", self)
+        self.add_button.setFixedWidth(28)
+        self.add_button.setFocusPolicy(Qt.NoFocus)
+        self.add_button.clicked.connect(self.addRequested)
+        self.setStyleSheet(
+            "NovelAIPromptTabButton {"
+            " padding: 3px 10px; border: 1px solid palette(mid); border-radius: 4px;"
+            " background: palette(button); color: palette(button-text);"
+            "}"
+            "NovelAIPromptTabButton[selected=\"true\"] {"
+            " background: palette(highlight); color: palette(highlighted-text);"
+            " border: 2px solid palette(highlight); font-weight: 600;"
+            "}"
+        )
+
+    def count(self) -> int:
+        return len(self.entries)
+
+    def addTab(self, text: str) -> int:
+        button = NovelAIPromptTabButton(self, text)
+        self.entries.append({"text": text, "data": None, "button": button})
+        button.show()
+        if self._current_index < 0:
+            self._current_index = 0
+        self.refresh_selection()
+        self.relayout()
+        return len(self.entries) - 1
+
+    def removeTab(self, index: int) -> None:
+        if index < 0 or index >= len(self.entries):
+            return
+        if self.rename_index >= 0:
+            self.finish_tab_rename(False)
+        entry = self.entries.pop(index)
+        button = entry.get("button")
+        if isinstance(button, QWidget):
+            button.hide()
+            button.deleteLater()
+        if not self.entries:
+            next_index = -1
+        elif self._current_index == index:
+            next_index = min(index, len(self.entries) - 1)
+        elif self._current_index > index:
+            next_index = self._current_index - 1
+        else:
+            next_index = self._current_index
+        changed = next_index != self._current_index
+        self._current_index = next_index
+        self.refresh_selection()
+        self.relayout()
+        if changed:
+            self.currentChanged.emit(next_index)
+
+    def setTabData(self, index: int, data: object) -> None:
+        if 0 <= index < len(self.entries):
+            self.entries[index]["data"] = data
+
+    def tabData(self, index: int) -> object:
+        return self.entries[index].get("data") if 0 <= index < len(self.entries) else None
+
+    def setTabText(self, index: int, text: str) -> None:
+        if not 0 <= index < len(self.entries):
+            return
+        self.entries[index]["text"] = text
+        button = self.entries[index].get("button")
+        if isinstance(button, QPushButton):
+            button.setText(text)
+            button.setToolTip(text)
+        self.relayout()
+
+    def tabText(self, index: int) -> str:
+        return str(self.entries[index].get("text") or "") if 0 <= index < len(self.entries) else ""
+
+    def currentIndex(self) -> int:
+        return self._current_index
+
+    def setCurrentIndex(self, index: int) -> None:
+        if index < 0 or index >= len(self.entries) or index == self._current_index:
+            return
+        self._current_index = index
+        self.refresh_selection()
+        self.currentChanged.emit(index)
+
+    def change_tab_from_wheel(self, event) -> None:
+        delta = event.angleDelta().y()
+        if delta == 0:
+            delta = event.angleDelta().x()
+        if delta == 0 or self._current_index < 0:
+            event.ignore()
+            return
+        target = self._current_index - 1 if delta > 0 else self._current_index + 1
+        self.setCurrentIndex(max(0, min(len(self.entries) - 1, target)))
+        event.accept()
+
+    def wheelEvent(self, event) -> None:
+        self.change_tab_from_wheel(event)
+
+    def moveTab(self, from_index: int, to_index: int) -> None:
+        if (
+            from_index < 0
+            or from_index >= len(self.entries)
+            or to_index < 0
+            or to_index >= len(self.entries)
+            or from_index == to_index
+        ):
+            return
+        if self.rename_index >= 0:
+            self.finish_tab_rename(True)
+        current_data = self.tabData(self._current_index)
+        entry = self.entries.pop(from_index)
+        self.entries.insert(to_index, entry)
+        self._current_index = next(
+            (index for index, candidate in enumerate(self.entries) if candidate.get("data") == current_data),
+            min(self._current_index, len(self.entries) - 1),
+        )
+        self.refresh_selection()
+        self.relayout()
+        self.tabMoved.emit(from_index, to_index)
+
+    def tabRect(self, index: int) -> QRect:
+        button = self.entries[index].get("button") if 0 <= index < len(self.entries) else None
+        return button.geometry() if isinstance(button, QWidget) else QRect()
+
+    def index_of_button(self, button: QWidget) -> int:
+        return next((index for index, entry in enumerate(self.entries) if entry.get("button") is button), -1)
+
+    def refresh_selection(self) -> None:
+        for index, entry in enumerate(self.entries):
+            button = entry.get("button")
+            if not isinstance(button, QPushButton):
+                continue
+            selected = index == self._current_index
+            if button.property("selected") != selected:
+                button.setProperty("selected", selected)
+                button.style().unpolish(button)
+                button.style().polish(button)
+                button.update()
+
+    def begin_tab_rename(self, index: int) -> None:
+        if not 0 <= index < len(self.entries):
+            return
+        if self.rename_index >= 0:
+            self.finish_tab_rename(True)
+        button = self.entries[index].get("button")
+        if not isinstance(button, QPushButton):
+            return
+        self.rename_index = index
+        self.rename_edit.setText(self.tabText(index))
+        self.rename_edit.setGeometry(button.geometry())
+        button.hide()
+        self.rename_edit.show()
+        self.rename_edit.raise_()
+        self.rename_edit.setFocus(Qt.MouseFocusReason)
+        self.rename_edit.selectAll()
+
+    def finish_tab_rename(self, commit: bool) -> None:
+        index = self.rename_index
+        if index < 0:
+            return
+        text = self.rename_edit.text().strip()
+        self.rename_index = -1
+        self.rename_edit.hide()
+        button = self.entries[index].get("button") if 0 <= index < len(self.entries) else None
+        if isinstance(button, QPushButton):
+            button.show()
+        if commit and text:
+            self.tabRenameCommitted.emit(index, text)
+        self.relayout()
+
+    def tab_width(self, entry: dict[str, object], available_width: int) -> int:
+        button = entry.get("button")
+        if not isinstance(button, QPushButton):
+            return 0
+        text_width = button.fontMetrics().horizontalAdvance(str(entry.get("text") or ""))
+        return min(max(44, text_width + self.tab_horizontal_padding), max(28, available_width))
+
+    def set_wrap_width(self, width: int | None) -> None:
+        normalized = max(28, int(width)) if width is not None else None
+        if normalized == self.wrap_width:
+            return
+        self.wrap_width = normalized
+        self.relayout()
+
+    def relayout(self) -> None:
+        available_width = max(28, self.width())
+        if self.wrap_width is not None:
+            available_width = min(available_width, self.wrap_width)
+        widgets: list[tuple[QWidget, int]] = []
+        for entry in self.entries:
+            button = entry.get("button")
+            if isinstance(button, QWidget):
+                widgets.append((button, self.tab_width(entry, available_width)))
+        widgets.append((self.add_button, 28))
+        x = 0
+        y = 0
+        row_height = max(24, self.add_button.sizeHint().height())
+        for widget, desired_width in widgets:
+            widget_height = max(24, widget.sizeHint().height())
+            if x > 0 and x + desired_width > available_width:
+                x = 0
+                y += row_height + self.vertical_spacing
+                row_height = widget_height
+            row_height = max(row_height, widget_height)
+            widget.setGeometry(x, y, desired_width, widget_height)
+            x += desired_width + self.horizontal_spacing
+        if 0 <= self.rename_index < len(self.entries):
+            button = self.entries[self.rename_index].get("button")
+            if isinstance(button, QWidget):
+                self.rename_edit.setGeometry(button.geometry())
+        height = y + row_height
+        if self.height() != height:
+            self.setFixedHeight(height)
+            self.updateGeometry()
+            self.layoutHeightChanged.emit(height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.relayout()
+
+    def sizeHint(self) -> QSize:
+        return QSize(0, max(24, self.height()))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 24)
+
+    def decode_payload(self, mime_data: QMimeData, mime_type: str) -> dict[str, object] | None:
+        try:
+            payload = json.loads(bytes(mime_data.data(mime_type)).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def set_drag_hover(self, index: int) -> None:
+        if index == self._hover_index:
+            return
+        self._hover_timer.stop()
+        self._hover_index = index
+        if index >= 0:
+            self._hover_timer.start()
+
+    def clear_drag_hover(self) -> None:
+        self._hover_timer.stop()
+        self._hover_index = -1
+        self._node_drag_scroll_timer.stop()
+        self._node_drag_scroll_direction = 0
+
+    def parent_scroll_area(self) -> QScrollArea | None:
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    def update_node_drag_autoscroll(self, position: QPoint) -> None:
+        scroll_area = self.parent_scroll_area()
+        if scroll_area is None:
+            return
+        viewport_position = self.mapTo(scroll_area.viewport(), position)
+        bar = scroll_area.verticalScrollBar()
+        margin = min(24, max(12, scroll_area.viewport().height() // 4))
+        if viewport_position.y() < margin and bar.value() > bar.minimum():
+            direction = -1
+        elif viewport_position.y() >= scroll_area.viewport().height() - margin and bar.value() < bar.maximum():
+            direction = 1
+        else:
+            direction = 0
+        self._node_drag_scroll_direction = direction
+        if direction:
+            if not self._node_drag_scroll_timer.isActive():
+                self._node_drag_scroll_timer.start()
+        else:
+            self._node_drag_scroll_timer.stop()
+
+    def perform_node_drag_autoscroll(self) -> None:
+        scroll_area = self.parent_scroll_area()
+        if scroll_area is None or self._node_drag_scroll_direction == 0:
+            self._node_drag_scroll_timer.stop()
+            return
+        bar = scroll_area.verticalScrollBar()
+        previous = bar.value()
+        bar.setValue(previous + max(1, bar.singleStep()) * self._node_drag_scroll_direction)
+        if bar.value() == previous:
+            self._node_drag_scroll_timer.stop()
+
+    def reorder_target(self, position: QPoint) -> tuple[int, QRect]:
+        rows: dict[int, list[tuple[int, QRect]]] = {}
+        for index, entry in enumerate(self.entries):
+            button = entry.get("button")
+            if isinstance(button, QWidget):
+                rect = button.geometry()
+                rows.setdefault(rect.top(), []).append((index, rect))
+        if not rows:
+            return 0, QRect(0, 0, 3, max(24, self.height()))
+        row_entries = min(
+            rows.values(),
+            key=lambda entries: abs(position.y() - entries[0][1].center().y()),
+        )
+        row_top = min(rect.top() for _index, rect in row_entries)
+        row_bottom = max(rect.bottom() for _index, rect in row_entries)
+        indicator_height = max(3, row_bottom - row_top + 1)
+        for index, rect in row_entries:
+            if position.x() < rect.center().x():
+                return index, QRect(max(0, rect.left() - 1), row_top, 3, indicator_height)
+        index, rect = row_entries[-1]
+        return index + 1, QRect(min(self.width() - 3, rect.right()), row_top, 3, indicator_height)
+
+    def update_reorder_indicator(self, position: QPoint) -> None:
+        _insert_index, geometry = self.reorder_target(position)
+        color = self.palette().highlight().color()
+        self.reorder_indicator.setStyleSheet(
+            f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: none;"
+        )
+        self.reorder_indicator.setGeometry(geometry)
+        self.reorder_indicator.raise_()
+        self.reorder_indicator.show()
+
+    def clear_reorder_indicator(self) -> None:
+        self.reorder_indicator.hide()
+
+    def start_tab_drag(self, index: int) -> None:
+        if not 0 <= index < len(self.entries):
+            return
+        mime = QMimeData()
+        mime.setData(
+            NOVELAI_PROMPT_TAB_REORDER_MIME,
+            json.dumps({"bar_id": self.bar_id, "tab_data": self.tabData(index)}, ensure_ascii=False).encode("utf-8"),
+        )
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        try:
+            drag.exec(Qt.MoveAction)
+        finally:
+            self.clear_reorder_indicator()
+
+    def accepts_tab_reorder(self, mime_data: QMimeData) -> bool:
+        if not mime_data.hasFormat(NOVELAI_PROMPT_TAB_REORDER_MIME):
+            return False
+        payload = self.decode_payload(mime_data, NOVELAI_PROMPT_TAB_REORDER_MIME)
+        return payload is not None and str(payload.get("bar_id") or "") == self.bar_id
+
+    def drop_reordered_tab(self, payload: dict[str, object], target_index: int, after: bool) -> bool:
+        return self.drop_reordered_tab_at(payload, target_index + (1 if after else 0))
+
+    def drop_reordered_tab_at(self, payload: dict[str, object], insert_index: int) -> bool:
+        if str(payload.get("bar_id") or "") != self.bar_id:
+            return False
+        tab_data = payload.get("tab_data")
+        source_index = next((index for index in range(self.count()) if self.tabData(index) == tab_data), -1)
+        if source_index < 0:
+            return False
+        if source_index < insert_index:
+            insert_index -= 1
+        insert_index = max(0, min(self.count() - 1, insert_index))
+        if source_index != insert_index:
+            self.moveTab(source_index, insert_index)
+        return True
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            self.update_node_drag_autoscroll(event.position().toPoint())
+            event.acceptProposedAction()
+            return
+        if self.accepts_tab_reorder(event.mimeData()):
+            self.update_reorder_indicator(event.position().toPoint())
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            self.update_node_drag_autoscroll(event.position().toPoint())
+            event.acceptProposedAction()
+            return
+        if self.accepts_tab_reorder(event.mimeData()):
+            self.update_reorder_indicator(event.position().toPoint())
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event) -> None:
+        self.clear_drag_hover()
+        self.clear_reorder_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            self.clear_drag_hover()
+            event.ignore()
+            return
+        if self.accepts_tab_reorder(event.mimeData()):
+            payload = self.decode_payload(event.mimeData(), NOVELAI_PROMPT_TAB_REORDER_MIME)
+            insert_index, _indicator = self.reorder_target(event.position().toPoint())
+            self.clear_reorder_indicator()
+            if payload is not None and self.drop_reordered_tab_at(payload, insert_index):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
+        super().dropEvent(event)
+
+    def activate_hovered_tab(self) -> None:
+        if 0 <= self._hover_index < self.count():
+            self.setCurrentIndex(self._hover_index)
+
+
 class NovelAIPromptTreeWidget(QTreeWidget):
     itemsMoved = Signal(object)
     dragStateChanged = Signal(bool)
@@ -3249,6 +3843,22 @@ class NovelAIPromptTreeWidget(QTreeWidget):
         self.drag_folder_row: NovelAIPromptFolderRow | None = None
         self.drag_source_row: QWidget | None = None
         self.hover_row: QWidget | None = None
+        self.drag_payload_provider = None
+        self.drop_payload_handler = None
+        self.drop_payload_validator = None
+        self.drag_autoscroll_position: QPoint | None = None
+        self.drag_autoscroll_payload: dict[str, object] | None = None
+        self.drag_autoscroll_direction = 0
+        self.drag_autoscroll_timer = QTimer(self)
+        self.drag_autoscroll_timer.setInterval(60)
+        self.drag_autoscroll_timer.timeout.connect(self.perform_drag_autoscroll)
+        self.drag_insert_indicator = QFrame(self.viewport())
+        self.drag_insert_indicator.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.drag_insert_indicator.setFrameShape(QFrame.NoFrame)
+        self.drag_insert_indicator.hide()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, 0)
 
     def highlight_style(self, alpha: int) -> str:
         color = self.palette().highlight().color()
@@ -3290,9 +3900,53 @@ class NovelAIPromptTreeWidget(QTreeWidget):
         self.setProperty("dragging", dragging)
         self.refresh_row_highlights()
 
+    def configure_drag_preview(self, drag: QDrag, row: QWidget | None) -> None:
+        if row is None:
+            return
+        source = row.grab()
+        if source.isNull():
+            return
+        preview = QPixmap(source.size())
+        preview.setDevicePixelRatio(source.devicePixelRatio())
+        preview.fill(Qt.transparent)
+        painter = QPainter(preview)
+        painter.setOpacity(0.65)
+        painter.drawPixmap(0, 0, source)
+        painter.end()
+        drag.setPixmap(preview)
+        position = row.mapFromGlobal(QCursor.pos())
+        drag.setHotSpot(
+            QPoint(
+                max(0, min(row.width() - 1, position.x())),
+                max(0, min(row.height() - 1, position.y())),
+            )
+        )
+
     def startDrag(self, supported_actions) -> None:
         item = self.currentItem()
         row = self.itemWidget(item, 0) if item is not None else None
+        if item is not None and callable(self.drag_payload_provider):
+            payload = self.drag_payload_provider(item)
+            if isinstance(payload, dict):
+                mime = QMimeData()
+                mime.setData(
+                    NOVELAI_PROMPT_TAB_DRAG_MIME,
+                    json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                )
+                drag = QDrag(self)
+                drag.setMimeData(mime)
+                self.configure_drag_preview(drag, row)
+                self.drag_source_row = row
+                self.set_dragging(True)
+                self.dragStateChanged.emit(True)
+                try:
+                    drag.exec(Qt.MoveAction)
+                finally:
+                    self.clear_drag_target()
+                    self.drag_source_row = None
+                    self.set_dragging(False)
+                    self.dragStateChanged.emit(False)
+                return
         self.drag_source_row = row
         self.set_dragging(True)
         self.dragStateChanged.emit(True)
@@ -3304,11 +3958,144 @@ class NovelAIPromptTreeWidget(QTreeWidget):
             self.set_dragging(False)
             self.dragStateChanged.emit(False)
 
-    def clear_drag_target(self) -> None:
+    def clear_drag_visual_target(self) -> None:
         self.drag_folder_row = None
+        self.drag_insert_indicator.hide()
         self.refresh_row_highlights()
 
+    def clear_drag_target(self) -> None:
+        self.drag_autoscroll_timer.stop()
+        self.drag_autoscroll_position = None
+        self.drag_autoscroll_payload = None
+        self.drag_autoscroll_direction = 0
+        self.clear_drag_visual_target()
+
+    def decode_drag_payload(self, mime_data: QMimeData) -> dict[str, object] | None:
+        try:
+            payload = json.loads(bytes(mime_data.data(NOVELAI_PROMPT_TAB_DRAG_MIME)).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def last_visible_descendant(self, item: QTreeWidgetItem) -> QTreeWidgetItem:
+        current = item
+        while current.isExpanded() and current.childCount():
+            current = current.child(current.childCount() - 1)
+        return current
+
+    def custom_drop_location(
+        self, position: QPoint
+    ) -> tuple[list[int], int, NovelAIPromptFolderRow | None, int | None]:
+        item = self.itemAt(position)
+        if item is not None:
+            path = self.item_path(item)
+            rect = self.visualItemRect(item)
+            relative_y = position.y() - rect.top()
+            on_folder = (
+                item.data(0, Qt.UserRole) == "folder"
+                and rect.height() > 0
+                and rect.height() // 3 <= relative_y <= rect.height() * 2 // 3
+            )
+            if on_folder:
+                row = self.itemWidget(item, 0)
+                folder_row = row if isinstance(row, NovelAIPromptFolderRow) else None
+                return path, item.childCount(), folder_row, None
+            insert_after = relative_y > rect.height() // 2
+            if insert_after:
+                line_y = self.visualItemRect(self.last_visible_descendant(item)).bottom() + 1
+            else:
+                line_y = rect.top()
+            return path[:-1], path[-1] + (1 if insert_after else 0), None, line_y
+
+        last_item = self.topLevelItem(self.topLevelItemCount() - 1) if self.topLevelItemCount() else None
+        while last_item is not None and last_item.isExpanded() and last_item.childCount():
+            last_item = last_item.child(last_item.childCount() - 1)
+        line_y = self.visualItemRect(last_item).bottom() + 1 if last_item is not None else 1
+        return [], self.topLevelItemCount(), None, line_y
+
+    def show_drag_insert_indicator(self, line_y: int) -> None:
+        color = self.palette().highlight().color()
+        self.drag_insert_indicator.setStyleSheet(
+            f"background-color: rgb({color.red()}, {color.green()}, {color.blue()}); border: none;"
+        )
+        height = 3
+        y = max(0, min(self.viewport().height() - height, line_y - height // 2))
+        self.drag_insert_indicator.setGeometry(0, y, self.viewport().width(), height)
+        self.drag_insert_indicator.raise_()
+        self.drag_insert_indicator.show()
+
+    def update_custom_drag_target(
+        self,
+        position: QPoint,
+        payload: dict[str, object],
+    ) -> tuple[list[int], int, bool]:
+        parent_path, insert_index, folder_row, line_y = self.custom_drop_location(position)
+        allowed = not callable(self.drop_payload_validator) or bool(
+            self.drop_payload_validator(payload, parent_path, insert_index)
+        )
+        self.clear_drag_visual_target()
+        if allowed:
+            self.drag_folder_row = folder_row
+            if line_y is not None:
+                self.show_drag_insert_indicator(line_y)
+            self.refresh_row_highlights()
+        return parent_path, insert_index, allowed
+
+    def update_drag_autoscroll(self, position: QPoint) -> None:
+        bar = self.verticalScrollBar()
+        margin = min(32, max(16, self.viewport().height() // 6))
+        if position.y() < margin and bar.value() > bar.minimum():
+            direction = -1
+        elif position.y() >= self.viewport().height() - margin and bar.value() < bar.maximum():
+            direction = 1
+        else:
+            direction = 0
+        self.drag_autoscroll_direction = direction
+        if direction:
+            if not self.drag_autoscroll_timer.isActive():
+                self.drag_autoscroll_timer.start()
+        else:
+            self.drag_autoscroll_timer.stop()
+
+    def perform_drag_autoscroll(self) -> None:
+        if self.drag_autoscroll_direction == 0 or self.drag_autoscroll_position is None:
+            self.drag_autoscroll_timer.stop()
+            return
+        bar = self.verticalScrollBar()
+        previous = bar.value()
+        step = max(1, bar.singleStep()) * self.drag_autoscroll_direction
+        bar.setValue(previous + step)
+        if bar.value() == previous:
+            self.drag_autoscroll_timer.stop()
+            return
+        if self.drag_autoscroll_payload is not None:
+            self.update_custom_drag_target(self.drag_autoscroll_position, self.drag_autoscroll_payload)
+
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME) and callable(self.drop_payload_handler):
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
     def dragMoveEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME):
+            payload = self.decode_drag_payload(event.mimeData())
+            if payload is None:
+                self.clear_drag_target()
+                event.ignore()
+                return
+            position = event.position().toPoint()
+            self.drag_autoscroll_position = position
+            self.drag_autoscroll_payload = payload
+            _parent_path, _insert_index, allowed = self.update_custom_drag_target(position, payload)
+            if allowed:
+                self.update_drag_autoscroll(position)
+                event.acceptProposedAction()
+            else:
+                self.drag_autoscroll_timer.stop()
+                self.drag_autoscroll_direction = 0
+                event.ignore()
+            return
         super().dragMoveEvent(event)
         self.clear_drag_target()
         item = self.itemAt(event.position().toPoint())
@@ -3369,6 +4156,20 @@ class NovelAIPromptTreeWidget(QTreeWidget):
         return nodes
 
     def dropEvent(self, event) -> None:
+        if event.mimeData().hasFormat(NOVELAI_PROMPT_TAB_DRAG_MIME) and callable(self.drop_payload_handler):
+            payload = self.decode_drag_payload(event.mimeData())
+            if payload is None:
+                event.ignore()
+                return
+            parent_path, insert_index, _folder_row, _line_y = self.custom_drop_location(
+                event.position().toPoint()
+            )
+            self.clear_drag_target()
+            if self.drop_payload_handler(payload, parent_path, insert_index):
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
         data = self.item_data_map()
         self.clear_drag_target()
         super().dropEvent(event)
@@ -3378,6 +4179,16 @@ class NovelAIPromptTreeWidget(QTreeWidget):
                 "scroll_value": self.verticalScrollBar().value(),
             }
         )
+
+    def item_path(self, item: QTreeWidgetItem) -> list[int]:
+        path: list[int] = []
+        current: QTreeWidgetItem | None = item
+        while current is not None:
+            parent = current.parent()
+            path.append(self.indexOfTopLevelItem(current) if parent is None else parent.indexOfChild(current))
+            current = parent
+        path.reverse()
+        return path
 
 
 class NovelAIPromptListEditor(QWidget):
@@ -3390,13 +4201,41 @@ class NovelAIPromptListEditor(QWidget):
         self.language = "ja"
         self.delete_folder_contents = False
         self.add_items_at_top = False
+        self.tab_mode = False
+        self.tabs: list[dict[str, object]] = []
+        self.saved_tabs: list[dict[str, object]] = []
+        self.current_tab_id = ""
+        self.general_tab_id = ""
+        self.editor_id = uuid.uuid4().hex
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        self.tab_bar = NovelAIPromptTabBar()
+        self.tab_bar.currentChanged.connect(self.on_tab_changed)
+        self.tab_bar.tabMoved.connect(self.on_tab_moved)
+        self.tab_bar.tabBarDoubleClicked.connect(self.rename_tab)
+        self.tab_bar.tabRenameCommitted.connect(self.commit_tab_rename)
+        self.tab_bar.middleClicked.connect(self.delete_tab)
+        self.tab_bar.tabDropRequested.connect(self.drop_drag_payload_on_tab)
+        self.tab_bar.addRequested.connect(self.add_tab)
+        self.tab_bar.layoutHeightChanged.connect(self.update_tab_area_height)
+        self.add_tab_button = self.tab_bar.add_button
+        self.tab_scroll_area = QScrollArea()
+        self.tab_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.tab_scroll_area.setWidgetResizable(True)
+        self.tab_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tab_scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.tab_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.tab_scroll_area.setWidget(self.tab_bar)
+        self.tab_scroll_area.setFixedHeight(24)
+        self.tab_scroll_area.verticalScrollBar().setSingleStep(28)
+        self.tab_row_widget = self.tab_scroll_area
+        self.tab_scroll_area.setVisible(False)
+        layout.addWidget(self.tab_scroll_area)
         input_row = QHBoxLayout()
         input_row.setContentsMargins(0, 0, 0, 0)
         self.input_edit = QLineEdit()
-        self.input_edit.returnPressed.connect(self.add_from_input)
+        self.input_edit.returnPressed.connect(self.submit_or_add_from_input)
         input_row.addWidget(self.input_edit, 1)
         self.add_button = QPushButton("追加")
         self.add_button.clicked.connect(self.add_from_input)
@@ -3422,20 +4261,426 @@ class NovelAIPromptListEditor(QWidget):
             "QTreeWidget::branch { image: none; }"
         )
         self.list_widget.itemsMoved.connect(self.on_items_moved)
+        self.list_widget.drag_payload_provider = self.prepare_drag_payload
+        self.list_widget.drop_payload_handler = self.drop_drag_payload
+        self.list_widget.drop_payload_validator = self.can_drop_drag_payload
         self.list_widget.itemExpanded.connect(self.refresh_folder_item)
         self.list_widget.itemCollapsed.connect(self.refresh_folder_item)
         self.list_widget.setMinimumHeight(118)
         layout.addWidget(self.list_widget)
         self.set_text(text)
 
+    def clone_items(self, items: object) -> list[dict[str, object]]:
+        if not isinstance(items, list):
+            return []
+        return copy.deepcopy([item for item in items if isinstance(item, dict)])
+
+    def update_tab_area_height(self, content_height: int) -> None:
+        self.tab_scroll_area.setFixedHeight(min(max(24, int(content_height)), 92))
+
+    def ensure_current_tab_visible(self) -> None:
+        index = self.tab_bar.currentIndex()
+        if not 0 <= index < self.tab_bar.count():
+            return
+        button = self.tab_bar.entries[index].get("button")
+        if isinstance(button, QWidget):
+            self.tab_scroll_area.ensureWidgetVisible(button, 0, 0)
+
+    def make_tab(self, name: str, items: object = None, general: bool = False, tab_id: str = "") -> dict[str, object]:
+        return {
+            "id": tab_id or uuid.uuid4().hex,
+            "name": str(name or NOVELAI_GENERAL_TAB_NAME).strip() or NOVELAI_GENERAL_TAB_NAME,
+            "general": bool(general),
+            "items": self.clone_items(items),
+        }
+
+    def sanitize_tabs(self, tabs: object) -> list[dict[str, object]]:
+        sanitized: list[dict[str, object]] = []
+        used_ids: set[str] = set()
+        general_found = False
+        if isinstance(tabs, list):
+            for data in tabs:
+                if not isinstance(data, dict):
+                    continue
+                tab_id = str(data.get("id") or "").strip()
+                if not tab_id or tab_id in used_ids:
+                    tab_id = uuid.uuid4().hex
+                used_ids.add(tab_id)
+                is_general = bool(data.get("general", False)) and not general_found
+                general_found = general_found or is_general
+                sanitized.append(self.make_tab(str(data.get("name") or ""), data.get("items"), is_general, tab_id))
+        if not general_found:
+            general = self.make_tab(NOVELAI_GENERAL_TAB_NAME, [], True)
+            sanitized.insert(0, general)
+        return sanitized
+
+    def tabs_from_flat_items(
+        self,
+        items: object,
+        general_name: str = NOVELAI_GENERAL_TAB_NAME,
+        general_id: str = "",
+    ) -> list[dict[str, object]]:
+        tabs: list[dict[str, object]] = []
+        loose: list[dict[str, object]] = []
+        general_count = 0
+
+        def flush_loose() -> None:
+            nonlocal loose, general_count
+            if not loose:
+                return
+            general_count += 1
+            name = general_name if general_count == 1 else f"{NOVELAI_GENERAL_TAB_NAME} {general_count}"
+            tabs.append(self.make_tab(name, loose, general_count == 1, general_id if general_count == 1 else ""))
+            loose = []
+
+        for node in self.clone_items(items):
+            if node.get("type") == "folder" or isinstance(node.get("children"), list):
+                flush_loose()
+                tabs.append(self.make_tab(str(node.get("name") or ""), node.get("children"), False))
+            else:
+                loose.append(node)
+        flush_loose()
+        if general_count == 0:
+            tabs.insert(0, self.make_tab(general_name, [], True, general_id))
+        return tabs
+
+    def general_identity(self, tabs: object) -> tuple[str, str]:
+        if isinstance(tabs, list):
+            for tab in tabs:
+                if isinstance(tab, dict) and bool(tab.get("general", False)):
+                    return (
+                        str(tab.get("name") or NOVELAI_GENERAL_TAB_NAME).strip() or NOVELAI_GENERAL_TAB_NAME,
+                        str(tab.get("id") or "").strip(),
+                    )
+        return NOVELAI_GENERAL_TAB_NAME, ""
+
+    def prompt_content_signature(self, items: object) -> list[object]:
+        signature: list[object] = []
+        for node in items if isinstance(items, list) else []:
+            if not isinstance(node, dict):
+                continue
+            children = node.get("children")
+            if isinstance(children, list):
+                signature.append((
+                    "folder",
+                    str(node.get("name") or "").strip(),
+                    bool(node.get("random", False)),
+                    self.prompt_content_signature(children),
+                ))
+            else:
+                signature.append((
+                    "tag",
+                    str(node.get("tag") or "").strip(),
+                    bool(node.get("active", True)),
+                ))
+        return signature
+
+    def flatten_tabs(self, tabs: object) -> list[dict[str, object]]:
+        flat: list[dict[str, object]] = []
+        for tab in tabs if isinstance(tabs, list) else []:
+            if not isinstance(tab, dict):
+                continue
+            items = self.clone_items(tab.get("items"))
+            if bool(tab.get("general", False)):
+                flat.extend(items)
+            else:
+                flat.append({
+                    "type": "folder",
+                    "name": str(tab.get("name") or "").strip(),
+                    "expanded": True,
+                    "random": False,
+                    "children": items,
+                })
+        return flat
+
+    def current_items(self) -> list[dict[str, object]]:
+        return self.items_from_parent(None)
+
+    def save_current_tab_items(self) -> None:
+        if not self.tab_mode or not self.current_tab_id:
+            return
+        tab = self.tab_by_id(self.current_tab_id)
+        if tab is not None:
+            tab["items"] = self.current_items()
+
+    def tab_by_id(self, tab_id: str) -> dict[str, object] | None:
+        return next((tab for tab in self.tabs if str(tab.get("id") or "") == tab_id), None)
+
+    def general_tab(self) -> dict[str, object] | None:
+        return next((tab for tab in self.tabs if bool(tab.get("general", False))), None)
+
+    def rebuild_tab_bar(self, selected_id: str = "") -> None:
+        selected_id = selected_id or self.current_tab_id or self.general_tab_id
+        self.tab_bar.blockSignals(True)
+        while self.tab_bar.count():
+            self.tab_bar.removeTab(0)
+        selected_index = 0
+        for index, tab in enumerate(self.tabs):
+            tab_id = str(tab.get("id") or "")
+            self.tab_bar.addTab(str(tab.get("name") or NOVELAI_GENERAL_TAB_NAME))
+            self.tab_bar.setTabData(index, tab_id)
+            if tab_id == selected_id:
+                selected_index = index
+        if self.tab_bar.count():
+            self.tab_bar.setCurrentIndex(selected_index)
+        self.tab_bar.blockSignals(False)
+        QTimer.singleShot(0, self.ensure_current_tab_visible)
+
+    def set_tab_mode(self, enabled: bool, saved_tabs: object = None) -> None:
+        enabled = bool(enabled)
+        if enabled == self.tab_mode and saved_tabs is None:
+            return
+        if enabled:
+            flat = self.current_items()
+            raw_tabs = saved_tabs if isinstance(saved_tabs, list) else self.saved_tabs
+            candidate = self.sanitize_tabs(raw_tabs) if isinstance(raw_tabs, list) and raw_tabs else []
+            general_name, general_id = self.general_identity(candidate or self.tabs or self.saved_tabs)
+            self.tabs = (
+                candidate
+                if candidate and self.flatten_tabs(candidate) == flat
+                else self.tabs_from_flat_items(flat, general_name, general_id)
+            )
+            general = self.general_tab()
+            self.general_tab_id = str(general.get("id") or "") if general is not None else ""
+            selected_id = self.current_tab_id if self.tab_by_id(self.current_tab_id) is not None else self.general_tab_id
+            self.tab_mode = True
+            self.current_tab_id = selected_id
+            self.tab_row_widget.setVisible(True)
+            self.list_widget.setMinimumHeight(0)
+            self.rebuild_tab_bar(selected_id)
+            selected = self.tab_by_id(selected_id)
+            self._set_current_items(selected.get("items") if selected is not None else [])
+        else:
+            if self.tab_mode:
+                self.save_current_tab_items()
+                self.saved_tabs = copy.deepcopy(self.tabs)
+                flat = self.flatten_tabs(self.tabs)
+            else:
+                flat = self.current_items()
+                if isinstance(saved_tabs, list):
+                    self.saved_tabs = self.sanitize_tabs(saved_tabs) if saved_tabs else []
+            self.tab_mode = False
+            self.tab_row_widget.setVisible(False)
+            self.list_widget.setMinimumHeight(118)
+            self._set_current_items(flat)
+
+    def tab_state(self) -> list[dict[str, object]]:
+        if self.tab_mode:
+            self.save_current_tab_items()
+            return copy.deepcopy(self.tabs)
+        return copy.deepcopy(self.saved_tabs)
+
+    def on_tab_changed(self, index: int) -> None:
+        if not self.tab_mode or index < 0:
+            return
+        next_id = str(self.tab_bar.tabData(index) or "")
+        if not next_id or next_id == self.current_tab_id:
+            return
+        self.save_current_tab_items()
+        self.current_tab_id = next_id
+        tab = self.tab_by_id(next_id)
+        self._set_current_items(tab.get("items") if tab is not None else [])
+        QTimer.singleShot(0, self.ensure_current_tab_visible)
+
+    def on_tab_moved(self, _from_index: int, _to_index: int) -> None:
+        if not self.tab_mode:
+            return
+        self.save_current_tab_items()
+        by_id = {str(tab.get("id") or ""): tab for tab in self.tabs}
+        ordered = [by_id.get(str(self.tab_bar.tabData(index) or "")) for index in range(self.tab_bar.count())]
+        self.tabs = [tab for tab in ordered if tab is not None]
+        self.emit_changed()
+
+    def unique_tab_name(self, base: str) -> str:
+        names = {str(tab.get("name") or "").casefold() for tab in self.tabs}
+        if base.casefold() not in names:
+            return base
+        number = 2
+        while f"{base} {number}".casefold() in names:
+            number += 1
+        return f"{base} {number}"
+
+    def add_tab(self) -> None:
+        if not self.tab_mode:
+            return
+        self.save_current_tab_items()
+        labels = UI_TEXT_EN if self.language == "en" else UI_TEXT_JA
+        tab = self.make_tab(self.unique_tab_name(labels.get("新しいタブ", "新しいタブ")))
+        self.tabs.append(tab)
+        self.current_tab_id = str(tab["id"])
+        self.rebuild_tab_bar(self.current_tab_id)
+        self._set_current_items([])
+        self.emit_changed()
+
+    def rename_tab(self, index: int) -> None:
+        if not self.tab_mode or index < 0:
+            return
+        self.tab_bar.begin_tab_rename(index)
+
+    def commit_tab_rename(self, index: int, name: str) -> None:
+        if not self.tab_mode or index < 0:
+            return
+        tab = self.tab_by_id(str(self.tab_bar.tabData(index) or ""))
+        if tab is None:
+            return
+        name = name.strip()
+        if not name:
+            return
+        tab["name"] = name
+        self.tab_bar.setTabText(index, name)
+        self.emit_changed()
+
+    def delete_tab(self, index: int) -> None:
+        if not self.tab_mode or index < 0:
+            return
+        self.save_current_tab_items()
+        tab_id = str(self.tab_bar.tabData(index) or "")
+        tab = self.tab_by_id(tab_id)
+        if tab is None or bool(tab.get("general", False)):
+            return
+        removed_items = self.clone_items(tab.get("items"))
+        self.tabs = [candidate for candidate in self.tabs if candidate is not tab]
+        general = self.general_tab()
+        if not self.delete_folder_contents and general is not None:
+            general_items = self.clone_items(general.get("items"))
+            general_items.extend(removed_items)
+            general["items"] = general_items
+        if self.current_tab_id == tab_id:
+            self.current_tab_id = str(general.get("id") or "") if general is not None else str(self.tabs[0].get("id") or "")
+        self.rebuild_tab_bar(self.current_tab_id)
+        current = self.tab_by_id(self.current_tab_id)
+        self._set_current_items(current.get("items") if current is not None else [])
+        self.emit_changed()
+
+    def prepare_drag_payload(self, item: QTreeWidgetItem) -> dict[str, object] | None:
+        if not self.tab_mode:
+            return None
+        self.save_current_tab_items()
+        path = self.item_path(item)
+        if not path:
+            return None
+        return {
+            "editor_id": self.editor_id,
+            "source_tab_id": self.current_tab_id,
+            "source_path": path,
+        }
+
+    def node_container(self, items: list[dict[str, object]], parent_path: list[int]) -> list[dict[str, object]] | None:
+        container = items
+        for index in parent_path:
+            if index < 0 or index >= len(container):
+                return None
+            children = container[index].get("children")
+            if not isinstance(children, list):
+                return None
+            container = children
+        return container
+
+    def adjusted_parent_path_after_removal(self, parent_path: list[int], source_path: list[int]) -> list[int]:
+        adjusted = list(parent_path)
+        source_parent = source_path[:-1]
+        depth = len(source_parent)
+        if len(adjusted) > depth and adjusted[:depth] == source_parent and adjusted[depth] > source_path[-1]:
+            adjusted[depth] -= 1
+        return adjusted
+
+    def can_drop_drag_payload(self, payload: object, parent_path: list[int], _insert_index: int) -> bool:
+        if not self.tab_mode or not isinstance(payload, dict) or str(payload.get("editor_id") or "") != self.editor_id:
+            return False
+        source_tab_id = str(payload.get("source_tab_id") or "")
+        source_path_raw = payload.get("source_path")
+        if not isinstance(source_path_raw, list) or not source_path_raw:
+            return False
+        try:
+            source_path = [int(value) for value in source_path_raw]
+            target_path = [int(value) for value in parent_path]
+        except (TypeError, ValueError):
+            return False
+        source_tab = self.tab_by_id(source_tab_id)
+        target_tab = self.tab_by_id(self.current_tab_id)
+        if source_tab is None or target_tab is None:
+            return False
+        source_items = source_tab.get("items")
+        target_items = target_tab.get("items")
+        if not isinstance(source_items, list) or not isinstance(target_items, list):
+            return False
+        source_container = self.node_container(source_items, source_path[:-1])
+        if source_container is None or not 0 <= source_path[-1] < len(source_container):
+            return False
+        if source_tab is target_tab and len(target_path) >= len(source_path) and target_path[:len(source_path)] == source_path:
+            return False
+        return self.node_container(target_items, target_path) is not None
+
+    def move_drag_payload(self, payload: object, target_tab_id: str, parent_path: list[int], insert_index: int) -> bool:
+        if not self.tab_mode or not isinstance(payload, dict) or str(payload.get("editor_id") or "") != self.editor_id:
+            return False
+        source_tab_id = str(payload.get("source_tab_id") or "")
+        source_path_raw = payload.get("source_path")
+        if not isinstance(source_path_raw, list) or not source_path_raw:
+            return False
+        try:
+            source_path = [int(value) for value in source_path_raw]
+            target_path = [int(value) for value in parent_path]
+            insert_index = int(insert_index)
+        except (TypeError, ValueError):
+            return False
+        source_tab = self.tab_by_id(source_tab_id)
+        target_tab = self.tab_by_id(target_tab_id)
+        if source_tab is None or target_tab is None:
+            return False
+        self.save_current_tab_items()
+        source_items = source_tab.get("items")
+        target_items = target_tab.get("items")
+        if not isinstance(source_items, list) or not isinstance(target_items, list):
+            return False
+        if source_tab is target_tab and len(target_path) >= len(source_path) and target_path[:len(source_path)] == source_path:
+            return False
+        source_container = self.node_container(source_items, source_path[:-1])
+        if source_container is None or source_path[-1] < 0 or source_path[-1] >= len(source_container):
+            return False
+        if source_tab is target_tab:
+            if target_path == source_path[:-1] and source_path[-1] < insert_index:
+                insert_index -= 1
+            target_path = self.adjusted_parent_path_after_removal(target_path, source_path)
+        node = source_container.pop(source_path[-1])
+        target_container = self.node_container(target_items, target_path)
+        if target_container is None:
+            source_container.insert(source_path[-1], node)
+            return False
+        target_container.insert(max(0, min(len(target_container), insert_index)), node)
+        scroll_value = self.list_widget.verticalScrollBar().value()
+        self.current_tab_id = target_tab_id
+        self.rebuild_tab_bar(target_tab_id)
+        self._set_current_items(target_items)
+        scroll_bar = self.list_widget.verticalScrollBar()
+        scroll_bar.setValue(scroll_value)
+        QTimer.singleShot(0, lambda bar=scroll_bar, value=scroll_value: bar.setValue(value))
+        self.emit_changed()
+        return True
+
+    def drop_drag_payload(self, payload: object, parent_path: list[int], insert_index: int) -> bool:
+        return self.move_drag_payload(payload, self.current_tab_id, parent_path, insert_index)
+
+    def drop_drag_payload_on_tab(self, index: int, payload: object) -> None:
+        if not self.tab_mode or index < 0:
+            return
+        target_id = str(self.tab_bar.tabData(index) or "")
+        target = self.tab_by_id(target_id)
+        target_items = target.get("items") if target is not None else None
+        if isinstance(target_items, list):
+            self.move_drag_payload(payload, target_id, [], len(target_items))
+
     def add_from_input(self) -> None:
         text = self.input_edit.text().strip()
-        if not text:
-            self.submitRequested.emit()
-            return
         self.add_tag(text, True, None, insert_at_top=self.add_items_at_top)
         self.input_edit.clear()
         self.emit_changed()
+
+    def submit_or_add_from_input(self) -> None:
+        if self.input_edit.text().strip():
+            self.add_from_input()
+        else:
+            self.submitRequested.emit()
 
     def on_items_moved(self, items: object) -> None:
         scroll_value: int | None = None
@@ -3443,7 +4688,7 @@ class NovelAIPromptListEditor(QWidget):
             scroll_value = int(items.get("scroll_value", 0))
             items = items.get("items")
         if isinstance(items, list):
-            self.set_items(items)
+            self._set_current_items(items)
             if scroll_value is not None:
                 scroll_bar = self.list_widget.verticalScrollBar()
                 scroll_bar.setValue(scroll_value)
@@ -3648,7 +4893,7 @@ class NovelAIPromptListEditor(QWidget):
         if item is None:
             return
         path = self.item_path(item)
-        items = self.to_items()
+        items = self.current_items()
         container = items
         for parent_index in path[:-1]:
             children = container[parent_index].get("children")
@@ -3662,7 +4907,7 @@ class NovelAIPromptListEditor(QWidget):
             return
         container[index], container[target] = container[target], container[index]
         path[-1] = target
-        self.set_items(items)
+        self._set_current_items(items)
         self.list_widget.setCurrentItem(self.item_at_path(path))
         self.emit_changed()
 
@@ -3689,7 +4934,7 @@ class NovelAIPromptListEditor(QWidget):
         if item is None:
             return
         path = self.item_path(item)
-        items = self.to_items()
+        items = self.current_items()
         container = items
         for parent_index in path[:-1]:
             children = container[parent_index].get("children")
@@ -3701,7 +4946,7 @@ class NovelAIPromptListEditor(QWidget):
         children = removed.get("children")
         if not self.delete_folder_contents and isinstance(children, list):
             container[index:index] = children
-        self.set_items(items)
+        self._set_current_items(items)
         self.emit_changed()
 
     def set_text(self, text: str) -> None:
@@ -3726,7 +4971,14 @@ class NovelAIPromptListEditor(QWidget):
             part = "".join(current).strip(" ,\r\n\t")
             current.clear()
             if part:
-                stack[-1].extend({"type": "tag", "tag": tag, "active": active} for tag, active in self.split_prompt_items(part))
+                stack[-1].extend(
+                    {
+                        "type": "tag",
+                        "tag": "" if tag == RAIV_EMPTY_PROMPT_TAG else tag,
+                        "active": active,
+                    }
+                    for tag, active in self.split_prompt_items(part)
+                )
 
         index = 0
         while index < len(text):
@@ -3774,30 +5026,75 @@ class NovelAIPromptListEditor(QWidget):
         return self.active_text_from_nodes(self.split_prompt_nodes(text))
 
     def active_text_from_nodes(self, nodes: list[dict[str, object]], separator: str = ", ") -> str:
+        text, _has_content = self._active_text_from_nodes(nodes, separator)
+        return text
+
+    def _active_text_from_nodes(
+        self,
+        nodes: list[dict[str, object]],
+        separator: str,
+        preserve_empty: bool = False,
+    ) -> tuple[str, bool]:
         parts: list[str] = []
         for node in nodes:
             children = node.get("children")
             if isinstance(children, list):
-                child_separator = "|" if bool(node.get("random", False)) else ", "
-                child_text = self.active_text_from_nodes(children, child_separator)
-                if child_text:
-                    parts.append(f"||{child_text}||" if bool(node.get("random", False)) else child_text)
+                random_enabled = bool(node.get("random", False))
+                child_separator = "|" if random_enabled else ", "
+                child_text, child_has_content = self._active_text_from_nodes(
+                    children,
+                    child_separator,
+                    preserve_empty=random_enabled or preserve_empty,
+                )
+                if child_has_content:
+                    parts.append(f"||{child_text}||" if random_enabled else child_text)
                 continue
             tag = str(node.get("tag") or "").strip()
-            if tag and bool(node.get("active", True)):
-                parts.append(tag)
-        return separator.join(parts)
+            if bool(node.get("active", True)) and (tag or preserve_empty):
+                parts.append(tag or ",")
+        return separator.join(parts), bool(parts)
 
-    def set_items(self, items: list[dict[str, object]], fallback_text: str = "") -> None:
+    def _set_current_items(self, items: object) -> None:
         self.updating = True
         self.list_widget.hover_row = None
         self.list_widget.drag_source_row = None
         self.list_widget.drag_folder_row = None
         self.list_widget.clear()
-        self.add_items(items)
-        if self.list_widget.topLevelItemCount() == 0 and fallback_text:
-            self.add_items(self.split_prompt_nodes(fallback_text))
+        self.add_items(self.clone_items(items))
         self.updating = False
+
+    def set_items(self, items: list[dict[str, object]], fallback_text: str = "", tabs: object = None) -> None:
+        flat = self.clone_items(items)
+        if not flat and fallback_text:
+            flat = self.split_prompt_nodes(fallback_text)
+        if not self.tab_mode:
+            self._set_current_items(flat)
+            if isinstance(tabs, list):
+                self.saved_tabs = self.sanitize_tabs(tabs) if tabs else []
+            return
+        self.save_current_tab_items()
+        if tabs is None:
+            candidate = copy.deepcopy(self.tabs)
+        else:
+            candidate = self.sanitize_tabs(tabs) if isinstance(tabs, list) and tabs else []
+        general_name, general_id = self.general_identity(candidate)
+        candidate_flat = self.flatten_tabs(candidate) if candidate else []
+        candidate_matches = candidate and (
+            candidate_flat == flat
+            or (tabs is None and self.prompt_content_signature(candidate_flat) == self.prompt_content_signature(flat))
+        )
+        self.tabs = (
+            candidate
+            if candidate_matches
+            else self.tabs_from_flat_items(flat, general_name, general_id)
+        )
+        general = self.general_tab()
+        self.general_tab_id = str(general.get("id") or "") if general is not None else ""
+        if self.tab_by_id(self.current_tab_id) is None:
+            self.current_tab_id = self.general_tab_id
+        self.rebuild_tab_bar(self.current_tab_id)
+        current = self.tab_by_id(self.current_tab_id)
+        self._set_current_items(current.get("items") if current is not None else [])
 
     def add_items(self, items: list[dict[str, object]], parent: QTreeWidgetItem | None = None) -> None:
         for data in items:
@@ -3816,11 +5113,14 @@ class NovelAIPromptListEditor(QWidget):
                 folder.setExpanded(bool(data.get("expanded", True)))
                 continue
             tag = str(data.get("tag") or "").strip()
-            if tag:
+            if data.get("type") == "tag" or "tag" in data:
                 self.add_tag(tag, bool(data.get("active", True)), parent)
 
     def to_items(self) -> list[dict[str, object]]:
-        return self.items_from_parent(None)
+        if self.tab_mode:
+            self.save_current_tab_items()
+            return self.flatten_tabs(self.tabs)
+        return self.current_items()
 
     def items_from_parent(self, parent: QTreeWidgetItem | None) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
@@ -3836,7 +5136,7 @@ class NovelAIPromptListEditor(QWidget):
                     "random": bool(row.random_enabled),
                     "children": self.items_from_parent(item),
                 })
-            elif isinstance(row, NovelAIPromptTagRow) and row.tag.strip():
+            elif isinstance(row, NovelAIPromptTagRow):
                 items.append({"type": "tag", "tag": row.tag.strip(), "active": bool(row.active)})
         return items
 
@@ -3844,9 +5144,32 @@ class NovelAIPromptListEditor(QWidget):
         return f"{RAIV_DISABLED_PROMPT_START}{tag}{RAIV_DISABLED_PROMPT_END}"
 
     def to_text(self, active_only: bool = True, preserve_inactive: bool = False) -> str:
+        nodes = self.to_items()
         if active_only and not preserve_inactive:
-            return self.active_text_from_nodes(self.to_items())
-        return self.text_from_parent(None, active_only, preserve_inactive)
+            return self.active_text_from_nodes(nodes)
+        return self.text_from_nodes(nodes, active_only, preserve_inactive)
+
+    def text_from_nodes(self, nodes: list[dict[str, object]], active_only: bool, preserve_inactive: bool) -> str:
+        parts: list[str] = []
+        for node in nodes:
+            children = node.get("children")
+            if isinstance(children, list):
+                child_text = self.text_from_nodes(children, active_only, preserve_inactive)
+                if not active_only or preserve_inactive:
+                    encoded = self.encode_folder_name(str(node.get("name") or "").strip())
+                    marker = RAIV_PROMPT_RANDOM_FOLDER_START if bool(node.get("random", False)) else RAIV_PROMPT_FOLDER_START
+                    parts.append(f"{marker}{encoded}>>{child_text}{RAIV_PROMPT_FOLDER_END}")
+                elif child_text:
+                    parts.append(child_text)
+                continue
+            active = bool(node.get("active", True))
+            if active or not active_only:
+                tag = str(node.get("tag") or "").strip()
+                if not tag and preserve_inactive:
+                    tag = RAIV_EMPTY_PROMPT_TAG
+                if tag:
+                    parts.append(tag if active or not preserve_inactive else self.disabled_prompt_text(tag))
+        return ", ".join(parts)
 
     def text_from_parent(self, parent: QTreeWidgetItem | None, active_only: bool, preserve_inactive: bool) -> str:
         parts: list[str] = []
@@ -3864,12 +5187,15 @@ class NovelAIPromptListEditor(QWidget):
                     parts.append(children)
             elif isinstance(row, NovelAIPromptTagRow) and (row.active or not active_only):
                 tag = row.tag.strip()
+                if not tag and preserve_inactive:
+                    tag = RAIV_EMPTY_PROMPT_TAG
                 if tag:
                     parts.append(tag if row.active or not preserve_inactive else self.disabled_prompt_text(tag))
         return ", ".join(parts)
 
     def emit_changed(self) -> None:
         if not self.updating:
+            self.save_current_tab_items()
             self.changed.emit()
 
     def apply_language(self, language: str) -> None:
@@ -3877,6 +5203,7 @@ class NovelAIPromptListEditor(QWidget):
         labels = UI_TEXT_EN if language == "en" else UI_TEXT_JA
         self.add_button.setText(labels.get("追加", "追加"))
         self.add_folder_button.setText(labels.get("フォルダ追加", "フォルダ追加"))
+        self.add_tab_button.setToolTip(labels.get("タブ追加", "タブ追加"))
         self.apply_language_to_parent(None, language)
 
     def apply_language_to_parent(self, parent: QTreeWidgetItem | None, language: str) -> None:
@@ -3902,6 +5229,9 @@ class GLImageView(QOpenGLWidget):
     actualSizeRequested = Signal()
     actionRequested = Signal(str)
     pixmapPrefetchProgress = Signal(int, int, int, float)
+    resamplePrefetchProgress = Signal(int, int, int, float)
+    resamplePlanRequested = Signal()
+    _resampleResultsAvailable = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -3928,7 +5258,22 @@ class GLImageView(QOpenGLWidget):
         self.dual_page_reversed = False
         self.key_bindings = default_key_bindings()
         self.duplicate_mouse_bindings: set[tuple] = set()
-        self.resample_cache: OrderedDict[tuple[int, int, int, int, str], QPixmap] = OrderedDict()
+        self.resample_cache: OrderedDict[tuple[object, int, int, int, str], QPixmap] = OrderedDict()
+        self.resample_cache_limit = 96
+        self.resample_prefetch_generation = 0
+        self.resample_prefetch_sequence = 0
+        self.resample_prefetch_lock = threading.Lock()
+        self.resample_prefetch_queue: queue.PriorityQueue[tuple[int, int, int, object, QImage, int, int, str, object]] = queue.PriorityQueue()
+        self.resample_prefetch_pending: dict[object, int] = {}
+        self.resample_prefetch_plan_keys: set[object] = set()
+        self.resample_result_queue: deque[tuple[int, object, QImage, float]] = deque()
+        self.resample_result_lock = threading.Lock()
+        self.resample_result_timer = QTimer(self)
+        self.resample_result_timer.setSingleShot(True)
+        self.resample_result_timer.timeout.connect(self.process_resample_results)
+        self._resampleResultsAvailable.connect(self.request_resample_result_processing)
+        self.display_adjustment_revision = 0
+        self.display_image_identities: OrderedDict[int, object] = OrderedDict()
         self.pixmap_cache: OrderedDict[tuple[int], QPixmap] = OrderedDict()
         self.pixmap_cache_limit = 128
         self.pixmap_prefetch_queue: deque[tuple[object, QImage]] = deque()
@@ -3966,6 +5311,13 @@ class GLImageView(QOpenGLWidget):
         self.fit_image_size: tuple[int, int] | None = None
         self.empty_message_title = ""
         self.empty_message_detail = ""
+        resample_worker_count = max(1, min(2, (os.cpu_count() or 2) - 1))
+        self.resample_workers = [
+            threading.Thread(target=self._resample_worker_loop, daemon=True)
+            for _index in range(resample_worker_count)
+        ]
+        for worker in self.resample_workers:
+            worker.start()
 
     def set_images(
         self,
@@ -3994,7 +5346,6 @@ class GLImageView(QOpenGLWidget):
         self.display_flip_horizontal = preserved_flip_horizontal
         self.display_flip_vertical = preserved_flip_vertical
         self.rebuild_display_images()
-        self.clear_resample_cache()
         if preserve_view and preserved_scale is not None:
             content_size = self.current_content_size()
             if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
@@ -4041,7 +5392,6 @@ class GLImageView(QOpenGLWidget):
             self.raw_processed_image = processed or QImage()
             self.processed_image = self.transformed_image(self.adjusted_display_image(self.raw_processed_image))
             self.processed_pixmap = self.pixmap_for_image(self.raw_processed_image, self.processed_image)
-        self.clear_resample_cache()
         self.update()
 
     def set_source_frame(self, source: QImage, page_slot: int = 0) -> None:
@@ -4053,7 +5403,6 @@ class GLImageView(QOpenGLWidget):
             self.raw_source_image = source
             self.source_image = self.transformed_image(self.adjusted_display_image(self.raw_source_image))
             self.source_pixmap = self.pixmap_for_image(self.raw_source_image, self.source_image)
-        self.clear_resample_cache()
         self.update()
 
     def set_key_bindings(self, bindings: dict[str, dict[str, dict | None]]) -> None:
@@ -4096,6 +5445,264 @@ class GLImageView(QOpenGLWidget):
         self.pixmap_cache_limit = max(24, int(limit))
         while len(self.pixmap_cache) > self.pixmap_cache_limit:
             self.pixmap_cache.popitem(last=False)
+
+    def set_resample_cache_limit(self, limit: int) -> None:
+        self.resample_cache_limit = max(24, int(limit))
+        while len(self.resample_cache) > self.resample_cache_limit:
+            self.resample_cache.popitem(last=False)
+
+    def remember_display_image_identity(self, display_image: QImage, identity: object) -> None:
+        if display_image.isNull():
+            return
+        cache_key = int(display_image.cacheKey())
+        self.display_image_identities[cache_key] = identity
+        self.display_image_identities.move_to_end(cache_key)
+        while len(self.display_image_identities) > max(128, self.resample_cache_limit * 4):
+            self.display_image_identities.popitem(last=False)
+
+    def resample_image_identity(self, image: QImage) -> object:
+        cache_key = int(image.cacheKey())
+        identity = self.display_image_identities.get(cache_key)
+        if identity is not None:
+            self.display_image_identities.move_to_end(cache_key)
+            return identity
+        return (cache_key, self.display_adjustment_revision)
+
+    def resample_cache_key(
+        self,
+        identity: object,
+        physical_width: int,
+        physical_height: int,
+        device_pixel_ratio: float,
+        algorithm: str,
+    ) -> tuple[object, int, int, int, str]:
+        ratio_key = max(1, round(device_pixel_ratio * 1000))
+        return (identity, int(physical_width), int(physical_height), ratio_key, algorithm)
+
+    def display_adjustment_snapshot(self) -> dict[str, object]:
+        return {
+            "revision": self.display_adjustment_revision,
+            "tone_curve_luts": copy.deepcopy(self.tone_curve_luts) if self.tone_curve_enabled else None,
+            "brightness": self.display_brightness,
+            "contrast": self.display_contrast,
+            "gamma": self.display_gamma,
+            "sharpness": self.display_sharpness,
+        }
+
+    def begin_resample_prefetch_plan(self, generation: int) -> None:
+        self.resample_prefetch_generation = int(generation)
+        self.resample_prefetch_plan_keys.clear()
+        with self.resample_prefetch_lock:
+            self.resample_prefetch_pending.clear()
+        with self.resample_prefetch_queue.mutex:
+            self.resample_prefetch_queue.queue.clear()
+
+    def queue_resample_request(
+        self,
+        image: QImage,
+        physical_width: int,
+        physical_height: int,
+        *,
+        identity: object,
+        priority: int,
+        generation: int,
+        adjustment_snapshot: object = None,
+    ) -> object | None:
+        if (
+            not self.cpu_resample_cache_enabled
+            or image.isNull()
+            or physical_width <= 0
+            or physical_height <= 0
+            or (physical_width == image.width() and physical_height == image.height())
+        ):
+            return None
+        algorithm = self.cpu_resample_algorithm
+        key = self.resample_cache_key(
+            identity,
+            physical_width,
+            physical_height,
+            self.display_pixel_ratio(),
+            algorithm,
+        )
+        if generation == self.resample_prefetch_generation:
+            self.resample_prefetch_plan_keys.add(key)
+        if key in self.resample_cache:
+            self.resample_cache.move_to_end(key)
+            return key
+        generation = int(generation)
+        with self.resample_prefetch_lock:
+            if self.resample_prefetch_pending.get(key) == generation:
+                return key
+            self.resample_prefetch_pending[key] = generation
+            self.resample_prefetch_sequence += 1
+            sequence = self.resample_prefetch_sequence
+        self.resample_prefetch_queue.put((
+            int(priority),
+            sequence,
+            generation,
+            key,
+            QImage(image),
+            int(physical_width),
+            int(physical_height),
+            algorithm,
+            adjustment_snapshot,
+        ))
+        return key
+
+    def resample_prefetch_progress_counts(self) -> tuple[int, int]:
+        total = len(self.resample_prefetch_plan_keys)
+        done = sum(1 for key in self.resample_prefetch_plan_keys if key in self.resample_cache)
+        return done, total
+
+    def queue_resample_page_prefetch(
+        self,
+        page_bundles: list[tuple[int, list[tuple[QImage, QImage]]]],
+        generation: int,
+        preserve_scale: float | None = None,
+        rotation: int = 0,
+    ) -> None:
+        if not self.cpu_resample_cache_enabled or self.width() <= 0 or self.height() <= 0:
+            return
+        snapshot = self.display_adjustment_snapshot()
+        device_pixel_ratio = self.display_pixel_ratio()
+        for bundle_priority, page_entries in page_bundles:
+            valid_entries = [
+                (source, processed)
+                for source, processed in page_entries
+                if not source.isNull()
+            ]
+            if not valid_entries:
+                continue
+            display_images = [
+                processed if not processed.isNull() else source
+                for source, processed in valid_entries
+            ]
+            base_width = sum(image.width() for image in display_images)
+            base_height = max((image.height() for image in display_images), default=0)
+            if base_width <= 0 or base_height <= 0:
+                continue
+            rotated_size = self.rotated_content_size_for_angle(QSize(base_width, base_height), rotation)
+            if rotated_size.isEmpty():
+                continue
+            scale = float(preserve_scale) if preserve_scale is not None else min(
+                self.width() / rotated_size.width(),
+                self.height() / rotated_size.height(),
+            )
+            scale = max(0.01, min(MAX_DISPLAY_SCALE, scale))
+            for page_index, ((source, processed), display_image) in enumerate(zip(valid_entries, display_images)):
+                logical_width = max(1, round(display_image.width() * scale))
+                logical_height = max(1, round(display_image.height() * scale))
+                physical_width = max(1, round(logical_width * device_pixel_ratio))
+                physical_height = max(1, round(logical_height * device_pixel_ratio))
+                candidates = (
+                    (source, processed)
+                    if self.compare_enabled and not processed.isNull()
+                    else (display_image,)
+                )
+                for variant_index, candidate in enumerate(candidates):
+                    if candidate.isNull():
+                        continue
+                    identity = (int(candidate.cacheKey()), self.display_adjustment_revision)
+                    self.queue_resample_request(
+                        candidate,
+                        physical_width,
+                        physical_height,
+                        identity=identity,
+                        priority=int(bundle_priority) * 10 + page_index * 2 + variant_index,
+                        generation=generation,
+                        adjustment_snapshot=snapshot,
+                    )
+
+    def _resample_worker_loop(self) -> None:
+        self.set_background_worker_priority()
+        while True:
+            (
+                _priority,
+                _sequence,
+                generation,
+                key,
+                image,
+                width,
+                height,
+                algorithm,
+                adjustment_snapshot,
+            ) = self.resample_prefetch_queue.get()
+            with self.resample_prefetch_lock:
+                if generation != self.resample_prefetch_generation or self.resample_prefetch_pending.get(key) != generation:
+                    continue
+            started = time.perf_counter()
+            try:
+                if isinstance(adjustment_snapshot, dict):
+                    image = self.adjusted_image_from_snapshot(image, adjustment_snapshot)
+                scaled = self.resample_qimage_with_algorithm(image, width, height, algorithm)
+            except Exception:
+                scaled = QImage()
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            with self.resample_result_lock:
+                self.resample_result_queue.append((generation, key, scaled, elapsed_ms))
+            self._resampleResultsAvailable.emit()
+
+    @staticmethod
+    def set_background_worker_priority() -> None:
+        if os.name != "nt":
+            return
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentThread.restype = wintypes.HANDLE
+            kernel32.SetThreadPriority.argtypes = [wintypes.HANDLE, ctypes.c_int]
+            kernel32.SetThreadPriority.restype = wintypes.BOOL
+            kernel32.SetThreadPriority(kernel32.GetCurrentThread(), -2)
+        except Exception:
+            pass
+
+    def request_resample_result_processing(self) -> None:
+        if not self.resample_result_timer.isActive():
+            self.resample_result_timer.start(0)
+
+    def process_resample_results(self) -> None:
+        started = time.perf_counter()
+        promoted = 0
+        elapsed_worker_ms = 0.0
+        while True:
+            with self.resample_result_lock:
+                result = self.resample_result_queue.popleft() if self.resample_result_queue else None
+            if result is None:
+                break
+            generation, key, image, worker_ms = result
+            with self.resample_prefetch_lock:
+                if self.resample_prefetch_pending.get(key) != generation:
+                    continue
+                self.resample_prefetch_pending.pop(key, None)
+            if generation != self.resample_prefetch_generation or image.isNull():
+                continue
+            pixmap = QPixmap.fromImage(image)
+            ratio_key = key[3] if isinstance(key, tuple) and len(key) >= 4 else 1000
+            pixmap.setDevicePixelRatio(max(0.001, float(ratio_key) / 1000.0))
+            self.resample_cache[key] = pixmap
+            self.resample_cache.move_to_end(key)
+            while len(self.resample_cache) > self.resample_cache_limit:
+                self.resample_cache.popitem(last=False)
+            promoted += 1
+            elapsed_worker_ms += worker_ms
+            if promoted > 0 and (time.perf_counter() - started) * 1000 >= 4.0:
+                break
+        with self.resample_result_lock:
+            has_more = bool(self.resample_result_queue)
+        if promoted:
+            active_pending = sum(
+                1
+                for pending_generation in self.resample_prefetch_pending.values()
+                if pending_generation == self.resample_prefetch_generation
+            )
+            self.resamplePrefetchProgress.emit(
+                promoted,
+                active_pending,
+                len(self.resample_cache),
+                elapsed_worker_ms,
+            )
+            self.update()
+        if has_more:
+            self.resample_result_timer.start(0)
 
     def queue_pixmap_prefetch(self, items: list[tuple[object, QImage]]) -> None:
         if self.tone_curve_enabled or self.has_display_adjustments():
@@ -4159,7 +5766,6 @@ class GLImageView(QOpenGLWidget):
         else:
             self.display_flip_vertical = not self.display_flip_vertical
         self.begin_interactive_resample_delay()
-        self.clear_resample_cache()
         self.update()
 
     def set_background(self, color: str) -> None:
@@ -4167,6 +5773,7 @@ class GLImageView(QOpenGLWidget):
         self.update()
 
     def set_compare(self, enabled: bool, split: int, line_color: str, line_width: int, swap_sides: bool, shift_boundary: bool) -> None:
+        enabled_changed = self.compare_enabled != bool(enabled)
         self.compare_enabled = enabled
         self.compare_split = int(split)
         self.compare_line_color = QColor(line_color)
@@ -4174,6 +5781,8 @@ class GLImageView(QOpenGLWidget):
         self.compare_swap_sides = bool(swap_sides)
         self.compare_shift_drag_moves_boundary = bool(shift_boundary)
         self.update()
+        if enabled_changed:
+            self.resamplePlanRequested.emit()
 
     def set_horizontal_wheel_options(self, enabled: bool, inverted: bool) -> None:
         self.horizontal_wheel_navigation = bool(enabled)
@@ -4188,26 +5797,33 @@ class GLImageView(QOpenGLWidget):
             self.resample_debounce_timer.stop()
             self.clear_resample_cache()
             self.update()
+            self.resamplePlanRequested.emit()
 
     def set_tone_curve_options(self, enabled: bool, curve: ToneCurve | None) -> None:
         self.tone_curve_enabled = bool(enabled and curve is not None)
         self.tone_curve_luts = {channel: curve.lut(channel) for channel in CURVE_CHANNELS} if self.tone_curve_enabled and curve is not None else None
+        self.display_adjustment_revision += 1
+        self.display_image_identities.clear()
         self.pixmap_cache.clear()
         self.clear_pixmap_prefetch_state()
         self.rebuild_display_images()
         self.clear_resample_cache()
         self.update()
+        self.resamplePlanRequested.emit()
 
     def set_display_adjustments(self, brightness: float, contrast: float, gamma: float, sharpness: float) -> None:
         self.display_brightness = max(-100.0, min(100.0, float(brightness)))
         self.display_contrast = max(0.0, min(3.0, float(contrast)))
         self.display_gamma = max(0.1, min(5.0, float(gamma)))
         self.display_sharpness = max(0.0, min(5.0, float(sharpness)))
+        self.display_adjustment_revision += 1
+        self.display_image_identities.clear()
         self.pixmap_cache.clear()
         self.clear_pixmap_prefetch_state()
         self.rebuild_display_images()
         self.clear_resample_cache()
         self.update()
+        self.resamplePlanRequested.emit()
 
     def clear_resample_cache(self) -> None:
         self.resample_cache.clear()
@@ -4221,6 +5837,7 @@ class GLImageView(QOpenGLWidget):
     def finish_interactive_resample_delay(self) -> None:
         self.resample_interaction_active = False
         self.update()
+        self.resamplePlanRequested.emit()
 
     def current_display_image(self) -> QImage:
         if self.compare_enabled and not self.processed_image.isNull():
@@ -4259,9 +5876,12 @@ class GLImageView(QOpenGLWidget):
         return QSize(width, height) if width > 0 and height > 0 else QSize()
 
     def rotated_content_size(self, size: QSize) -> QSize:
+        return self.rotated_content_size_for_angle(size, self.display_rotation)
+
+    def rotated_content_size_for_angle(self, size: QSize, rotation: int | float) -> QSize:
         if size.isEmpty():
             return QSize()
-        normalized = self.display_rotation % 360
+        normalized = rotation % 360
         if normalized in (0, 180):
             return QSize(size.width(), size.height())
         if normalized in (90, 270):
@@ -4334,7 +5954,6 @@ class GLImageView(QOpenGLWidget):
         self.offset = QPoint(0, 0)
         self.fit_scale_anchor = None
         self.fit_image_size = None
-        self.clear_resample_cache()
         content_size = self.current_content_size()
         if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
             self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
@@ -4388,37 +6007,45 @@ class GLImageView(QOpenGLWidget):
     def resampled_pixmap(self, image: QImage, target: QRect) -> QPixmap | None:
         if not self.cpu_resample_cache_enabled or image.isNull() or target.width() <= 0 or target.height() <= 0:
             return None
-        if self.resample_interaction_active:
-            return None
         device_pixel_ratio = self.display_pixel_ratio()
         physical_width = max(1, round(target.width() * device_pixel_ratio))
         physical_height = max(1, round(target.height() * device_pixel_ratio))
         if physical_width == image.width() and physical_height == image.height():
             return None
-        ratio_key = max(1, round(device_pixel_ratio * 1000))
-        key = (int(image.cacheKey()), physical_width, physical_height, ratio_key, self.cpu_resample_algorithm)
+        identity = self.resample_image_identity(image)
+        key = self.resample_cache_key(
+            identity,
+            physical_width,
+            physical_height,
+            device_pixel_ratio,
+            self.cpu_resample_algorithm,
+        )
         cached = self.resample_cache.get(key)
         if cached is not None:
             self.resample_cache.move_to_end(key)
             return cached
-        scaled = self.resample_qimage(image, physical_width, physical_height)
-        if scaled.isNull():
-            return None
-        pixmap = QPixmap.fromImage(scaled)
-        pixmap.setDevicePixelRatio(device_pixel_ratio)
-        self.resample_cache[key] = pixmap
-        while len(self.resample_cache) > 24:
-            self.resample_cache.popitem(last=False)
-        return pixmap
+        if not self.resample_interaction_active:
+            self.queue_resample_request(
+                image,
+                physical_width,
+                physical_height,
+                identity=identity,
+                priority=-100,
+                generation=self.resample_prefetch_generation,
+            )
+        return None
 
     def resample_qimage(self, image: QImage, width: int, height: int) -> QImage:
+        return self.resample_qimage_with_algorithm(image, width, height, self.cpu_resample_algorithm)
+
+    @staticmethod
+    def resample_qimage_with_algorithm(image: QImage, width: int, height: int, algorithm: str) -> QImage:
         if PILImage is None:
             return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         source = image.convertToFormat(QImage.Format_RGBA8888)
         size = source.sizeInBytes()
         data = bytes(source.bits()[:size])
         pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
-        algorithm = self.cpu_resample_algorithm
         if algorithm == "lanczos4" and cv2 is not None and np is not None:
             array = np.array(pil)
             resized = cv2.resize(array, (width, height), interpolation=cv2.INTER_LANCZOS4)
@@ -4444,52 +6071,79 @@ class GLImageView(QOpenGLWidget):
         )
 
     def adjusted_display_image(self, image: QImage) -> QImage:
-        image = self.apply_tone_curve_image(image)
-        if image.isNull() or not self.has_display_adjustments():
+        if image.isNull():
+            return QImage()
+        raw_identity = (int(image.cacheKey()), self.display_adjustment_revision)
+        adjusted = self.adjusted_image_from_snapshot(image, self.display_adjustment_snapshot())
+        self.remember_display_image_identity(adjusted, raw_identity)
+        return adjusted
+
+    @staticmethod
+    def adjusted_image_from_snapshot(image: QImage, snapshot: dict[str, object]) -> QImage:
+        image = GLImageView.apply_tone_curve_snapshot(image, snapshot.get("tone_curve_luts"))
+        brightness = float(snapshot.get("brightness", 0.0))
+        contrast = float(snapshot.get("contrast", 1.0))
+        gamma = float(snapshot.get("gamma", 1.0))
+        sharpness = float(snapshot.get("sharpness", 0.0))
+        has_adjustments = (
+            abs(brightness) > 0.0001
+            or abs(contrast - 1.0) > 0.0001
+            or abs(gamma - 1.0) > 0.0001
+            or sharpness > 0.0001
+        )
+        if image.isNull() or not has_adjustments:
             return image
         if np is None:
-            return self.apply_sharpness_image(image) if self.display_sharpness > 0.0001 else image
+            return GLImageView.apply_sharpness_snapshot(image, sharpness) if sharpness > 0.0001 else image
         source = image.convertToFormat(QImage.Format_RGBA8888)
         size = source.sizeInBytes()
         data = bytes(source.bits()[:size])
         array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
         rgb = array[:, :, :3].astype(np.float32)
-        if abs(self.display_gamma - 1.0) > 0.0001:
-            rgb = 255.0 * np.power(np.clip(rgb / 255.0, 0.0, 1.0), 1.0 / self.display_gamma)
-        if abs(self.display_contrast - 1.0) > 0.0001:
-            rgb = (rgb - 127.5) * self.display_contrast + 127.5
-        if abs(self.display_brightness) > 0.0001:
-            rgb = rgb + self.display_brightness
+        if abs(gamma - 1.0) > 0.0001:
+            rgb = 255.0 * np.power(np.clip(rgb / 255.0, 0.0, 1.0), 1.0 / gamma)
+        if abs(contrast - 1.0) > 0.0001:
+            rgb = (rgb - 127.5) * contrast + 127.5
+        if abs(brightness) > 0.0001:
+            rgb = rgb + brightness
         array[:, :, :3] = np.clip(rgb, 0.0, 255.0).astype(np.uint8)
         output_data = array.tobytes()
         adjusted = QImage(output_data, source.width(), source.height(), QImage.Format_RGBA8888).copy()
-        return self.apply_sharpness_image(adjusted)
+        return GLImageView.apply_sharpness_snapshot(adjusted, sharpness)
 
     def apply_sharpness_image(self, image: QImage) -> QImage:
-        if image.isNull() or self.display_sharpness <= 0.0001 or PILImage is None or ImageFilter is None:
+        return self.apply_sharpness_snapshot(image, self.display_sharpness)
+
+    @staticmethod
+    def apply_sharpness_snapshot(image: QImage, sharpness: float) -> QImage:
+        if image.isNull() or sharpness <= 0.0001 or PILImage is None or ImageFilter is None:
             return image
         source = image.convertToFormat(QImage.Format_RGBA8888)
         size = source.sizeInBytes()
         data = bytes(source.bits()[:size])
         pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
-        percent = max(0, round(self.display_sharpness * 100))
+        percent = max(0, round(sharpness * 100))
         sharpened = pil.filter(ImageFilter.UnsharpMask(radius=1.0, percent=percent, threshold=2))
         output_data = sharpened.tobytes()
         return QImage(output_data, sharpened.width, sharpened.height, QImage.Format_RGBA8888).copy()
 
     def apply_tone_curve_image(self, image: QImage) -> QImage:
-        if image.isNull() or not self.tone_curve_enabled or not self.tone_curve_luts or np is None:
+        return self.apply_tone_curve_snapshot(image, self.tone_curve_luts if self.tone_curve_enabled else None)
+
+    @staticmethod
+    def apply_tone_curve_snapshot(image: QImage, tone_curve_luts: object) -> QImage:
+        if image.isNull() or not isinstance(tone_curve_luts, dict) or not tone_curve_luts or np is None:
             return image
         source = image.convertToFormat(QImage.Format_RGBA8888)
         size = source.sizeInBytes()
         data = bytes(source.bits()[:size])
         array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
         luminance = ((array[:, :, 0].astype(np.uint16) * 77 + array[:, :, 1].astype(np.uint16) * 150 + array[:, :, 2].astype(np.uint16) * 29) >> 8).astype(np.uint8)
-        value_lut = np.array(self.tone_curve_luts.get("value", list(range(256))), dtype=np.uint8)
-        red_lut = np.array(self.tone_curve_luts.get("red", list(range(256))), dtype=np.uint8)
-        green_lut = np.array(self.tone_curve_luts.get("green", list(range(256))), dtype=np.uint8)
-        blue_lut = np.array(self.tone_curve_luts.get("blue", list(range(256))), dtype=np.uint8)
-        alpha_lut = np.array(self.tone_curve_luts.get("alpha", list(range(256))), dtype=np.uint8)
+        value_lut = np.array(tone_curve_luts.get("value", list(range(256))), dtype=np.uint8)
+        red_lut = np.array(tone_curve_luts.get("red", list(range(256))), dtype=np.uint8)
+        green_lut = np.array(tone_curve_luts.get("green", list(range(256))), dtype=np.uint8)
+        blue_lut = np.array(tone_curve_luts.get("blue", list(range(256))), dtype=np.uint8)
+        alpha_lut = np.array(tone_curve_luts.get("alpha", list(range(256))), dtype=np.uint8)
         mapped = value_lut[luminance]
         array[:, :, 0] = red_lut[mapped]
         array[:, :, 1] = green_lut[mapped]
@@ -4881,9 +6535,11 @@ class MainWindow(QMainWindow):
         self.prefetch_viewer_display_paths: set[Path] = set()
         self.prefetch_processed_plan_keys: set[tuple] = set()
         self.prefetch_pixmap_plan_keys: set[object] = set()
+        self.resample_prefetch_generation = 0
         self.prefetch_engine_plan: list[Path] = []
         self.prefetch_engine_done_paths: set[Path] = set()
         self.pixmap_prefetch_log_accum = 0
+        self.resample_prefetch_log_accum = 0
         self.side_panel_visible_before_fullscreen = True
         self.side_panel_width = int(self.config_data.side_panel_width)
         self.fullscreen_cursor_hidden = False
@@ -4926,6 +6582,8 @@ class MainWindow(QMainWindow):
         self.viewer.actualSizeRequested.connect(self.viewer.zoom_to_actual_size)
         self.viewer.actionRequested.connect(self.perform_action)
         self.viewer.pixmapPrefetchProgress.connect(self.on_pixmap_prefetch_progress)
+        self.viewer.resamplePrefetchProgress.connect(self.on_resample_prefetch_progress)
+        self.viewer.resamplePlanRequested.connect(self.schedule_resample_prefetch)
         self.viewer.installEventFilter(self)
         self.thumbnail_panel = self.build_thumbnail_panel()
         self.thumbnail_panel.setParent(self.viewer_host)
@@ -5102,6 +6760,8 @@ class MainWindow(QMainWindow):
         image_adjust_tab.setWidgetResizable(True)
         colorize_tab.setWidgetResizable(True)
         novelai_tab.setWidgetResizable(True)
+        self.novelai_scroll_area = novelai_tab
+        novelai_tab.viewport().installEventFilter(self)
         other_tab.setWidgetResizable(True)
         keyconfig_tab.setWidgetResizable(True)
         tabs.addTab(realcugan_tab, "エンジン設定")
@@ -5410,7 +7070,8 @@ class MainWindow(QMainWindow):
         self.upscale_progress_bar = QProgressBar()
         self.processed_prefetch_bar = QProgressBar()
         self.pixmap_prefetch_bar = QProgressBar()
-        for bar in (self.original_prefetch_bar, self.colorize_progress_bar, self.upscale_progress_bar, self.processed_prefetch_bar, self.pixmap_prefetch_bar):
+        self.resample_prefetch_bar = QProgressBar()
+        for bar in (self.original_prefetch_bar, self.colorize_progress_bar, self.upscale_progress_bar, self.processed_prefetch_bar, self.pixmap_prefetch_bar, self.resample_prefetch_bar):
             bar.setRange(0, 1)
             bar.setValue(0)
             bar.setTextVisible(True)
@@ -5419,6 +7080,7 @@ class MainWindow(QMainWindow):
         progress_layout.addRow("拡大画像生成", self.upscale_progress_bar)
         progress_layout.addRow("拡大後メモリ読込", self.processed_prefetch_bar)
         progress_layout.addRow("表示用QPixmap", self.pixmap_prefetch_bar)
+        progress_layout.addRow("表示リサンプル", self.resample_prefetch_bar)
         log_layout.addWidget(self.prefetch_progress_panel)
         self.log_label = QLabel("ログ")
         self.log_edit = QTextEdit()
@@ -5711,6 +7373,7 @@ class MainWindow(QMainWindow):
         self.detect_comfyui_nodes(update_status=False)
 
         novelai_tab.setWidget(self.build_novelai_tab_content())
+        QTimer.singleShot(0, self.update_novelai_prompt_tab_wrap_width)
 
         other_content = QWidget()
         other_layout = QVBoxLayout(other_content)
@@ -5744,7 +7407,7 @@ class MainWindow(QMainWindow):
         self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
         resample_form.addRow("表示リサンプル方式", self.cpu_resample_combo)
         other_layout.addLayout(resample_form)
-        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像を、よりきれいに見えるよう作成して保持します。オフにすると標準の高速表示になります。"))
+        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。"))
         other_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
         other_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
         other_layout.addWidget(self.separator())
@@ -5833,12 +7496,16 @@ class MainWindow(QMainWindow):
         self.novelai_split_prompts_check.setChecked(self.config_data.novelai_split_prompts)
         self.novelai_split_prompts_check.stateChanged.connect(self.on_novelai_split_prompts_changed)
         prompt_mode_row.addWidget(self.novelai_split_prompts_check)
+        self.novelai_prompt_tab_mode_check = QCheckBox("タブモード")
+        self.novelai_prompt_tab_mode_check.setChecked(self.config_data.novelai_prompt_tab_mode)
+        self.novelai_prompt_tab_mode_check.stateChanged.connect(self.on_novelai_prompt_tab_mode_changed)
+        prompt_mode_row.addWidget(self.novelai_prompt_tab_mode_check)
+        prompt_mode_row.addStretch(1)
+        layout.addLayout(prompt_mode_row)
         self.novelai_show_reconstructed_prompts_check = QCheckBox("再構築したプロンプトを表示する")
         self.novelai_show_reconstructed_prompts_check.setChecked(self.config_data.novelai_show_reconstructed_prompts)
         self.novelai_show_reconstructed_prompts_check.stateChanged.connect(self.on_novelai_show_reconstructed_prompts_changed)
-        prompt_mode_row.addWidget(self.novelai_show_reconstructed_prompts_check)
-        prompt_mode_row.addStretch(1)
-        layout.addLayout(prompt_mode_row)
+        layout.addWidget(self.novelai_show_reconstructed_prompts_check)
         preset_row = QHBoxLayout()
         preset_row.addWidget(QLabel("タグプリセット"))
         self.novelai_prompt_preset_combo = QComboBox()
@@ -5867,7 +7534,7 @@ class MainWindow(QMainWindow):
         self.novelai_add_prompt_items_at_top_check.setChecked(self.config_data.novelai_add_prompt_items_at_top)
         self.novelai_add_prompt_items_at_top_check.stateChanged.connect(self.on_novelai_add_prompt_items_at_top_changed)
         prompt_heading_row.addWidget(self.novelai_add_prompt_items_at_top_check)
-        self.novelai_delete_folder_contents_check = QCheckBox("フォルダ削除時、中身ごと消す")
+        self.novelai_delete_folder_contents_check = QCheckBox("タブ/フォルダ削除時、中身ごと消す")
         self.novelai_delete_folder_contents_check.setChecked(self.config_data.novelai_delete_folder_contents)
         self.novelai_delete_folder_contents_check.stateChanged.connect(self.on_novelai_delete_folder_contents_changed)
         prompt_heading_row.addWidget(self.novelai_delete_folder_contents_check)
@@ -5906,6 +7573,14 @@ class MainWindow(QMainWindow):
         self.novelai_negative_list_edit = NovelAIPromptListEditor("")
         self.novelai_negative_list_edit.list_widget.dragStateChanged.connect(self.on_novelai_prompt_drag_state_changed)
         self.novelai_negative_list_edit.set_items(self.config_data.novelai_negative_prompt_items, self.config_data.novelai_negative_prompt)
+        self.novelai_prompt_list_edit.set_tab_mode(
+            self.config_data.novelai_prompt_tab_mode,
+            self.config_data.novelai_prompt_tabs,
+        )
+        self.novelai_negative_list_edit.set_tab_mode(
+            self.config_data.novelai_prompt_tab_mode,
+            self.config_data.novelai_negative_prompt_tabs,
+        )
         self.novelai_negative_list_edit.changed.connect(self.on_novelai_prompt_list_changed)
         self.novelai_negative_list_edit.submitRequested.connect(self.generate_novelai_images)
         layout.addWidget(self.novelai_negative_list_edit)
@@ -6284,6 +7959,8 @@ class MainWindow(QMainWindow):
             "name": name,
             "prompt_items": self.novelai_prompt_items_for_preset(self.novelai_prompt_list_edit, self.novelai_prompt_edit),
             "negative_items": self.novelai_prompt_items_for_preset(self.novelai_negative_list_edit, self.novelai_negative_edit),
+            "prompt_tabs": self.novelai_prompt_list_edit.tab_state() if self.novelai_split_prompts_enabled() else [],
+            "negative_tabs": self.novelai_negative_list_edit.tab_state() if self.novelai_split_prompts_enabled() else [],
         }
 
     def save_novelai_prompt_preset_dialog(self) -> None:
@@ -6316,11 +7993,21 @@ class MainWindow(QMainWindow):
             return
         prompt_items = preset.get("prompt_items")
         negative_items = preset.get("negative_items")
+        prompt_tabs = preset.get("prompt_tabs")
+        negative_tabs = preset.get("negative_tabs")
         self.novelai_split_prompts_check.blockSignals(True)
         self.novelai_split_prompts_check.setChecked(True)
         self.novelai_split_prompts_check.blockSignals(False)
-        self.novelai_prompt_list_edit.set_items(prompt_items if isinstance(prompt_items, list) else [], "")
-        self.novelai_negative_list_edit.set_items(negative_items if isinstance(negative_items, list) else [], "")
+        self.novelai_prompt_list_edit.set_items(
+            prompt_items if isinstance(prompt_items, list) else [],
+            "",
+            prompt_tabs if isinstance(prompt_tabs, list) else [],
+        )
+        self.novelai_negative_list_edit.set_items(
+            negative_items if isinstance(negative_items, list) else [],
+            "",
+            negative_tabs if isinstance(negative_tabs, list) else [],
+        )
         self.sync_novelai_text_from_lists()
         self.update_novelai_prompt_editor_visibility()
         self.on_novelai_settings_changed()
@@ -6644,10 +8331,23 @@ class MainWindow(QMainWindow):
         self.novelai_negative_resize_handle.setVisible(negative_expanded)
         if hasattr(self, "novelai_add_prompt_items_at_top_check"):
             self.novelai_add_prompt_items_at_top_check.setVisible(split_enabled)
+        if hasattr(self, "novelai_prompt_tab_mode_check"):
+            self.novelai_prompt_tab_mode_check.setVisible(split_enabled)
         if hasattr(self, "novelai_enter_generate_check"):
             self.novelai_enter_generate_check.setVisible(not split_enabled)
         if hasattr(self, "novelai_delete_folder_contents_check"):
             self.novelai_delete_folder_contents_check.setVisible(split_enabled)
+
+    def update_novelai_prompt_tab_wrap_width(self, viewport_width: int | None = None) -> None:
+        scroll_area = getattr(self, "novelai_scroll_area", None)
+        if scroll_area is None:
+            return
+        width = int(viewport_width) if viewport_width is not None else scroll_area.viewport().width()
+        wrap_width = max(28, width - 18)
+        for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
+            editor = getattr(self, editor_name, None)
+            if isinstance(editor, NovelAIPromptListEditor):
+                editor.tab_bar.set_wrap_width(wrap_width)
 
     def sync_novelai_lists_from_text(self) -> None:
         if hasattr(self, "novelai_prompt_list_edit"):
@@ -6662,6 +8362,21 @@ class MainWindow(QMainWindow):
             self.sync_novelai_text_from_lists()
         self.update_novelai_prompt_editor_visibility()
         self.on_novelai_settings_changed()
+
+    def on_novelai_prompt_tab_mode_changed(self, *_args, persist: bool = True) -> None:
+        enabled = bool(
+            getattr(self, "novelai_prompt_tab_mode_check", None)
+            and self.novelai_prompt_tab_mode_check.isChecked()
+        )
+        for editor_name in ("novelai_prompt_list_edit", "novelai_negative_list_edit"):
+            editor = getattr(self, editor_name, None)
+            if isinstance(editor, NovelAIPromptListEditor):
+                editor.set_tab_mode(enabled)
+        if hasattr(self, "novelai_prompt_edit") and hasattr(self, "novelai_negative_edit"):
+            self.sync_novelai_text_from_lists()
+            self.update_novelai_reconstructed_prompt_labels()
+        if persist:
+            self.on_novelai_settings_changed()
 
     def on_novelai_add_prompt_items_at_top_changed(self, *_args, persist: bool = True) -> None:
         enabled = bool(
@@ -7245,6 +8960,8 @@ class MainWindow(QMainWindow):
                 child.setText(self.tr_ui(child.text()))
             elif isinstance(child, QCheckBox):
                 child.setText(self.tr_ui(child.text()))
+            elif isinstance(child, NovelAIPromptTabButton):
+                continue
             elif isinstance(child, QPushButton):
                 child.setText(self.tr_ui(child.text()))
 
@@ -8472,8 +10189,11 @@ class MainWindow(QMainWindow):
             self.config_data.novelai_split_prompts = self.novelai_split_prompts_check.isChecked()
             self.config_data.novelai_show_reconstructed_prompts = self.novelai_show_reconstructed_prompts_check.isChecked()
             self.config_data.novelai_add_prompt_items_at_top = self.novelai_add_prompt_items_at_top_check.isChecked()
+            self.config_data.novelai_prompt_tab_mode = self.novelai_prompt_tab_mode_check.isChecked()
             self.config_data.novelai_prompt_items = self.novelai_prompt_list_edit.to_items()
             self.config_data.novelai_negative_prompt_items = self.novelai_negative_list_edit.to_items()
+            self.config_data.novelai_prompt_tabs = self.novelai_prompt_list_edit.tab_state()
+            self.config_data.novelai_negative_prompt_tabs = self.novelai_negative_list_edit.tab_state()
             self.config_data.novelai_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_prompt_editor_height)
             self.config_data.novelai_negative_prompt_editor_height = self.clamp_novelai_prompt_editor_height(self.config_data.novelai_negative_prompt_editor_height)
             self.config_data.novelai_prompt_expanded = self.novelai_prompt_toggle_button.isChecked()
@@ -8537,6 +10257,7 @@ class MainWindow(QMainWindow):
         self.viewer.set_resample_options(self.config_data.cpu_resample_cache_enabled, self.config_data.cpu_resample_algorithm)
         self.viewer.set_key_bindings(self.config_data.key_bindings)
         self.viewer.set_pixmap_cache_limit(viewer_pixmap_cache_limit(self.viewer_prefetch_spin.value()))
+        self.viewer.set_resample_cache_limit(viewer_resample_cache_limit(self.viewer_prefetch_spin.value()))
         self.viewer.set_horizontal_wheel_options(
             self.config_data.horizontal_wheel_navigation,
             self.config_data.horizontal_wheel_inverted,
@@ -9284,6 +11005,9 @@ class MainWindow(QMainWindow):
         pixmap_total = pixmap_done + pixmap_pending
         self.set_progress_bar(self.pixmap_prefetch_bar, pixmap_done, pixmap_total, "表示用QPixmap")
 
+        resample_done, resample_total = self.viewer.resample_prefetch_progress_counts()
+        self.set_progress_bar(self.resample_prefetch_bar, resample_done, resample_total, "表示リサンプル")
+
     def current_prefetch_original_paths(self) -> set[Path]:
         paths = set(self.prefetch_viewer_display_paths)
         if self.image_paths and 0 <= self.current_index < len(self.image_paths):
@@ -9343,6 +11067,84 @@ class MainWindow(QMainWindow):
         self.prefetch_pixmap_plan_keys.update(key for key, _image in warm_items)
         self.viewer.queue_pixmap_prefetch(warm_items)
 
+    def cached_resample_page_entry(self, index: int) -> tuple[QImage, QImage] | None:
+        if index < 0 or index >= len(self.image_paths):
+            return None
+        path = self.image_paths[index]
+        display_path = self.normalized_path(self.display_source_path(path))
+        source = self.original_cache.get(display_path)
+        if source is None or source.isNull():
+            return None
+        processed = self.processed_image_from_cache(self.processing_key(path))
+        return source, processed if processed is not None and not processed.isNull() else QImage()
+
+    def cached_resample_page_bundle(self, index: int) -> list[tuple[QImage, QImage]] | None:
+        if index < 0 or index >= len(self.image_paths) or self.is_animated_source_or_display(self.image_paths[index]):
+            return None
+        primary = self.cached_resample_page_entry(index)
+        if primary is None:
+            return None
+        entries = [primary]
+        if (
+            not self.dual_page_enabled
+            or (
+                self.dual_page_landscape_check.isChecked()
+                and primary[0].width() > primary[0].height()
+            )
+        ):
+            return entries
+        secondary_index = index + 1
+        if secondary_index >= len(self.image_paths):
+            return entries
+        if self.is_animated_source_or_display(self.image_paths[secondary_index]):
+            return None
+        secondary = self.cached_resample_page_entry(secondary_index)
+        if secondary is None:
+            return None
+        if self.dual_page_landscape_check.isChecked() and secondary[0].width() > secondary[0].height():
+            return entries
+        entries.append(secondary)
+        return entries
+
+    def schedule_resample_prefetch(self, invalidate: bool = True, include_neighbors: bool = True) -> None:
+        if not self.image_paths or self.current_index < 0:
+            return
+        if invalidate or self.resample_prefetch_generation <= 0:
+            self.resample_prefetch_generation += 1
+            self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+        if not self.cpu_resample_check.isChecked():
+            self.update_prefetch_progress_bars()
+            return
+        candidate_indexes = [self.current_index]
+        if include_neighbors:
+            index_by_path = {path: index for index, path in enumerate(self.image_paths)}
+            for path in self.prefetch_viewer_plan:
+                index = index_by_path.get(path)
+                if index is not None and index not in candidate_indexes:
+                    candidate_indexes.append(index)
+        current_bundle = self.cached_resample_page_bundle(self.current_index)
+        if current_bundle:
+            self.viewer.queue_resample_page_prefetch(
+                [(0, current_bundle)],
+                self.resample_prefetch_generation,
+                preserve_scale=self.viewer.current_scale(),
+                rotation=self.viewer.display_rotation,
+            )
+        neighbor_bundles: list[tuple[int, list[tuple[QImage, QImage]]]] = []
+        for priority, index in enumerate(candidate_indexes[1:], start=1):
+            bundle = self.cached_resample_page_bundle(index)
+            if bundle:
+                neighbor_bundles.append((priority, bundle))
+        if neighbor_bundles:
+            preserve_view = self.preserve_view_check.isChecked()
+            self.viewer.queue_resample_page_prefetch(
+                neighbor_bundles,
+                self.resample_prefetch_generation,
+                preserve_scale=self.viewer.current_scale() if preserve_view else None,
+                rotation=self.viewer.display_rotation if preserve_view else 0,
+            )
+        self.update_prefetch_progress_bars()
+
     def on_pixmap_prefetch_progress(self, warmed: int, remaining: int, cache_count: int, elapsed_ms: float) -> None:
         self.record_profile("QPixmap生成(UI)", elapsed_ms)
         if not self.show_log_panel:
@@ -9354,6 +11156,19 @@ class MainWindow(QMainWindow):
                 f"Pixmap prefetch: warmed +{self.pixmap_prefetch_log_accum}, remaining={remaining}, pixmaps={cache_count}"
             )
             self.pixmap_prefetch_log_accum = 0
+
+    def on_resample_prefetch_progress(self, warmed: int, remaining: int, cache_count: int, elapsed_ms: float) -> None:
+        if warmed > 0:
+            self.record_profile("表示リサンプル(CPU)", elapsed_ms / warmed)
+        self.update_prefetch_progress_bars()
+        if not self.show_log_panel:
+            return
+        self.resample_prefetch_log_accum += warmed
+        if remaining == 0 or self.resample_prefetch_log_accum >= 10:
+            self.append_log(
+                f"Resample prefetch: warmed +{self.resample_prefetch_log_accum}, remaining={remaining}, pixmaps={cache_count}"
+            )
+            self.resample_prefetch_log_accum = 0
 
     def apply_log_visibility(self) -> None:
         log_visible = bool(self.show_log_panel)
@@ -9732,6 +11547,8 @@ class MainWindow(QMainWindow):
             secondary_path = self.image_paths[secondary_index]
             secondary_source, secondary_processed, _secondary_state, _secondary_skipped = self.image_state_for_display(secondary_path)
         if navigation:
+            self.resample_prefetch_generation += 1
+            self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
             self.viewer.begin_interactive_resample_delay()
         self.viewer.set_images(
             source,
@@ -10892,6 +12709,9 @@ class MainWindow(QMainWindow):
             self.position_overlay_side_panel()
 
     def eventFilter(self, watched, event) -> bool:
+        novelai_scroll = getattr(self, "novelai_scroll_area", None)
+        if novelai_scroll is not None and watched is novelai_scroll.viewport() and event.type() == QEvent.Resize:
+            self.update_novelai_prompt_tab_wrap_width(event.size().width())
         filename_editor = getattr(self, "novelai_filename_template_edit", None)
         filename_tooltip = getattr(self, "novelai_filename_template_tooltip", None)
         if watched is filename_editor:
@@ -11354,6 +13174,7 @@ class MainWindow(QMainWindow):
     def on_viewer_prefetch_changed(self) -> None:
         self.persist_config()
         self.viewer.set_pixmap_cache_limit(viewer_pixmap_cache_limit(self.viewer_prefetch_spin.value()))
+        self.viewer.set_resample_cache_limit(viewer_resample_cache_limit(self.viewer_prefetch_spin.value()))
         if self.image_paths:
             self.request_schedule_prefetch(0)
 
@@ -11528,6 +13349,7 @@ class MainWindow(QMainWindow):
             self.colorize_plan = []
             self.colorize_done_paths.clear()
         self.start_viewer_prefetch(viewer_plan)
+        self.schedule_resample_prefetch(invalidate=True)
         self.update_prefetch_progress_bars()
         for position, path in enumerate(upscale_plan):
             self.enqueue_realcugan(
@@ -11663,6 +13485,7 @@ class MainWindow(QMainWindow):
         if warm_items:
             self.prefetch_pixmap_plan_keys.update(key for key, _image in warm_items)
             self.viewer.queue_pixmap_prefetch(warm_items)
+        self.schedule_resample_prefetch(invalidate=False)
         self.update_prefetch_progress_bars()
         if not self.prefetching_original_paths and not self.prefetching_processed_keys:
             self.append_log_if_visible(
@@ -12007,6 +13830,7 @@ class MainWindow(QMainWindow):
                     name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
                     self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
                     self.update_window_title()
+            self.schedule_resample_prefetch(invalidate=False)
         else:
             self.append_log(f"Process exited with code {result['code']}: {self.display_name(path)}")
             self.update_prefetch_progress_bars()
