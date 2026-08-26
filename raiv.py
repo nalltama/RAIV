@@ -105,7 +105,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -342,19 +342,34 @@ LEGACY_REALCUGAN_TEMPLATE = 'realcugan-ncnn-vulkan.exe -i "{input}" -o "{output}
 LEGACY_BUNDLED_REALCUGAN_TEMPLATE = (
     f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}}'
 )
-DEFAULT_REALCUGAN_TEMPLATE = (
+LEGACY_REALCUGAN_OUTPUT_TEMPLATE = (
     f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -f {{output_format}}'
     if BUNDLED_REALCUGAN_EXE.exists()
     else f'{LEGACY_REALCUGAN_TEMPLATE} -f {{output_format}}'
+)
+LEGACY_REALCUGAN_SYNCGAP_TEMPLATE = (
+    f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -c {{syncgap}} -f {{output_format}}'
+    if BUNDLED_REALCUGAN_EXE.exists()
+    else f'{LEGACY_REALCUGAN_TEMPLATE} -c {{syncgap}} -f {{output_format}}'
+)
+DEFAULT_REALCUGAN_TEMPLATE = (
+    f'"{BUNDLED_REALCUGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -c {{syncgap}} -m "{{model}}" {{tta}} -f {{output_format}}'
+    if BUNDLED_REALCUGAN_EXE.exists()
+    else f'{LEGACY_REALCUGAN_TEMPLATE} -c {{syncgap}} -m "{{model}}" {{tta}} -f {{output_format}}'
 )
 LEGACY_REALESRGAN_TEMPLATE = 'realesrgan-ncnn-vulkan.exe -i "{input}" -o "{output}" -s {scale} -t {tile} -n {model}'
 LEGACY_BUNDLED_REALESRGAN_TEMPLATE = (
     f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}}'
 )
-DEFAULT_REALESRGAN_TEMPLATE = (
+LEGACY_REALESRGAN_OUTPUT_TEMPLATE = (
     f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} -f {{output_format}}'
     if BUNDLED_REALESRGAN_EXE.exists()
     else f'{LEGACY_REALESRGAN_TEMPLATE} -f {{output_format}}'
+)
+DEFAULT_REALESRGAN_TEMPLATE = (
+    f'"{BUNDLED_REALESRGAN_EXE}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} {{tta}} -f {{output_format}}'
+    if BUNDLED_REALESRGAN_EXE.exists()
+    else f'{LEGACY_REALESRGAN_TEMPLATE} {{tta}} -f {{output_format}}'
 )
 LEGACY_DEFAULT_GIGAPIXEL_TEMPLATE = (
     f'"{DEFAULT_GIGAPIXEL_EXE}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
@@ -388,8 +403,28 @@ ENGINE_LABELS = {
     ENGINE_REALESRGAN: "Real-ESRGAN",
     ENGINE_GIGAPIXEL: "Gigapixel AI",
 }
+REALCUGAN_SYNCGAP_OPTIONS = [
+    (0, "同期なし (0)"),
+    (1, "正確 (1)"),
+    (2, "粗い (2)"),
+    (3, "非常に粗い (3／既定)"),
+]
+REALCUGAN_MODELS = [
+    ("Standard", "models-se"),
+    ("Pro", "models-pro"),
+]
+REALCUGAN_MODEL_SCALES = {
+    "models-se": [2, 3, 4],
+    "models-pro": [2, 3],
+}
+REALCUGAN_DENOISE_LEVELS = {
+    ("models-se", 2): [-1, 0, 1, 2, 3],
+    ("models-se", 3): [-1, 0, 3],
+    ("models-se", 4): [-1, 0, 3],
+    ("models-pro", 2): [-1, 0, 3],
+    ("models-pro", 3): [-1, 0, 3],
+}
 REALESRGAN_MODELS = ["realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime"]
-REALCUGAN_SCALES = [2, 3, 4]
 REALESRGAN_MODEL_SCALES = {
     "realesr-animevideov3": [2, 3, 4],
     "realesrgan-x4plus": [4],
@@ -470,6 +505,19 @@ def viewer_pixmap_cache_limit(prefetch_count: int) -> int:
 
 def viewer_resample_cache_limit(prefetch_count: int) -> int:
     return max(24, max(0, int(prefetch_count)) * 4 + 8)
+
+
+def logical_cpu_thread_count() -> int:
+    try:
+        return max(1, int(os.cpu_count() or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def effective_resample_worker_count(configured_count: int, cpu_threads: int | None = None) -> int:
+    cpu_threads = max(1, int(cpu_threads or logical_cpu_thread_count()))
+    configured_count = max(0, min(cpu_threads, int(configured_count)))
+    return max(1, cpu_threads // 2) if configured_count == 0 else configured_count
 
 
 class WICGUID(ctypes.Structure):
@@ -1218,10 +1266,19 @@ UI_TEXT_EN = {
     "倍率": "Scale",
     "倍率を自動で決定する": "Choose scale automatically",
     "ノイズ": "Denoise",
+    "TTA（高品質・低速）": "TTA (higher quality, slower)",
+    "タイル間同期": "Tile synchronization",
+    "同期なし (0)": "No synchronization (0)",
+    "正確 (1)": "Accurate (1)",
+    "粗い (2)": "Rough (2)",
+    "非常に粗い (3／既定)": "Very rough (3 / default)",
     "Real-ESRGANモデル": "Real-ESRGAN model",
-    "ノイズ: -1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。": "Denoise: -1 disables denoising. 0/1/2/3 remove noise more strongly as the value increases.",
+    "ノイズ: -1 は保守モデル、0 はノイズ除去なし、1/2/3 は数値が大きいほど強く除去します。モデルと倍率に存在する値だけを選択できます。": "Denoise: -1 uses the conservative model, 0 disables denoising, and 1/2/3 remove noise more strongly as the value increases. Only values available for the selected model and scale can be chosen.",
+    "Real-CUGANのStandardは2倍/3倍/4倍、Proは2倍/3倍に対応します。Proはリンギング、テクスチャの塗り潰し、異常ノイズの増幅を抑えるよう調整されています。": "Real-CUGAN Standard supports 2x/3x/4x, while Pro supports 2x/3x. Pro is tuned to reduce ringing, texture smearing, and abnormal noise amplification.",
+    "Real-CUGANのタイル分割時に、モデル内部の中間データを同期する精度です。正確 (1) は分割なしに近い画質、非常に粗い (3) はパラメータ未指定時と同じ既定値です。同期なし (0) はタイル境界が目立つ場合があります。独自のコマンドテンプレートでは {syncgap} を含めてください。": "Controls how accurately Real-CUGAN synchronizes intermediate model data across tiles. Accurate (1) is closest to processing without tiling, while Very rough (3) matches the default used when the parameter is omitted. No synchronization (0) may expose tile boundaries. Include {syncgap} in custom command templates.",
     "Real-ESRGANはノイズ値を使わず、モデルで画風や復元傾向を選びます。": "Real-ESRGAN does not use the denoise value. Choose a model to change image style and restoration behavior.",
     "realesr-animevideov3: アニメ/イラスト向けの軽量標準モデル。 realesrgan-x4plus: 写真や一般画像向け。 realesrgan-x4plus-anime: アニメ/イラスト向けのx4plus派生モデル。 realesr-animevideov3は2倍/3倍/4倍、x4plus系は4倍に対応します。": "realesr-animevideov3: lightweight standard model for anime/illustration. realesrgan-x4plus: for photos and general images. realesrgan-x4plus-anime: x4plus-derived model for anime/illustration. realesr-animevideov3 supports 2x/3x/4x; x4plus models support 4x.",
+    "TTAは入力を8方向に変換して推論結果を統合します。細部の安定性向上が期待できますが、処理は大幅に遅くなります。既定はオフです。独自のコマンドテンプレートでは {tta} を含めてください。": "TTA combines inference results from eight transformed inputs. It may improve fine-detail stability, but processing becomes substantially slower. It is off by default. Include {tta} in custom command templates.",
     "Gigapixel AI CLIはProライセンスが必要です。各補正は0で無効、1～100で強度を指定します。": "Gigapixel AI CLI requires a Pro license. Set each adjustment to 0 to disable it, or 1-100 for its strength.",
     "tile: 0 は自動。内蔵GPUなどでメモリ不足になる場合は 128 や 256 など小さめの値を指定すると安定しやすくなりますが、遅くなることがあります。": "tile: 0 is automatic. If an integrated GPU runs out of memory, smaller values such as 128 or 256 can improve stability, but processing may be slower.",
     "エンジン先読み": "Engine prefetch",
@@ -1237,7 +1294,7 @@ UI_TEXT_EN = {
     "画像ごとに、現在のエンジンとモデルで選択可能な倍率から、縦サイズ閾値へ届く最小倍率を選びます。届かない場合は最大倍率を使います。": "For each image, chooses the smallest scale available for the current engine and model that reaches the height threshold. If none reaches it, the maximum scale is used.",
     "拡大結果を倍率フォルダに保存": "Save processed results to scale folder",
     "倍率フォルダがあれば表示に使う": "Use scale folder when available",
-    "現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。": "Only the scale folder that exactly matches the current engine, model, and scale is used for display. Results from another engine or scale are not used as fallback.",
+    "Real-CUGANのStandard／ProとTTAは同じ倍率フォルダ名を使用します。": "Real-CUGAN Standard/Pro and TTA use the same scale-folder name.",
     "出力形式": "Output format",
     "元画像の形式を引き継ぐ": "Preserve source format",
     "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、Gigapixel AIはCLIのpreserve指定を使います。独自のコマンドテンプレートでは {output_format} を含めてください。": "Output format: PNG always saves PNG. Preserve source format uses JPG/PNG/WebP for Real-CUGAN/Real-ESRGAN and Gigapixel AI's CLI preserve option. Include {output_format} in custom command templates.",
@@ -1245,7 +1302,7 @@ UI_TEXT_EN = {
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
     "エンジンexeを選択": "Select engine exe",
-    "使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}": "Available placeholders: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}",
+    "使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {syncgap} {tta} {model} {sharpen} {compression} {face_recovery}": "Available placeholders: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {syncgap} {tta} {model} {sharpen} {compression} {face_recovery}",
     "次回起動時に古い一時ファイルを削除": "Delete old temporary files on next startup",
     "アプリの二重起動を禁止する": "Prevent multiple app instances",
     "AI彩色を表示しない": "Hide AI Colorize tab",
@@ -1268,7 +1325,9 @@ UI_TEXT_EN = {
     "表示用に画像をメモリへ先読みする枚数。大きいほどページ送りは速くなりますが、メモリ使用量が増えます。": "Number of images to preload into memory for display. Higher values make page navigation faster but use more memory.",
     "拡大縮小を高品質に補完する": "Use high-quality scaling",
     "表示リサンプル方式": "Display resampling method",
-    "原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。拡大エンジンの実行中や待機中は新しい先行処理を止め、拡大キューが空になると再開します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images in the background. New work pauses while the upscaling engine is running or queued, then resumes when the upscaling queue becomes idle. Prefetched pages switch directly to the finished display, while a cache miss never delays navigation. Turn off for standard fast display.",
+    "表示リサンプリング ワーカー数": "Display resampling workers",
+    "自動 (0)": "Auto (0)",
+    "原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。現在ページを最優先し、ビューアー先読み範囲では拡大前の元画像も準備して、拡大完了後は処理済み画像を改めて準備します。ページ操作中は新しい処理を待機させ、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。": "Creates and keeps high-quality display-size images in the background. The current page has top priority; within the viewer prefetch range, the original is prepared before upscaling and the processed image is prepared again after upscaling finishes. New work waits during page interaction, and a cache miss never delays navigation. Turn off for standard fast display.",
     "Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。": "Lanczos3: sharp and standard. Lanczos4: sharper but may introduce ringing. Bicubic: softer and natural. Area: stable for large reductions and helps reduce jaggies.",
     "Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。": "Lanczos4 uses OpenCV when available; otherwise it falls back to Lanczos3-equivalent processing.",
     "選択": "Select",
@@ -1548,6 +1607,10 @@ class AppConfig:
     gigapixel_scale: int = 2
     denoise: int = 0
     tile: int = 0
+    realcugan_syncgap_mode: int = 3
+    realcugan_model: str = "models-se"
+    realcugan_tta_enabled: bool = False
+    realesrgan_tta_enabled: bool = False
     realesrgan_model: str = "realesr-animevideov3"
     gigapixel_model: str = "standard"
     gigapixel_denoise: int = 0
@@ -1617,6 +1680,7 @@ class AppConfig:
     background_color: str = "#000000"
     cpu_resample_cache_enabled: bool = True
     cpu_resample_algorithm: str = DEFAULT_RESAMPLE_ALGORITHM
+    cpu_resample_worker_count: int = 0
     compare_enabled: bool = False
     compare_split: int = 500
     compare_line_color: str = "#ffffff"
@@ -1690,6 +1754,8 @@ class UpscaleTask:
     scale: int
     denoise: int
     tile: int
+    syncgap: int
+    tta_enabled: bool
     model: str
     sharpen: int
     compression: int
@@ -1922,11 +1988,27 @@ def load_config() -> AppConfig:
         ):
             config.novelai_prompt_editor_height = legacy_prompt_splitter_sizes[0]
             config.novelai_negative_prompt_editor_height = legacy_prompt_splitter_sizes[1]
-        if config.command_template in {LEGACY_REALCUGAN_TEMPLATE, LEGACY_BUNDLED_REALCUGAN_TEMPLATE} and BUNDLED_REALCUGAN_EXE.exists():
+        if config.command_template in {
+            LEGACY_REALCUGAN_TEMPLATE,
+            LEGACY_BUNDLED_REALCUGAN_TEMPLATE,
+            LEGACY_REALCUGAN_OUTPUT_TEMPLATE,
+            LEGACY_REALCUGAN_SYNCGAP_TEMPLATE,
+        } and BUNDLED_REALCUGAN_EXE.exists():
             config.command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realcugan_command_template in {LEGACY_REALCUGAN_TEMPLATE, LEGACY_BUNDLED_REALCUGAN_TEMPLATE, ""} and BUNDLED_REALCUGAN_EXE.exists():
+        if config.realcugan_command_template in {
+            LEGACY_REALCUGAN_TEMPLATE,
+            LEGACY_BUNDLED_REALCUGAN_TEMPLATE,
+            LEGACY_REALCUGAN_OUTPUT_TEMPLATE,
+            LEGACY_REALCUGAN_SYNCGAP_TEMPLATE,
+            "",
+        } and BUNDLED_REALCUGAN_EXE.exists():
             config.realcugan_command_template = DEFAULT_REALCUGAN_TEMPLATE
-        if config.realesrgan_command_template in {LEGACY_REALESRGAN_TEMPLATE, LEGACY_BUNDLED_REALESRGAN_TEMPLATE, ""} and BUNDLED_REALESRGAN_EXE.exists():
+        if config.realesrgan_command_template in {
+            LEGACY_REALESRGAN_TEMPLATE,
+            LEGACY_BUNDLED_REALESRGAN_TEMPLATE,
+            LEGACY_REALESRGAN_OUTPUT_TEMPLATE,
+            "",
+        } and BUNDLED_REALESRGAN_EXE.exists():
             config.realesrgan_command_template = DEFAULT_REALESRGAN_TEMPLATE
         if not config.gigapixel_command_template or config.gigapixel_command_template in {LEGACY_GIGAPIXEL_TEMPLATE, LEGACY_DEFAULT_GIGAPIXEL_TEMPLATE}:
             config.gigapixel_command_template = DEFAULT_GIGAPIXEL_TEMPLATE
@@ -1934,6 +2016,9 @@ def load_config() -> AppConfig:
             config.realcugan_command_template = config.command_template or DEFAULT_REALCUGAN_TEMPLATE
         if config.engine not in ENGINE_LABELS:
             config.engine = ENGINE_REALCUGAN
+        realcugan_model_ids = {model for _label, model in REALCUGAN_MODELS}
+        if config.realcugan_model not in realcugan_model_ids:
+            config.realcugan_model = REALCUGAN_MODELS[0][1]
         if config.realesrgan_model not in REALESRGAN_MODELS:
             config.realesrgan_model = REALESRGAN_MODELS[0]
         gigapixel_model_ids = {model for _label, model in GIGAPIXEL_MODELS}
@@ -1942,7 +2027,10 @@ def load_config() -> AppConfig:
         for field_name in ("realcugan_output_format", "realesrgan_output_format", "gigapixel_output_format"):
             if getattr(config, field_name) not in {OUTPUT_FORMAT_PNG, OUTPUT_FORMAT_PRESERVE}:
                 setattr(config, field_name, OUTPUT_FORMAT_PNG)
-        config.scale = min(REALCUGAN_SCALES, key=lambda value: abs(value - int(config.scale)))
+        realcugan_scales = REALCUGAN_MODEL_SCALES[config.realcugan_model]
+        config.scale = min(realcugan_scales, key=lambda value: abs(value - int(config.scale)))
+        realcugan_denoise_levels = REALCUGAN_DENOISE_LEVELS[(config.realcugan_model, config.scale)]
+        config.denoise = min(realcugan_denoise_levels, key=lambda value: abs(value - int(config.denoise)))
         realesrgan_scales = REALESRGAN_MODEL_SCALES[config.realesrgan_model]
         config.realesrgan_scale = min(realesrgan_scales, key=lambda value: abs(value - int(config.realesrgan_scale)))
         gigapixel_scales = GIGAPIXEL_MODEL_SCALES[config.gigapixel_model]
@@ -1951,8 +2039,23 @@ def load_config() -> AppConfig:
         config.gigapixel_sharpen = max(0, min(100, int(config.gigapixel_sharpen)))
         config.gigapixel_compression = max(0, min(100, int(config.gigapixel_compression)))
         config.gigapixel_face_recovery = max(0, min(100, int(config.gigapixel_face_recovery)))
+        try:
+            config.realcugan_syncgap_mode = int(config.realcugan_syncgap_mode)
+        except (TypeError, ValueError):
+            config.realcugan_syncgap_mode = 3
+        if config.realcugan_syncgap_mode not in {0, 1, 2, 3}:
+            config.realcugan_syncgap_mode = 3
+        config.realcugan_tta_enabled = bool(config.realcugan_tta_enabled)
+        config.realesrgan_tta_enabled = bool(config.realesrgan_tta_enabled)
         if config.cpu_resample_algorithm not in RESAMPLE_ALGORITHMS:
             config.cpu_resample_algorithm = DEFAULT_RESAMPLE_ALGORITHM
+        try:
+            config.cpu_resample_worker_count = max(
+                0,
+                min(logical_cpu_thread_count(), int(config.cpu_resample_worker_count)),
+            )
+        except (TypeError, ValueError):
+            config.cpu_resample_worker_count = 0
         if not config.novelai_output_dir:
             config.novelai_output_dir = str(DEFAULT_NOVELAI_GENERATED_DIR)
         if "novelai_output_name_template" not in filtered_data:
@@ -5231,7 +5334,8 @@ class GLImageView(QOpenGLWidget):
     pixmapPrefetchProgress = Signal(int, int, int, float)
     resamplePrefetchProgress = Signal(int, int, int, float)
     resamplePlanRequested = Signal()
-    _resampleResultsAvailable = Signal()
+    _resampleDispatchRequested = Signal()
+    _resampleWorkerFinished = Signal(int)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -5266,13 +5370,23 @@ class GLImageView(QOpenGLWidget):
         self.resample_prefetch_queue: queue.PriorityQueue[tuple[int, int, int, object, QImage, int, int, str, object]] = queue.PriorityQueue()
         self.resample_prefetch_pending: dict[object, int] = {}
         self.resample_prefetch_plan_keys: set[object] = set()
-        self.resample_prefetch_paused = False
+        self.resample_progress_plan_keys: set[object] = set()
+        self.resample_plan_rebuilding = False
+        self.resample_inflight_keys: set[object] = set()
         self.resample_result_queue: deque[tuple[int, object, QImage, float]] = deque()
         self.resample_result_lock = threading.Lock()
         self.resample_result_timer = QTimer(self)
         self.resample_result_timer.setSingleShot(True)
         self.resample_result_timer.timeout.connect(self.process_resample_results)
-        self._resampleResultsAvailable.connect(self.request_resample_result_processing)
+        self._resampleDispatchRequested.connect(self.dispatch_resample_requests)
+        self._resampleWorkerFinished.connect(self.on_resample_worker_finished)
+        self.logical_cpu_threads = logical_cpu_thread_count()
+        self.resample_worker_setting = 0
+        self.resample_worker_limit = effective_resample_worker_count(0, self.logical_cpu_threads)
+        self.resample_workers: list[threading.Thread] = []
+        self.resample_worker_queues: list[queue.Queue] = []
+        self.resample_busy_workers: set[int] = set()
+        self.resample_workers_stopping = False
         self.display_adjustment_revision = 0
         self.display_image_identities: OrderedDict[int, object] = OrderedDict()
         self.pixmap_cache: OrderedDict[tuple[int], QPixmap] = OrderedDict()
@@ -5312,13 +5426,6 @@ class GLImageView(QOpenGLWidget):
         self.fit_image_size: tuple[int, int] | None = None
         self.empty_message_title = ""
         self.empty_message_detail = ""
-        resample_worker_count = max(1, min(2, (os.cpu_count() or 2) - 1))
-        self.resample_workers = [
-            threading.Thread(target=self._resample_worker_loop, daemon=True)
-            for _index in range(resample_worker_count)
-        ]
-        for worker in self.resample_workers:
-            worker.start()
 
     def set_images(
         self,
@@ -5492,11 +5599,17 @@ class GLImageView(QOpenGLWidget):
 
     def begin_resample_prefetch_plan(self, generation: int) -> None:
         self.resample_prefetch_generation = int(generation)
-        self.resample_prefetch_plan_keys.clear()
         with self.resample_prefetch_lock:
+            self.resample_plan_rebuilding = True
+            self.resample_prefetch_plan_keys.clear()
             self.resample_prefetch_pending.clear()
         with self.resample_prefetch_queue.mutex:
             self.resample_prefetch_queue.queue.clear()
+
+    def publish_resample_prefetch_plan(self) -> None:
+        with self.resample_prefetch_lock:
+            self.resample_progress_plan_keys = set(self.resample_prefetch_plan_keys)
+            self.resample_plan_rebuilding = False
 
     def queue_resample_request(
         self,
@@ -5511,7 +5624,7 @@ class GLImageView(QOpenGLWidget):
     ) -> object | None:
         if (
             not self.cpu_resample_cache_enabled
-            or self.resample_prefetch_paused
+            or self.resample_interaction_active
             or image.isNull()
             or physical_width <= 0
             or physical_height <= 0
@@ -5526,13 +5639,18 @@ class GLImageView(QOpenGLWidget):
             self.display_pixel_ratio(),
             algorithm,
         )
-        if generation == self.resample_prefetch_generation:
-            self.resample_prefetch_plan_keys.add(key)
-        if key in self.resample_cache:
-            self.resample_cache.move_to_end(key)
-            return key
         generation = int(generation)
         with self.resample_prefetch_lock:
+            if generation == self.resample_prefetch_generation:
+                self.resample_prefetch_plan_keys.add(key)
+                if not self.resample_plan_rebuilding:
+                    self.resample_progress_plan_keys.add(key)
+            if key in self.resample_cache:
+                self.resample_cache.move_to_end(key)
+                return key
+            if key in self.resample_inflight_keys:
+                self.resample_prefetch_pending[key] = generation
+                return key
             if self.resample_prefetch_pending.get(key) == generation:
                 return key
             self.resample_prefetch_pending[key] = generation
@@ -5549,14 +5667,32 @@ class GLImageView(QOpenGLWidget):
             algorithm,
             adjustment_snapshot,
         ))
+        self._resampleDispatchRequested.emit()
         return key
 
-    def set_resample_prefetch_paused(self, paused: bool) -> None:
-        self.resample_prefetch_paused = bool(paused)
+    def set_resample_worker_count(self, configured_count: int) -> None:
+        configured_count = max(0, min(self.logical_cpu_threads, int(configured_count)))
+        self.resample_worker_setting = configured_count
+        self.resample_worker_limit = effective_resample_worker_count(
+            configured_count,
+            self.logical_cpu_threads,
+        )
+        self._resampleDispatchRequested.emit()
+
+    def shutdown_resample_workers(self) -> None:
+        self.resample_workers_stopping = True
+        self.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+        for worker_queue in self.resample_worker_queues:
+            try:
+                worker_queue.put_nowait(None)
+            except queue.Full:
+                pass
 
     def resample_prefetch_progress_counts(self) -> tuple[int, int]:
-        total = len(self.resample_prefetch_plan_keys)
-        done = sum(1 for key in self.resample_prefetch_plan_keys if key in self.resample_cache)
+        with self.resample_prefetch_lock:
+            plan_keys = tuple(self.resample_progress_plan_keys)
+        total = len(plan_keys)
+        done = sum(1 for key in plan_keys if key in self.resample_cache)
         return done, total
 
     def queue_resample_page_prefetch(
@@ -5618,9 +5754,61 @@ class GLImageView(QOpenGLWidget):
                         adjustment_snapshot=snapshot,
                     )
 
-    def _resample_worker_loop(self) -> None:
+    def ensure_resample_worker_capacity(self, count: int) -> None:
+        count = max(0, min(self.logical_cpu_threads, int(count)))
+        while len(self.resample_workers) < count:
+            worker_index = len(self.resample_workers)
+            worker_queue: queue.Queue = queue.Queue(maxsize=1)
+            worker = threading.Thread(
+                target=self._resample_worker_loop,
+                args=(worker_index, worker_queue),
+                daemon=True,
+            )
+            self.resample_worker_queues.append(worker_queue)
+            self.resample_workers.append(worker)
+            worker.start()
+
+    def dispatch_resample_requests(self) -> None:
+        if self.resample_workers_stopping or not self.cpu_resample_cache_enabled or self.resample_interaction_active:
+            return
+        available_slots = max(0, self.resample_worker_limit - len(self.resample_busy_workers))
+        if available_slots <= 0 or self.resample_prefetch_queue.empty():
+            return
+        desired_capacity = min(
+            self.resample_worker_limit,
+            len(self.resample_busy_workers) + self.resample_prefetch_queue.qsize(),
+        )
+        self.ensure_resample_worker_capacity(desired_capacity)
+        idle_workers = [
+            index
+            for index in range(len(self.resample_workers))
+            if index not in self.resample_busy_workers
+        ]
+        for worker_index in idle_workers[:available_slots]:
+            item = None
+            while item is None:
+                try:
+                    candidate = self.resample_prefetch_queue.get_nowait()
+                except queue.Empty:
+                    return
+                generation = candidate[2]
+                key = candidate[3]
+                with self.resample_prefetch_lock:
+                    if (
+                        generation == self.resample_prefetch_generation
+                        and self.resample_prefetch_pending.get(key) == generation
+                    ):
+                        self.resample_inflight_keys.add(key)
+                        item = candidate
+            self.resample_busy_workers.add(worker_index)
+            self.resample_worker_queues[worker_index].put(item)
+
+    def _resample_worker_loop(self, worker_index: int, worker_queue: queue.Queue) -> None:
         self.set_background_worker_priority()
         while True:
+            task = worker_queue.get()
+            if task is None or self.resample_workers_stopping:
+                return
             (
                 _priority,
                 _sequence,
@@ -5631,21 +5819,31 @@ class GLImageView(QOpenGLWidget):
                 height,
                 algorithm,
                 adjustment_snapshot,
-            ) = self.resample_prefetch_queue.get()
-            with self.resample_prefetch_lock:
-                if generation != self.resample_prefetch_generation or self.resample_prefetch_pending.get(key) != generation:
-                    continue
+            ) = task
             started = time.perf_counter()
             try:
                 if isinstance(adjustment_snapshot, dict):
                     image = self.adjusted_image_from_snapshot(image, adjustment_snapshot)
-                scaled = self.resample_qimage_with_algorithm(image, width, height, algorithm)
+                scaled = self.resample_qimage_with_algorithm(
+                    image,
+                    width,
+                    height,
+                    algorithm,
+                    cancelled=lambda: self.resample_workers_stopping or not self.cpu_resample_cache_enabled,
+                )
             except Exception:
                 scaled = QImage()
             elapsed_ms = (time.perf_counter() - started) * 1000
             with self.resample_result_lock:
                 self.resample_result_queue.append((generation, key, scaled, elapsed_ms))
-            self._resampleResultsAvailable.emit()
+            if self.resample_workers_stopping:
+                return
+            self._resampleWorkerFinished.emit(worker_index)
+
+    def on_resample_worker_finished(self, worker_index: int) -> None:
+        self.resample_busy_workers.discard(int(worker_index))
+        self.request_resample_result_processing()
+        self.dispatch_resample_requests()
 
     @staticmethod
     def set_background_worker_priority() -> None:
@@ -5673,12 +5871,16 @@ class GLImageView(QOpenGLWidget):
                 result = self.resample_result_queue.popleft() if self.resample_result_queue else None
             if result is None:
                 break
-            generation, key, image, worker_ms = result
+            _generation, key, image, worker_ms = result
             with self.resample_prefetch_lock:
-                if self.resample_prefetch_pending.get(key) != generation:
-                    continue
+                self.resample_inflight_keys.discard(key)
                 self.resample_prefetch_pending.pop(key, None)
-            if generation != self.resample_prefetch_generation or image.isNull():
+                belongs_to_current_plan = key in self.resample_prefetch_plan_keys
+            if (
+                not self.cpu_resample_cache_enabled
+                or image.isNull()
+                or (not belongs_to_current_plan and not self.resample_interaction_active)
+            ):
                 continue
             pixmap = QPixmap.fromImage(image)
             ratio_key = key[3] if isinstance(key, tuple) and len(key) >= 4 else 1000
@@ -5793,16 +5995,24 @@ class GLImageView(QOpenGLWidget):
         self.horizontal_wheel_navigation = bool(enabled)
         self.horizontal_wheel_inverted = bool(inverted)
 
-    def set_resample_options(self, enabled: bool, algorithm: str) -> None:
+    def set_resample_options(self, enabled: bool, algorithm: str, worker_count: int | None = None) -> None:
         algorithm = algorithm if algorithm in RESAMPLE_ALGORITHMS else DEFAULT_RESAMPLE_ALGORITHM
-        if self.cpu_resample_cache_enabled != enabled or self.cpu_resample_algorithm != algorithm:
-            self.cpu_resample_cache_enabled = enabled
+        enabled = bool(enabled)
+        options_changed = self.cpu_resample_cache_enabled != enabled or self.cpu_resample_algorithm != algorithm
+        self.cpu_resample_cache_enabled = enabled
+        if options_changed:
             self.cpu_resample_algorithm = algorithm
             self.resample_interaction_active = False
             self.resample_debounce_timer.stop()
+            self.begin_resample_prefetch_plan(self.resample_prefetch_generation)
             self.clear_resample_cache()
             self.update()
+        if worker_count is not None:
+            self.set_resample_worker_count(worker_count)
+        if options_changed:
             self.resamplePlanRequested.emit()
+        else:
+            self.dispatch_resample_requests()
 
     def set_tone_curve_options(self, enabled: bool, curve: ToneCurve | None) -> None:
         self.tone_curve_enabled = bool(enabled and curve is not None)
@@ -5837,6 +6047,7 @@ class GLImageView(QOpenGLWidget):
         if not self.cpu_resample_cache_enabled:
             return
         self.resample_interaction_active = True
+        self.begin_resample_prefetch_plan(self.resample_prefetch_generation)
         self.resample_debounce_timer.start(self.resample_debounce_ms)
 
     def finish_interactive_resample_delay(self) -> None:
@@ -6044,16 +6255,39 @@ class GLImageView(QOpenGLWidget):
         return self.resample_qimage_with_algorithm(image, width, height, self.cpu_resample_algorithm)
 
     @staticmethod
-    def resample_qimage_with_algorithm(image: QImage, width: int, height: int, algorithm: str) -> QImage:
+    def resample_qimage_with_algorithm(
+        image: QImage,
+        width: int,
+        height: int,
+        algorithm: str,
+        cancelled=None,
+    ) -> QImage:
+        if callable(cancelled) and cancelled():
+            return QImage()
         if PILImage is None:
             return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         source = image.convertToFormat(QImage.Format_RGBA8888)
-        size = source.sizeInBytes()
-        data = bytes(source.bits()[:size])
-        pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
+        source_buffer = source.constBits()
+        pil = PILImage.frombuffer(
+            "RGBA",
+            (source.width(), source.height()),
+            source_buffer,
+            "raw",
+            "RGBA",
+            source.bytesPerLine(),
+            1,
+        )
         if algorithm == "lanczos4" and cv2 is not None and np is not None:
-            array = np.array(pil)
+            row_bytes = source.bytesPerLine()
+            array = np.frombuffer(
+                source_buffer,
+                dtype=np.uint8,
+                count=row_bytes * source.height(),
+            ).reshape(source.height(), row_bytes)
+            array = array[:, :source.width() * 4].reshape(source.height(), source.width(), 4)
             resized = cv2.resize(array, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            if callable(cancelled) and cancelled():
+                return QImage()
             pil = PILImage.fromarray(resized, "RGBA")
         else:
             filters = {
@@ -6063,6 +6297,8 @@ class GLImageView(QOpenGLWidget):
                 "lanczos4": PILImage.Resampling.LANCZOS,
             }
             pil = pil.resize((width, height), resample=filters.get(algorithm, PILImage.Resampling.LANCZOS))
+        if callable(cancelled) and cancelled():
+            return QImage()
         output = pil.convert("RGBA")
         output_data = output.tobytes()
         return QImage(output_data, output.width, output.height, QImage.Format_RGBA8888).copy()
@@ -6101,9 +6337,13 @@ class GLImageView(QOpenGLWidget):
         if np is None:
             return GLImageView.apply_sharpness_snapshot(image, sharpness) if sharpness > 0.0001 else image
         source = image.convertToFormat(QImage.Format_RGBA8888)
-        size = source.sizeInBytes()
-        data = bytes(source.bits()[:size])
-        array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
+        row_bytes = source.bytesPerLine()
+        array = np.frombuffer(
+            source.constBits(),
+            dtype=np.uint8,
+            count=row_bytes * source.height(),
+        ).reshape(source.height(), row_bytes)
+        array = array[:, :source.width() * 4].reshape(source.height(), source.width(), 4).copy()
         rgb = array[:, :, :3].astype(np.float32)
         if abs(gamma - 1.0) > 0.0001:
             rgb = 255.0 * np.power(np.clip(rgb / 255.0, 0.0, 1.0), 1.0 / gamma)
@@ -6124,9 +6364,15 @@ class GLImageView(QOpenGLWidget):
         if image.isNull() or sharpness <= 0.0001 or PILImage is None or ImageFilter is None:
             return image
         source = image.convertToFormat(QImage.Format_RGBA8888)
-        size = source.sizeInBytes()
-        data = bytes(source.bits()[:size])
-        pil = PILImage.frombytes("RGBA", (source.width(), source.height()), data)
+        pil = PILImage.frombuffer(
+            "RGBA",
+            (source.width(), source.height()),
+            source.constBits(),
+            "raw",
+            "RGBA",
+            source.bytesPerLine(),
+            1,
+        )
         percent = max(0, round(sharpness * 100))
         sharpened = pil.filter(ImageFilter.UnsharpMask(radius=1.0, percent=percent, threshold=2))
         output_data = sharpened.tobytes()
@@ -6140,9 +6386,13 @@ class GLImageView(QOpenGLWidget):
         if image.isNull() or not isinstance(tone_curve_luts, dict) or not tone_curve_luts or np is None:
             return image
         source = image.convertToFormat(QImage.Format_RGBA8888)
-        size = source.sizeInBytes()
-        data = bytes(source.bits()[:size])
-        array = np.frombuffer(data, dtype=np.uint8).reshape((source.height(), source.width(), 4)).copy()
+        row_bytes = source.bytesPerLine()
+        array = np.frombuffer(
+            source.constBits(),
+            dtype=np.uint8,
+            count=row_bytes * source.height(),
+        ).reshape(source.height(), row_bytes)
+        array = array[:, :source.width() * 4].reshape(source.height(), source.width(), 4).copy()
         luminance = ((array[:, :, 0].astype(np.uint16) * 77 + array[:, :, 1].astype(np.uint16) * 150 + array[:, :, 2].astype(np.uint16) * 29) >> 8).astype(np.uint8)
         value_lut = np.array(tone_curve_luts.get("value", list(range(256))), dtype=np.uint8)
         red_lut = np.array(tone_curve_luts.get("red", list(range(256))), dtype=np.uint8)
@@ -6458,8 +6708,6 @@ class MainWindow(QMainWindow):
         self.processing_paths: set[Path] = set()
         self.processing_task_keys: dict[Path, tuple] = {}
         self.queued_tasks: dict[Path, UpscaleTask] = {}
-        self.upscale_worker_active = False
-        self.resample_prefetch_suspended_for_upscale = False
         self.work_queue: queue.Queue[Path | None] = queue.Queue()
         self.prefetch_io_queue: queue.PriorityQueue[tuple[int, int, int, str, object, str, str]] = queue.PriorityQueue()
         self.prefetch_io_sequence = 0
@@ -6801,8 +7049,6 @@ class MainWindow(QMainWindow):
         form.addRow("倍率", self.scale_combo)
 
         self.denoise_combo = QComboBox()
-        self.denoise_combo.addItems(["-1", "0", "1", "2", "3"])
-        self.denoise_combo.setCurrentText(str(self.config_data.denoise))
         self.denoise_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("ノイズ", self.denoise_combo)
         self.tile_combo = QComboBox()
@@ -6813,9 +7059,29 @@ class MainWindow(QMainWindow):
         self.tile_combo.setCurrentText(str(max(0, int(self.config_data.tile))))
         self.tile_combo.currentTextChanged.connect(self.on_processing_settings_changed)
         form.addRow("tile", self.tile_combo)
+        self.realcugan_syncgap_combo = QComboBox()
+        for mode, label in REALCUGAN_SYNCGAP_OPTIONS:
+            self.realcugan_syncgap_combo.addItem(label, mode)
+        self.set_combo_by_data(self.realcugan_syncgap_combo, self.config_data.realcugan_syncgap_mode)
+        self.realcugan_syncgap_combo.currentIndexChanged.connect(self.on_processing_settings_changed)
+        form.addRow("タイル間同期", self.realcugan_syncgap_combo)
+        self.tta_check = QCheckBox("TTA（高品質・低速）")
+        self.tta_check.stateChanged.connect(self.on_processing_settings_changed)
+        form.addRow("", self.tta_check)
         realcugan_layout.addLayout(form)
-        self.denoise_help = self.help_label("ノイズ: -1 はノイズ除去なし。0/1/2/3 は数値が大きいほど強く除去します。")
+        self.denoise_help = self.help_label("ノイズ: -1 は保守モデル、0 はノイズ除去なし、1/2/3 は数値が大きいほど強く除去します。モデルと倍率に存在する値だけを選択できます。")
         realcugan_layout.addWidget(self.denoise_help)
+        self.realcugan_model_help = self.help_label(
+            "Real-CUGANのStandardは2倍/3倍/4倍、Proは2倍/3倍に対応します。"
+            "Proはリンギング、テクスチャの塗り潰し、異常ノイズの増幅を抑えるよう調整されています。"
+        )
+        realcugan_layout.addWidget(self.realcugan_model_help)
+        self.realcugan_syncgap_help = self.help_label(
+            "Real-CUGANのタイル分割時に、モデル内部の中間データを同期する精度です。"
+            "正確 (1) は分割なしに近い画質、非常に粗い (3) はパラメータ未指定時と同じ既定値です。"
+            "同期なし (0) はタイル境界が目立つ場合があります。独自のコマンドテンプレートでは {syncgap} を含めてください。"
+        )
+        realcugan_layout.addWidget(self.realcugan_syncgap_help)
         self.realesrgan_model_help = self.help_label("Real-ESRGANはノイズ値を使わず、モデルで画風や復元傾向を選びます。")
         realcugan_layout.addWidget(self.realesrgan_model_help)
         self.realesrgan_model_detail = self.help_label(
@@ -6825,6 +7091,11 @@ class MainWindow(QMainWindow):
             " realesr-animevideov3は2倍/3倍/4倍、x4plus系は4倍に対応します。"
         )
         realcugan_layout.addWidget(self.realesrgan_model_detail)
+        self.tta_help = self.help_label(
+            "TTAは入力を8方向に変換して推論結果を統合します。細部の安定性向上が期待できますが、"
+            "処理は大幅に遅くなります。既定はオフです。独自のコマンドテンプレートでは {tta} を含めてください。"
+        )
+        realcugan_layout.addWidget(self.tta_help)
 
         self.gigapixel_denoise_spin = QSpinBox()
         self.gigapixel_denoise_spin.setRange(0, 100)
@@ -6895,7 +7166,7 @@ class MainWindow(QMainWindow):
         self.use_scale_cache_check.stateChanged.connect(self.on_processing_settings_changed)
         realcugan_layout.addWidget(self.save_scale_check)
         realcugan_layout.addWidget(self.use_scale_cache_check)
-        realcugan_layout.addWidget(self.help_label("現在選択中のエンジン、モデル、倍率に完全一致する倍率フォルダだけを表示に使います。別エンジンや別倍率の結果にはフォールバックしません。"))
+        realcugan_layout.addWidget(self.help_label("Real-CUGANのStandard／ProとTTAは同じ倍率フォルダ名を使用します。"))
         self.archive_help = self.help_label("アーカイブ表示中は保存先フォルダがないため、倍率フォルダ保存と倍率フォルダ読み込みは無効です。")
         self.archive_help.hide()
         realcugan_layout.addWidget(self.archive_help)
@@ -6911,7 +7182,7 @@ class MainWindow(QMainWindow):
         exe_button = QPushButton("エンジンexeを選択")
         exe_button.clicked.connect(self.choose_engine_exe)
         realcugan_layout.addWidget(exe_button)
-        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {model} {sharpen} {compression} {face_recovery}"))
+        realcugan_layout.addWidget(self.help_label("使用できる置換: {input} {output} {output_dir} {output_format} {scale} {denoise} {tile} {syncgap} {tta} {model} {sharpen} {compression} {face_recovery}"))
         realcugan_layout.addStretch(1)
         realcugan_tab.setWidget(realcugan_content)
 
@@ -7413,8 +7684,17 @@ class MainWindow(QMainWindow):
         self.cpu_resample_combo.currentTextChanged.connect(self.on_resample_settings_changed)
         self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
         resample_form.addRow("表示リサンプル方式", self.cpu_resample_combo)
+        self.cpu_resample_worker_spin = QSpinBox()
+        self.cpu_resample_worker_spin.setRange(0, logical_cpu_thread_count())
+        self.cpu_resample_worker_spin.setSpecialValueText(self.tr_ui("自動 (0)"))
+        self.cpu_resample_worker_spin.setValue(self.config_data.cpu_resample_worker_count)
+        self.cpu_resample_worker_spin.valueChanged.connect(self.on_resample_settings_changed)
+        self.cpu_resample_worker_spin.setEnabled(self.cpu_resample_check.isChecked())
+        resample_form.addRow("表示リサンプリング ワーカー数", self.cpu_resample_worker_spin)
         other_layout.addLayout(resample_form)
-        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。拡大エンジンの実行中や待機中は新しい先行処理を止め、拡大キューが空になると再開します。先読み済みのページは完成した表示へ直接切り替わり、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。"))
+        self.cpu_resample_worker_help = self.help_label(self.resample_worker_help_text())
+        other_layout.addWidget(self.cpu_resample_worker_help)
+        other_layout.addWidget(self.help_label("原寸と異なる表示サイズの画像をバックグラウンドで先行作成して保持します。現在ページを最優先し、ビューアー先読み範囲では拡大前の元画像も準備して、拡大完了後は処理済み画像を改めて準備します。ページ操作中は新しい処理を待機させ、未処理でもページ送りを待たせません。オフにすると標準の高速表示になります。"))
         other_layout.addWidget(self.help_label("Lanczos3: 精細で標準的。Lanczos4: より鋭いがリンギングが出ることがあります。Bicubic: やや柔らかく自然。Area: 大きく縮小する時に安定し、ジャギーを抑えやすい方式です。"))
         other_layout.addWidget(self.help_label("Lanczos4はOpenCVがある環境ではLanczos4、ない環境ではLanczos3相当で処理します。"))
         other_layout.addWidget(self.separator())
@@ -8878,6 +9158,14 @@ class MainWindow(QMainWindow):
                 self.output_format_combo.addItem(self.tr_ui(label), value)
             self.set_combo_by_data(self.output_format_combo, current)
             self.output_format_combo.blockSignals(False)
+        if hasattr(self, "realcugan_syncgap_combo"):
+            current = self.current_realcugan_syncgap_mode()
+            self.realcugan_syncgap_combo.blockSignals(True)
+            self.realcugan_syncgap_combo.clear()
+            for mode, label in REALCUGAN_SYNCGAP_OPTIONS:
+                self.realcugan_syncgap_combo.addItem(self.tr_ui(label), mode)
+            self.set_combo_by_data(self.realcugan_syncgap_combo, current)
+            self.realcugan_syncgap_combo.blockSignals(False)
         if hasattr(self, "version_label"):
             self.update_version_label()
             self.render_update_check_result()
@@ -8943,6 +9231,10 @@ class MainWindow(QMainWindow):
             self.update_novelai_prompt_editor_visibility()
         if hasattr(self, "novelai_continuous_delay_spin"):
             self.novelai_continuous_delay_spin.setSuffix(f" {self.tr_ui('秒')}")
+        if hasattr(self, "cpu_resample_worker_spin"):
+            self.cpu_resample_worker_spin.setSpecialValueText(self.tr_ui("自動 (0)"))
+        if hasattr(self, "cpu_resample_worker_help"):
+            self.cpu_resample_worker_help.setText(self.resample_worker_help_text())
         off_text = "0 (Off)" if self.ui_language() == "en" else "0 (オフ)"
         for name in (
             "gigapixel_denoise_spin",
@@ -10124,6 +10416,7 @@ class MainWindow(QMainWindow):
         self.config_data.background_color = self.background_edit.text().strip() or "#000000"
         self.config_data.cpu_resample_cache_enabled = self.cpu_resample_check.isChecked()
         self.config_data.cpu_resample_algorithm = self.current_resample_algorithm()
+        self.config_data.cpu_resample_worker_count = self.cpu_resample_worker_spin.value()
         self.config_data.compare_enabled = self.compare_check.isChecked()
         self.config_data.compare_split = self.compare_slider.value()
         self.config_data.compare_line_color = self.compare_line_edit.text().strip() or "#ffffff"
@@ -10261,7 +10554,11 @@ class MainWindow(QMainWindow):
 
     def _apply_settings_to_viewer(self) -> None:
         self.viewer.set_background(self.config_data.background_color)
-        self.viewer.set_resample_options(self.config_data.cpu_resample_cache_enabled, self.config_data.cpu_resample_algorithm)
+        self.viewer.set_resample_options(
+            self.config_data.cpu_resample_cache_enabled,
+            self.config_data.cpu_resample_algorithm,
+            self.config_data.cpu_resample_worker_count,
+        )
         self.viewer.set_key_bindings(self.config_data.key_bindings)
         self.viewer.set_pixmap_cache_limit(viewer_pixmap_cache_limit(self.viewer_prefetch_spin.value()))
         self.viewer.set_resample_cache_limit(viewer_resample_cache_limit(self.viewer_prefetch_spin.value()))
@@ -10296,6 +10593,19 @@ class MainWindow(QMainWindow):
             if label == value:
                 return key
         return DEFAULT_RESAMPLE_ALGORITHM
+
+    def resample_worker_help_text(self) -> str:
+        cpu_threads = logical_cpu_thread_count()
+        automatic_workers = effective_resample_worker_count(0, cpu_threads)
+        if self.ui_language() == "en":
+            return (
+                f"0 selects Auto. This PC has {cpu_threads} logical CPU threads, and Auto uses "
+                f"{automatic_workers} workers. A manual value can be set from 1 to {cpu_threads}."
+            )
+        return (
+            f"0は自動です。このPCの論理CPUスレッド数は{cpu_threads}で、自動時は"
+            f"{automatic_workers}ワーカーを使用します。手動では1～{cpu_threads}を指定できます。"
+        )
 
     def refresh_keyconfig_buttons(self) -> None:
         buttons = getattr(self, "key_binding_buttons", {})
@@ -10619,13 +10929,17 @@ class MainWindow(QMainWindow):
         return ENGINE_LABELS.get(self.current_engine(), ENGINE_LABELS[ENGINE_REALCUGAN])
 
     def engine_model_options(self, engine: str) -> list[tuple[str, str]]:
+        if engine == ENGINE_REALCUGAN:
+            return REALCUGAN_MODELS
         if engine == ENGINE_REALESRGAN:
             return [(model, model) for model in REALESRGAN_MODELS]
         if engine == ENGINE_GIGAPIXEL:
             return GIGAPIXEL_MODELS
-        return [("-", "")]
+        return []
 
     def configured_model_for_engine(self, engine: str) -> str:
+        if engine == ENGINE_REALCUGAN:
+            return self.config_data.realcugan_model
         if engine == ENGINE_REALESRGAN:
             return self.config_data.realesrgan_model
         if engine == ENGINE_GIGAPIXEL:
@@ -10662,11 +10976,13 @@ class MainWindow(QMainWindow):
     def available_scales(self, engine: str | None = None, model: str | None = None) -> list[int]:
         engine = engine or self.current_engine()
         model = self.current_engine_model() if model is None else model
+        if engine == ENGINE_REALCUGAN:
+            return list(REALCUGAN_MODEL_SCALES.get(model, [2, 3, 4]))
         if engine == ENGINE_REALESRGAN:
             return list(REALESRGAN_MODEL_SCALES.get(model, [REALESRGAN_FIXED_SCALE]))
         if engine == ENGINE_GIGAPIXEL:
             return list(GIGAPIXEL_MODEL_SCALES.get(model, [2, 3, 4, 6]))
-        return list(REALCUGAN_SCALES)
+        return [2]
 
     def configured_scale_for_engine(self, engine: str) -> int:
         if engine == ENGINE_REALESRGAN:
@@ -10702,6 +11018,47 @@ class MainWindow(QMainWindow):
         self.scale_combo.addItems([str(value) for value in scales])
         self.scale_combo.setCurrentText(str(selected))
         self.scale_combo.blockSignals(False)
+
+    def available_realcugan_denoise_levels(self) -> list[int]:
+        if self.current_engine() != ENGINE_REALCUGAN:
+            return [-1, 0, 1, 2, 3]
+        model = self.current_engine_model() or self.config_data.realcugan_model
+        try:
+            scale = int(self.scale_combo.currentText())
+        except (AttributeError, TypeError, ValueError):
+            scale = self.config_data.scale
+        return list(REALCUGAN_DENOISE_LEVELS.get((model, scale), [-1, 0, 3]))
+
+    def populate_realcugan_denoise_combo(self) -> None:
+        levels = self.available_realcugan_denoise_levels()
+        current_levels = [int(self.denoise_combo.itemText(index)) for index in range(self.denoise_combo.count())]
+        if current_levels == levels:
+            return
+        try:
+            preferred = int(self.denoise_combo.currentText())
+        except (TypeError, ValueError):
+            preferred = int(self.config_data.denoise)
+        selected = min(levels, key=lambda value: abs(value - preferred))
+        self.denoise_combo.blockSignals(True)
+        self.denoise_combo.clear()
+        self.denoise_combo.addItems([str(value) for value in levels])
+        self.denoise_combo.setCurrentText(str(selected))
+        self.denoise_combo.blockSignals(False)
+
+    def configured_tta_for_engine(self, engine: str) -> bool:
+        if engine == ENGINE_REALCUGAN:
+            return bool(self.config_data.realcugan_tta_enabled)
+        if engine == ENGINE_REALESRGAN:
+            return bool(self.config_data.realesrgan_tta_enabled)
+        return False
+
+    def populate_tta_check(self, engine: str) -> None:
+        if getattr(self, "tta_control_engine", None) == engine:
+            return
+        self.tta_check.blockSignals(True)
+        self.tta_check.setChecked(self.configured_tta_for_engine(engine))
+        self.tta_check.blockSignals(False)
+        self.tta_control_engine = engine
 
     def auto_realcugan_scale_for_height(self, height: int) -> int:
         threshold = max(1, int(self.skip_height_spin.value() if hasattr(self, "skip_height_spin") else self.config_data.skip_realcugan_height_threshold))
@@ -10766,6 +11123,23 @@ class MainWindow(QMainWindow):
     def current_engine_tile_size(self) -> int:
         return self.current_tile_size() if self.current_engine() in {ENGINE_REALCUGAN, ENGINE_REALESRGAN} else 0
 
+    def current_realcugan_syncgap_mode(self) -> int:
+        combo = getattr(self, "realcugan_syncgap_combo", None)
+        value = combo.currentData() if combo is not None else self.config_data.realcugan_syncgap_mode
+        try:
+            mode = int(value)
+        except (TypeError, ValueError):
+            mode = 3
+        return mode if mode in {0, 1, 2, 3} else 3
+
+    def current_engine_syncgap_mode(self) -> int:
+        return self.current_realcugan_syncgap_mode() if self.current_engine() == ENGINE_REALCUGAN else 0
+
+    def current_engine_tta_enabled(self) -> bool:
+        if self.current_engine() not in {ENGINE_REALCUGAN, ENGINE_REALESRGAN}:
+            return False
+        return bool(getattr(self, "tta_check", None) and self.tta_check.isChecked())
+
     def current_engine_denoise(self) -> int:
         if self.current_engine() == ENGINE_REALCUGAN:
             return int(self.denoise_combo.currentText())
@@ -10790,6 +11164,8 @@ class MainWindow(QMainWindow):
             self.effective_scale(source),
             self.current_engine_denoise(),
             self.current_engine_tile_size(),
+            self.current_engine_syncgap_mode(),
+            self.current_engine_tta_enabled(),
             self.current_engine_model(),
             sharpen,
             compression,
@@ -10809,6 +11185,8 @@ class MainWindow(QMainWindow):
         scale = self.effective_scale(source)
         denoise = self.current_engine_denoise()
         tile = self.current_engine_tile_size()
+        syncgap = self.current_engine_syncgap_mode()
+        tta_enabled = self.current_engine_tta_enabled()
         model = self.current_engine_model()
         sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
         output_format = self.current_output_format()
@@ -10818,6 +11196,8 @@ class MainWindow(QMainWindow):
             scale,
             denoise,
             tile,
+            syncgap,
+            tta_enabled,
             model,
             sharpen,
             compression,
@@ -10829,7 +11209,7 @@ class MainWindow(QMainWindow):
         elif engine == ENGINE_GIGAPIXEL:
             raw_cache_name = f"gigapixel_{model}_d{denoise}_s{sharpen}_c{compression}_f{face_recovery}"
         else:
-            raw_cache_name = "realcugan"
+            raw_cache_name = "realcugan" if syncgap == 3 else f"realcugan_c{syncgap}"
         cache_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", raw_cache_name)
         archive_mode = self.archive_mode_active()
         cache_folder = engine_input.parent / f"{cache_name}_x{scale}"
@@ -10846,6 +11226,8 @@ class MainWindow(QMainWindow):
             scale=scale,
             denoise=denoise,
             tile=tile,
+            syncgap=syncgap,
+            tta_enabled=tta_enabled,
             model=model,
             sharpen=sharpen,
             compression=compression,
@@ -10881,6 +11263,7 @@ class MainWindow(QMainWindow):
             if model in REALESRGAN_MODELS:
                 self.config_data.realesrgan_model = model
             self.config_data.realesrgan_scale = scale
+            self.config_data.realesrgan_tta_enabled = self.current_engine_tta_enabled()
             self.config_data.realesrgan_output_format = output_format
         elif engine == ENGINE_GIGAPIXEL:
             model = self.current_engine_model()
@@ -10893,8 +11276,13 @@ class MainWindow(QMainWindow):
             self.config_data.gigapixel_face_recovery = self.gigapixel_face_recovery_spin.value()
             self.config_data.gigapixel_output_format = output_format
         else:
+            model = self.current_engine_model()
+            if model in {value for _label, value in REALCUGAN_MODELS}:
+                self.config_data.realcugan_model = model
             self.config_data.scale = scale
             self.config_data.denoise = int(self.denoise_combo.currentText())
+            self.config_data.realcugan_syncgap_mode = self.current_realcugan_syncgap_mode()
+            self.config_data.realcugan_tta_enabled = self.current_engine_tta_enabled()
             self.config_data.realcugan_output_format = output_format
 
     def apply_engine_ui(self) -> None:
@@ -10904,18 +11292,25 @@ class MainWindow(QMainWindow):
         self.populate_output_format_combo(engine)
         self.populate_engine_model_combo(engine)
         self.populate_scale_combo(engine)
+        self.populate_realcugan_denoise_combo()
+        self.populate_tta_check(engine)
         scales = self.available_scales(engine)
         auto_scale = bool(getattr(self, "auto_scale_check", None) and self.auto_scale_check.isChecked())
         self.scale_combo.setEnabled(len(scales) > 1 and not auto_scale)
         if hasattr(self, "auto_scale_check"):
             self.auto_scale_check.setEnabled(len(scales) > 1)
-        self.engine_form.setRowVisible(self.realesrgan_model_combo, engine != ENGINE_REALCUGAN)
+        self.engine_form.setRowVisible(self.realesrgan_model_combo, True)
         self.engine_form.setRowVisible(self.denoise_combo, engine == ENGINE_REALCUGAN)
         self.engine_form.setRowVisible(self.tile_combo, engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
+        self.engine_form.setRowVisible(self.realcugan_syncgap_combo, engine == ENGINE_REALCUGAN)
+        self.engine_form.setRowVisible(self.tta_check, engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
         self.tile_help.setVisible(engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
         self.denoise_help.setVisible(engine == ENGINE_REALCUGAN)
+        self.realcugan_model_help.setVisible(engine == ENGINE_REALCUGAN)
+        self.realcugan_syncgap_help.setVisible(engine == ENGINE_REALCUGAN)
         self.realesrgan_model_help.setVisible(engine == ENGINE_REALESRGAN)
         self.realesrgan_model_detail.setVisible(engine == ENGINE_REALESRGAN)
+        self.tta_help.setVisible(engine in {ENGINE_REALCUGAN, ENGINE_REALESRGAN})
         for control in (
             self.gigapixel_denoise_spin,
             self.gigapixel_sharpen_spin,
@@ -11034,6 +11429,8 @@ class MainWindow(QMainWindow):
             self.effective_scale(path),
             self.current_engine_denoise(),
             self.current_engine_tile_size(),
+            self.current_engine_syncgap_mode(),
+            self.current_engine_tta_enabled(),
             self.current_engine_model(),
             *self.current_gigapixel_adjustments(),
             self.viewer.display_rotation % 360,
@@ -11115,16 +11512,19 @@ class MainWindow(QMainWindow):
 
     def schedule_resample_prefetch(self, invalidate: bool = True, include_neighbors: bool = True) -> None:
         if not self.image_paths or self.current_index < 0:
+            self.resample_prefetch_generation += 1
+            self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+            self.viewer.publish_resample_prefetch_plan()
+            self.update_prefetch_progress_bars()
             return
-        if self.upscale_work_active():
-            self.suspend_resample_prefetch_for_upscale()
+        if self.viewer.resample_interaction_active:
+            self.update_prefetch_progress_bars()
             return
-        self.resample_prefetch_suspended_for_upscale = False
-        self.viewer.set_resample_prefetch_paused(False)
         if invalidate or self.resample_prefetch_generation <= 0:
             self.resample_prefetch_generation += 1
             self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
         if not self.cpu_resample_check.isChecked():
+            self.viewer.publish_resample_prefetch_plan()
             self.update_prefetch_progress_bars()
             return
         candidate_indexes = [self.current_index]
@@ -11155,6 +11555,7 @@ class MainWindow(QMainWindow):
                 preserve_scale=self.viewer.current_scale() if preserve_view else None,
                 rotation=self.viewer.display_rotation if preserve_view else 0,
             )
+        self.viewer.publish_resample_prefetch_plan()
         self.update_prefetch_progress_bars()
 
     def on_pixmap_prefetch_progress(self, warmed: int, remaining: int, cache_count: int, elapsed_ms: float) -> None:
@@ -11290,6 +11691,9 @@ class MainWindow(QMainWindow):
         self.clear_work_queue()
         self.clear_colorize_queue()
         self.prefetch_generation += 1
+        self.resample_prefetch_generation += 1
+        self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+        self.viewer.publish_resample_prefetch_plan()
         self.update_prefetch_progress_bars()
         self.rebuild_thumbnail_items()
         if defer_work:
@@ -11327,6 +11731,9 @@ class MainWindow(QMainWindow):
         self.clear_work_queue()
         self.clear_colorize_queue()
         self.prefetch_generation += 1
+        self.resample_prefetch_generation += 1
+        self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
+        self.viewer.publish_resample_prefetch_plan()
         self.update_prefetch_progress_bars()
         self.rebuild_thumbnail_items()
         english = self.ui_language() == "en"
@@ -12994,8 +13401,14 @@ class MainWindow(QMainWindow):
         self.persist_config()
 
     def on_resample_settings_changed(self) -> None:
-        self.cpu_resample_combo.setEnabled(self.cpu_resample_check.isChecked())
-        self.viewer.set_resample_options(self.cpu_resample_check.isChecked(), self.current_resample_algorithm())
+        enabled = self.cpu_resample_check.isChecked()
+        self.cpu_resample_combo.setEnabled(enabled)
+        self.cpu_resample_worker_spin.setEnabled(enabled)
+        self.viewer.set_resample_options(
+            enabled,
+            self.current_resample_algorithm(),
+            self.cpu_resample_worker_spin.value(),
+        )
         self.persist_config()
 
     def choose_background_color(self) -> None:
@@ -13147,11 +13560,14 @@ class MainWindow(QMainWindow):
     def on_engine_model_changed(self, *_args) -> None:
         engine = self.current_engine()
         model = self.current_engine_model()
-        if engine == ENGINE_REALESRGAN and model in REALESRGAN_MODELS:
+        if engine == ENGINE_REALCUGAN and model in {value for _label, value in REALCUGAN_MODELS}:
+            self.config_data.realcugan_model = model
+        elif engine == ENGINE_REALESRGAN and model in REALESRGAN_MODELS:
             self.config_data.realesrgan_model = model
         elif engine == ENGINE_GIGAPIXEL and model in {value for _label, value in GIGAPIXEL_MODELS}:
             self.config_data.gigapixel_model = model
         self.populate_scale_combo(engine)
+        self.populate_realcugan_denoise_combo()
         self.on_processing_settings_changed()
 
     def on_output_format_changed(self, *_args) -> None:
@@ -13217,14 +13633,14 @@ class MainWindow(QMainWindow):
         path, _filter = QFileDialog.getOpenFileName(self, title, self.config_data.last_dir or str(APP_DIR), "Executable (*.exe);;All files (*.*)")
         if path:
             if engine == ENGINE_REALESRGAN:
-                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} -f {{output_format}}')
+                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -t {{tile}} -n {{model}} {{tta}} -f {{output_format}}')
             elif engine == ENGINE_GIGAPIXEL:
                 self.command_edit.setText(
                     f'"{path}" -i "{{input}}" -o "{{output_dir}}" --scale {{scale}} --model "{{model}}" '
                     '--denoise {denoise} --sharpen {sharpen} --compression {compression} --face-recovery {face_recovery} --image-format {output_format}'
                 )
             else:
-                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -f {{output_format}}')
+                self.command_edit.setText(f'"{path}" -i "{{input}}" -o "{{output}}" -s {{scale}} -n {{denoise}} -t {{tile}} -c {{syncgap}} -m "{{model}}" {{tta}} -f {{output_format}}')
             self.persist_config()
 
     def force_reprocess(self) -> None:
@@ -13248,26 +13664,6 @@ class MainWindow(QMainWindow):
         with self.work_queue.mutex:
             self.work_queue.queue.clear()
             self.queued_tasks.clear()
-
-    def upscale_work_active(self) -> bool:
-        return bool(self.upscale_worker_active or self.processing_paths or self.queued_tasks)
-
-    def suspend_resample_prefetch_for_upscale(self) -> None:
-        self.resample_prefetch_suspended_for_upscale = True
-        self.viewer.set_resample_prefetch_paused(True)
-        if not self.viewer.resample_prefetch_plan_keys and not self.viewer.resample_prefetch_pending:
-            return
-        self.resample_prefetch_generation += 1
-        self.viewer.begin_resample_prefetch_plan(self.resample_prefetch_generation)
-        self.update_prefetch_progress_bars()
-
-    def resume_resample_prefetch_after_upscale(self) -> None:
-        if self.upscale_work_active():
-            self.suspend_resample_prefetch_for_upscale()
-            return
-        invalidate = self.resample_prefetch_suspended_for_upscale
-        self.resample_prefetch_suspended_for_upscale = False
-        self.schedule_resample_prefetch(invalidate=invalidate)
 
     def clear_prefetch_work_queue(self) -> None:
         with self.work_queue.mutex:
@@ -13528,7 +13924,7 @@ class MainWindow(QMainWindow):
         self.record_profile("先読み反映(UI)", (time.perf_counter() - started) * 1000)
 
     def is_current_processing_key(self, key: tuple, current_paths: set[str] | None = None) -> bool:
-        if len(key) != 10:
+        if not key:
             return False
         current_paths = current_paths or self.image_path_string_set
         return key[0] in current_paths and key == self.processing_settings_tuple(Path(key[0]))
@@ -13600,7 +13996,6 @@ class MainWindow(QMainWindow):
                 self.promote_work_item(path)
             return
         self.queued_tasks[path] = task
-        self.suspend_resample_prefetch_for_upscale()
         if front:
             with self.work_queue.mutex:
                 self.work_queue.queue.appendleft(path)
@@ -13649,9 +14044,7 @@ class MainWindow(QMainWindow):
             task = self.queued_tasks.pop(path, None)
             if task is None:
                 continue
-            self.upscale_worker_active = True
             if self.should_skip_upscale_in_worker(task):
-                self.upscale_worker_active = False
                 self.signals.process_done.emit({
                     "path": path,
                     "skipped": True,
@@ -13662,7 +14055,6 @@ class MainWindow(QMainWindow):
             if not task.force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
                 image = load_image(task.cache_path, task.hdr_tonemap_brightness)
                 if not image.isNull():
-                    self.upscale_worker_active = False
                     self.signals.process_done.emit({
                         "path": path,
                         "code": 0,
@@ -13690,7 +14082,6 @@ class MainWindow(QMainWindow):
             finally:
                 self.processing_paths.discard(path)
                 self.processing_task_keys.pop(path, None)
-            self.upscale_worker_active = False
             self.signals.process_done.emit(result)
 
     def should_skip_upscale_in_worker(self, task: UpscaleTask) -> bool:
@@ -13729,6 +14120,8 @@ class MainWindow(QMainWindow):
             "scale": task.scale,
             "denoise": task.denoise,
             "tile": task.tile,
+            "syncgap": task.syncgap,
+            "tta": "-x" if task.tta_enabled else "",
             "model": task.model,
             "sharpen": task.sharpen,
             "compression": task.compression,
@@ -13823,7 +14216,7 @@ class MainWindow(QMainWindow):
             if isinstance(key, tuple) and self.is_current_processing_key(key):
                 self.prefetch_engine_done_paths.add(self.normalized_path(path))
             self.update_prefetch_progress_bars()
-            self.resume_resample_prefetch_after_upscale()
+            self.schedule_resample_prefetch(invalidate=False)
             return
         output = result.get("output") or ""
         if output:
@@ -13834,7 +14227,7 @@ class MainWindow(QMainWindow):
             normalized = self.normalized_path(path)
             if normalized not in self.image_path_set:
                 self.update_prefetch_progress_bars()
-                self.resume_resample_prefetch_after_upscale()
+                self.schedule_resample_prefetch(invalidate=False)
                 return
             key = result.get("key")
             if not isinstance(key, tuple):
@@ -13869,11 +14262,11 @@ class MainWindow(QMainWindow):
                     name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
                     self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
                     self.update_window_title()
-            self.resume_resample_prefetch_after_upscale()
+            self.schedule_resample_prefetch(invalidate=False)
         else:
             self.append_log(f"Process exited with code {result['code']}: {self.display_name(path)}")
             self.update_prefetch_progress_bars()
-            self.resume_resample_prefetch_after_upscale()
+            self.schedule_resample_prefetch(invalidate=False)
 
     def has_processed_result(self, source: Path) -> bool:
         return self.processing_key(source) in self.processed_cache or self.existing_processed_path(source) is not None
@@ -13917,7 +14310,8 @@ class MainWindow(QMainWindow):
                 f"_s{sharpen}_c{compression}_f{face_recovery}"
             )
         else:
-            raw = "realcugan"
+            syncgap = self.current_realcugan_syncgap_mode()
+            raw = "realcugan" if syncgap == 3 else f"realcugan_c{syncgap}"
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw)
 
     def command_working_dir(self, command: str) -> Path:
@@ -14222,6 +14616,7 @@ class MainWindow(QMainWindow):
         self.closing = True
         self.novelai_continuous_delay_timer.stop()
         self._show_fullscreen_cursor()
+        self.viewer.shutdown_resample_workers()
         self.persist_config()
         self.folder_history_save_timer.stop()
         self.save_folder_history_now()

@@ -99,6 +99,13 @@ Gigapixel AIはRAIVへ同梱されません。利用にはTopaz Gigapixel AIの�
 
 Real-CUGAN はアニメ/イラスト画像向けに学習・調整された超解像モデルです。写真や一般画像では Real-ESRGAN が適する場合がありますが、アニメ、イラスト、漫画調の画像では、線や塗りの質感を保ちやすい Real-CUGAN の方が自然で高品質な結果になる可能性があります。まず Real-CUGAN を試し、必要に応じて Real-ESRGAN のアニメ向けモデルと比較してください。
 
+Real-CUGANモデル:
+
+- `Standard`: 従来の標準モデル。2倍/3倍/4倍に対応
+- `Pro`: リンギング、テクスチャの塗り潰し、異常ノイズの増幅を抑えるよう調整されたモデル。2倍/3倍に対応
+
+Standardの2倍ではノイズ値-1/0/1/2/3、Standardの3倍/4倍とProでは-1/0/3を選択できます。-1は保守モデル、0はノイズ除去なし、1/2/3は数値が大きいほど強いノイズ除去です。
+
 Real-ESRGAN モデル:
 
 - `realesr-animevideov3`: アニメ/イラスト向けの軽量モデル
@@ -112,13 +119,16 @@ Real-ESRGAN モデル:
 エンジン設定:
 
 - エンジンに応じたモデル、倍率、ノイズ、tile（0は自動。内蔵GPUなどでメモリ不足になる場合は小さめの値を指定可能）
+- Real-CUGANのStandard／Proモデル
+- Real-CUGANとReal-ESRGANのTTA（既定はオフ）。8方向の推論結果を統合して細部の安定性向上が期待できますが、処理は大幅に遅くなります
+- Real-CUGANのタイル間同期（同期なし／正確／粗い／非常に粗い）。既定の「非常に粗い」はパラメータ未指定時と同じ挙動で、「正確」は分割なしに近い画質を優先します
 - Gigapixel AIのDenoise、Sharpen、Fix Compression、Face Recovery
 - エンジンごとの出力形式（PNGまたは元画像の形式を引き継ぐ）
 - エンジン先読み枚数（現在画像から後続画像をファイル名順で優先し、残り枠は直前の画像から前方向へ拡大処理。ページ移動時は待機中の先読みキューを現在位置から再構築）
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
 - 拡大結果を倍率フォルダへ保存
-- 倍率フォルダがあれば表示に使う（現在のエンジン、モデル、倍率に完全一致するフォルダのみ使用）
+- 倍率フォルダがあれば表示に使う。Real-CUGANのStandard／ProとTTAは同じフォルダ名を使用します。タイル間同期は従来どおり設定別のフォルダを使用します
 
 全般:
 
@@ -199,8 +209,9 @@ NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persiste
 - テーマ（Windowsの設定に同期 / ライトテーマ / ダークテーマ）。QtのWindows連携を使い、RAIV独自の配色は使用しません
 - AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
 - 右ペインの左右移動。境界の三本線グリップをドラッグして幅を変更可能
-- 拡大縮小時の高品質補完。先読み済みの周辺ページは表示サイズに合わせた補完結果を低優先度のバックグラウンド処理で準備し、ページ送り直後から完成した表示を使用します。連続ページ送り中と拡大エンジンの実行中／待機中は新しい処理の開始を抑え、拡大キューが空になると自動的に再開します。未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
+- 拡大縮小時の高品質補完。現在ページを最優先し、ビューアー先読み範囲ではReal-CUGANなどの拡大前の元画像も表示サイズに合わせて準備し、拡大完了後は処理済み画像を改めて準備します。ページ操作中は新しい処理を待機させ、未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area。見開き、比較モード、ズームと表示位置の維持、表示補正、DPIを含む表示条件ごとに結果を保持します
+- 表示リサンプリングのワーカー数をその他タブで変更できます。`0`は自動で、論理CPUスレッド数の半分（最低1）を使用します。手動では1からPCの論理CPUスレッド数まで指定でき、変更は次の処理から反映されます
 - アプリの二重起動禁止
 - 最後に開いていた画像を次回起動時に開く
 - フォルダごとに最後に開いていた画像を記録
@@ -400,6 +411,13 @@ For each engine, choose `PNG` (the default) or `Preserve source format` for save
 
 Real-CUGAN is trained and tuned for anime/illustration images. Real-ESRGAN may be better for photos and general images, but for anime, illustration, and manga-like artwork, Real-CUGAN is more likely to preserve linework and flat-color texture naturally. Try Real-CUGAN first for those images, then compare it with Real-ESRGAN's anime-oriented models if needed.
 
+Real-CUGAN models:
+
+- `Standard`: the previous standard model, supporting 2x/3x/4x
+- `Pro`: tuned to reduce ringing, texture smearing, and abnormal noise amplification, supporting 2x/3x
+
+Standard at 2x supports denoise values -1/0/1/2/3. Standard at 3x/4x and Pro support -1/0/3. -1 selects the conservative model, 0 disables denoising, and 1/2/3 apply progressively stronger denoising.
+
 Real-ESRGAN models:
 
 - `realesr-animevideov3`: lightweight model for anime/illustration images
@@ -413,13 +431,16 @@ Real-ESRGAN models:
 Engine settings:
 
 - Engine-specific model, scale, denoise, and tile options (0 is automatic; smaller tile values can be set for low-memory GPUs)
+- Real-CUGAN Standard and Pro models
+- TTA for Real-CUGAN and Real-ESRGAN (off by default). It combines results from eight transformed inputs and may improve fine-detail stability, but processing becomes substantially slower
+- Real-CUGAN tile synchronization (No synchronization, Accurate, Rough, or Very rough). The default Very rough mode matches an omitted parameter, while Accurate prioritizes output closest to processing without tiling.
 - Gigapixel AI Denoise, Sharpen, Fix Compression, and Face Recovery
 - Per-engine output format (PNG or preserve source format)
 - Engine prefetch count (prioritizes the current and following images in filename order, then fills remaining slots with preceding images from nearest to farthest; navigation rebuilds the pending queue from the current position)
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold
 - Save processed images to a scale folder
-- Use an existing scale folder as display cache (only when it exactly matches the current engine, model, and scale)
+- Use an existing scale folder as display cache. Real-CUGAN Standard/Pro and TTA share the same folder name. Tile synchronization continues to use separate folders for each mode
 
 General:
 
@@ -500,8 +521,9 @@ Other:
 - Theme (Follow Windows settings / Light theme / Dark theme). This uses Qt's Windows integration rather than a RAIV-specific color palette.
 - Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
 - Move the side panel between the left and right side, and drag the three-line boundary grip to resize it
-- High-quality scaling for zoomed/resized display. Nearby prefetched pages are resampled for their display size by low-priority background workers and use the finished result from the first frame after navigation. New work is held back during continuous navigation and while an upscaling engine is running or queued, then resumes automatically when the upscaling queue becomes idle. A cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
+- High-quality scaling for zoomed/resized display. The current page has top priority. Within the viewer prefetch range, RAIV prepares the original image before Real-CUGAN or another upscaler finishes, then prepares the processed image again when upscaling completes. New work waits during page interaction, while a cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area. Results are cached for the complete display conditions, including spread view, compare mode, preserved zoom and position, display adjustments, and DPI.
+- The number of display-resampling workers can be changed in the Other tab. `0` selects Auto and uses half of the logical CPU threads (at least 1). A manual value from 1 through the PC's logical CPU thread count takes effect for subsequent work.
 - Prevent multiple app instances
 - Open the last viewed image on startup
 - Remember the last viewed image for each folder
