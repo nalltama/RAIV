@@ -32,7 +32,7 @@ install_support.bat
 この bat は以下の Python パッケージを導入します。
 
 - `PySide6`: アプリ画面
-- `Pillow`: 高品質な表示サイズ変換
+- `Pillow>=11.3.0`: 高品質な表示サイズ変換、AVIF画像の読込
 - `opencv-python-headless`: Lanczos4 用の任意パッケージ
 - `py7zr`: 7z/CB7 アーカイブ対応
 - `rarfile`: RAR/CBR アーカイブ対応の補助
@@ -60,6 +60,12 @@ Windows のバージョンや既定アプリ設定によっては、バッチ実
 python .\raiv.py
 ```
 
+コマンドラインの最初の引数に画像ファイルを指定すると、その画像を開いて起動できます。スタンドアロン版では `RAIV.exe`、pyw版では `run_raiv.pyw`、`run_raiv.bat`、または `raiv.py` に同じ形式で指定できます。
+
+```powershell
+python .\raiv.py "C:\images\sample.png"
+```
+
 ログは右ペインの全般タブにある `ログを表示` でオン/オフできます。
 
 ## 画像を開く
@@ -71,6 +77,10 @@ python .\raiv.py
 画像ファイルを開いた場合は、まずその画像を表示し、同じフォルダ内の画像一覧はあとから取得します。
 
 アニメーションGIFとアニメーションPNG（APNG）は表示中に再生できます。サムネイルは先頭フレームを表示し、アニメーション画像は拡大エンジンとAI彩色の処理対象外です。
+
+AVIF（`.avif`）はPillowを使って8bit RGBAへデコードし、SDR互換の静止画として表示します。透過画像にも対応します。アニメーションAVIFの再生には対応せず、先頭フレームを静止画として表示します。pyw版でAVIFを開けない場合は、`install_support.bat`を再実行してPillowを更新してください。
+
+AVIFを拡大処理する場合は、透過の有無にかかわらず元のAVIFファイルを拡大エンジンへ直接渡します。AVIF入力の処理結果は、エンジンごとの出力形式設定にかかわらずPNGで保存し、ファイル名は元の拡張子を残した`image.avif.png`形式にします。同梱Real-CUGAN／Real-ESRGANでAVIF直接入力を確認済みです。Gigapixel AIでのAVIF入力は未確認です。
 
 JPEG XR / HD Photo 系の `.jxr`、`.wdp`、`.hdp` も表示できます。これらのHDR画像は、アプリやモニタへHDR信号として出力するのではなく、白飛びや黒つぶれを抑えるためにSDR表示用の色域・階調へトーンマッピングして互換表示します。HDR画像は表示互換を目的とするため、拡大エンジンの処理対象外です。
 HDR画像を表示している時は、画像調整タブの `HDR互換表示の明るさ` でSDR互換表示へ変換する時の明るさを調整できます。100%が自動トーンマップの基準値で、`100%に戻す` でリセットできます。
@@ -179,6 +189,7 @@ NovelAI生成:
 - NovelAI Diffusion V5 Curated / Fullに対応。新規設定の既定値はV5 Curated、28 steps、プロンプトガイダンス7です。既存の保存済みモデルと生成値は維持されます
 - 保存先フォルダ指定（既定は `RAIV_generated`）と保存名テンプレート。`{YYYY}`、`{MM}`、`{DD}`、`{HH}`、`{mm}`、`{ss}`、`{date}`、`{time}`、`{seed}` を年、月、日、時、分、秒、日付まとめ（YYYYMMDD）、時刻まとめ（HHmmss）、シード値へ置換できます。`/` または `\` でサブフォルダを入れ子にでき、シード値、日付/シード値、日付/時刻、日付/時刻_シード値、カスタムのプリセットを選択できます（既定はシード値）
 - プロンプト、除外したい要素、モデル、サンプラー、ノイズスケジュール、シード値、画像解像度、ステップ数、プロンプトガイダンス、プロンプトガイダンスの再調整、多様性、生成枚数の指定。V5ではノイズスケジュールをKarrasへ固定し、多様性を無効化します。V5へ切り替えた時にDDIMが選択されている場合はEuler Ancestralへ変更します。現在表示している画像のメタデータからシード値だけを読み込んで設定できます。SDKの対応範囲に合わせ、幅と高さは64～1600の64の倍数、ステップ数は1～50、プロンプトガイダンスは0～10であることを生成前に検証し、範囲外の保存済み設定は書き換えず理由を表示します。解像度から1回に生成可能な枚数を計算し、上限を超える枚数は選択不可。解像度変更で上限が下がった場合だけ選択枚数を上限へ合わせます
+- プロンプト、除外したい要素、プロンプト分解モードのタグ追加欄と既存タグ編集欄で、入力中の現在タグにNovelAIの候補を表示します。日本語入力では日本語候補と対応する英語タグを表示して英語タグを挿入し、それ以外は英語候補を使用します。候補表示中は上下キーで選択し、EnterまたはTabで確定、Escで閉じられます。候補がない時のEnter生成／タグ追加は従来どおりです。タグ提案には永続APIトークンが必要です
 - プロンプト欄と除外したい要素欄は個別に折り畳み可能。開閉状態は設定へ保存
 - プロンプト分解モードで再構築したプロンプトと除外したい要素を各一覧の下に表示可能
 - 保存先、保存名、APIトークン、品質タグ、モデル、サンプラーなどを折りたたみ可能な詳細設定へ整理し、詳細設定の開閉状態を保存
@@ -344,7 +355,7 @@ install_support.bat
 This batch file installs the following Python packages:
 
 - `PySide6`: application UI
-- `Pillow`: high-quality display resizing
+- `Pillow>=11.3.0`: high-quality display resizing and AVIF image decoding
 - `opencv-python-headless`: optional package for Lanczos4
 - `py7zr`: 7z/CB7 archive support
 - `rarfile`: helper package for RAR/CBR archive support
@@ -372,6 +383,12 @@ If you do not want to change file associations, run `run_raiv.bat`, or launch it
 python .\raiv.py
 ```
 
+Pass an image file as the first command-line argument to open that image at startup. The same format works with `RAIV.exe` in the standalone edition, or with `run_raiv.pyw`, `run_raiv.bat`, and `raiv.py` in the pyw edition.
+
+```powershell
+python .\raiv.py "C:\images\sample.png"
+```
+
 Logs can be shown or hidden from `Show log` in the General tab.
 
 ## Opening Images
@@ -383,6 +400,10 @@ Logs can be shown or hidden from `Show log` in the General tab.
 When an image file is opened, RAIV displays it first and then collects the rest of the images in the same folder.
 
 Animated GIF and animated PNG (APNG) files play while displayed. Thumbnails use the first frame, and animated images are excluded from upscaling and AI colorization processing.
+
+AVIF (`.avif`) images are decoded through Pillow to 8-bit RGBA and displayed as SDR-compatible still images, including transparency. Animated AVIF playback is not supported; RAIV displays the first frame as a still image. If AVIF files do not open in the pyw edition, run `install_support.bat` again to update Pillow.
+
+When upscaling AVIF, RAIV passes the original AVIF file directly to the selected engine regardless of transparency. Processed AVIF input is always saved as PNG regardless of the per-engine output-format setting, using a name that retains the source extension, such as `image.avif.png`. Direct AVIF input has been verified with the bundled Real-CUGAN and Real-ESRGAN executables. AVIF input with Gigapixel AI has not been verified.
 
 RAIV can also display JPEG XR / HD Photo files: `.jxr`, `.wdp`, and `.hdp`. HDR images are not output as an HDR signal by the application; they are tone-mapped into an SDR-compatible color and tonal range to avoid harsh clipping and crushed shadows. HDR image support is intended for compatible viewing, so these files are excluded from processing by the upscaling engines.
 While an HDR image is displayed, the Image Adjustment tab enables `HDR compatible brightness` so you can adjust the brightness used during SDR-compatible conversion. 100% is the baseline for the automatic tone map, and `Reset to 100%` restores it.
@@ -491,6 +512,7 @@ NovelAI Generation:
 - Supports NovelAI Diffusion V5 Curated and Full. New settings default to V5 Curated, 28 steps, and Prompt Guidance 7. Existing saved model and generation values are preserved.
 - Configurable output folder (default: `RAIV_generated`) and output-name template. `{YYYY}`, `{MM}`, `{DD}`, `{HH}`, `{mm}`, `{ss}`, `{date}`, `{time}`, and `{seed}` expand to the date/time components, full date (YYYYMMDD), full time (HHmmss), and generation seed. Use `/` or `\` to create nested subfolders, with Seed, Date/Seed, Date/Time, Date/Time_Seed, and Custom presets (default: Seed)
 - Prompt / Undesired Content, Model, Sampler, Noise Schedule, Seed, Image Resolution, Steps, Prompt Guidance, Prompt Guidance Rescale, Variety Boost, and Number of Images settings. V5 fixes the Noise Schedule to Karras and disables Variety Boost. If DDIM is selected when switching to V5, the sampler changes to Euler Ancestral. The seed can be loaded from the currently displayed image metadata. Before generation, RAIV validates the SDK limits: width and height must each be 64-1600 and multiples of 64, Steps must be 1-50, and Prompt Guidance must be 0-10. Existing saved values outside those limits are left unchanged and shown with an explanation. The per-request image limit is calculated from the resolution, unsupported counts are disabled, and the selected count is reduced only when a resolution change lowers the limit.
+- Show NovelAI suggestions for the tag currently being typed in Prompt, Undesired Content, the tag-add fields in prompt decomposition mode, and existing tag editors. Japanese input shows the Japanese suggestion with its mapped English tag and inserts the English tag; other input uses English suggestions. While suggestions are open, use Up/Down to select, Enter or Tab to accept, and Esc to close. Existing Enter-to-generate and tag-add behavior remains unchanged when no suggestion is available. Tag suggestions require a Persistent API Token.
 - Prompt and Undesired Content sections can be collapsed independently, with their expanded states saved in settings
 - Optionally show the reconstructed Prompt and Undesired Content below each list in prompt decomposition mode
 - Output folder, output name, API token, quality tags, model, and sampler settings are grouped under collapsible advanced settings, with the expanded/collapsed state saved

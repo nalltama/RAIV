@@ -13,6 +13,7 @@ import random
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -30,7 +31,7 @@ from pathlib import Path, PurePosixPath
 
 try:
     from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, QEvent, QMimeData, QTimer, Signal
-    from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QTransform
+    from PySide6.QtGui import QAction, QColor, QCursor, QDrag, QFont, QIcon, QImage, QImageReader, QIntValidator, QKeySequence, QPainter, QPalette, QPen, QPixmap, QTextCursor, QTransform
     from PySide6.QtOpenGLWidgets import QOpenGLWidget
     from PySide6.QtWidgets import (
         QApplication,
@@ -93,6 +94,11 @@ except ImportError:
     ImageSequence = None
 
 try:
+    from PIL import AvifImagePlugin as PILAvifImagePlugin
+except ImportError:
+    PILAvifImagePlugin = None
+
+try:
     import cv2
 except ImportError:
     cv2 = None
@@ -105,7 +111,7 @@ except ImportError:
 
 APP_NAME = "Realtime AI Image Viewer"
 APP_SHORT_NAME = "RAIV"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 APP_ID = "RealtimeAIImageViewer.RAIV"
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "setting.json"
@@ -439,8 +445,13 @@ GIGAPIXEL_MODELS = [
 ]
 GIGAPIXEL_MODEL_SCALES = {model: [2, 3, 4, 6] for _label, model in GIGAPIXEL_MODELS}
 HDR_IMAGE_EXTENSIONS = {".jxr", ".wdp", ".hdp"}
+AVIF_IMAGE_EXTENSIONS = {".avif"}
 ANIMATED_IMAGE_EXTENSIONS = {".gif", ".apng"}
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".apng"} | HDR_IMAGE_EXTENSIONS
+IMAGE_EXTENSIONS = (
+    {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".apng"}
+    | HDR_IMAGE_EXTENSIONS
+    | AVIF_IMAGE_EXTENSIONS
+)
 ARCHIVE_EXTENSIONS = {".zip", ".cbz", ".rar", ".cbr", ".7z", ".cb7"}
 TEMP_ARCHIVE_PREFIX = "realcugan_qt_archive_"
 TEMP_WORK_PREFIX = "realcugan_qt_work_"
@@ -448,6 +459,9 @@ TEMP_OUTPUT_PREFIX = "realcugan_"
 TEMP_LOCK_FILE = "viewer.lock"
 CONFIG_SAVE_DEBOUNCE_MS = 300
 NOVELAI_PREVIEW_DEBOUNCE_MS = 120
+NOVELAI_TAG_SUGGEST_DEBOUNCE_MS = 250
+NOVELAI_TAG_SUGGEST_MAX_RESULTS = 12
+NOVELAI_CONTINUOUS_INPUT_IDLE_MS = 500
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\RealtimeAIImageViewer_RAIV_SingleInstance"
 BORDERLESS_FULLSCREEN_OVERSCAN = 1
 GWL_STYLE = -16
@@ -596,6 +610,10 @@ def is_hdr_image_path(path: Path) -> bool:
     return path.suffix.lower() in HDR_IMAGE_EXTENSIONS
 
 
+def is_avif_image_path(path: Path) -> bool:
+    return path.suffix.lower() in AVIF_IMAGE_EXTENSIONS
+
+
 @dataclass
 class AnimationFrame:
     image: QImage
@@ -624,6 +642,24 @@ def qimage_from_pil(image) -> QImage:
     rgba = image.convert("RGBA")
     data = rgba.tobytes("raw", "RGBA")
     return QImage(data, rgba.width, rgba.height, QImage.Format_RGBA8888).copy()
+
+
+def load_avif_image(path: Path, max_size: int | None = None) -> QImage:
+    if (
+        PILImage is None
+        or PILAvifImagePlugin is None
+        or not bool(getattr(PILAvifImagePlugin, "SUPPORTED", False))
+    ):
+        return QImage()
+    try:
+        with PILImage.open(path) as image:
+            image.seek(0)
+            if max_size is not None:
+                size = max(1, int(max_size))
+                image.thumbnail((size, size), PILImage.Resampling.LANCZOS)
+            return qimage_from_pil(image)
+    except Exception:
+        return QImage()
 
 
 def png_has_animation_control(path: Path) -> bool:
@@ -701,6 +737,8 @@ def load_animation_frames(path: Path) -> list[AnimationFrame]:
 
 
 def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
+    if is_avif_image_path(path):
+        return load_avif_image(path)
     if is_hdr_image_path(path):
         image = load_wic_hdr_image(path, hdr_tonemap_brightness)
         if not image.isNull():
@@ -710,7 +748,9 @@ def load_image(path: Path, hdr_tonemap_brightness: float = 1.0) -> QImage:
 
 def load_thumbnail_image(path: Path, max_size: int, hdr_tonemap_brightness: float = 1.0) -> QImage:
     max_size = max(1, int(max_size))
-    if is_hdr_image_path(path):
+    if is_avif_image_path(path):
+        image = load_avif_image(path, max_size)
+    elif is_hdr_image_path(path):
         image = load_image(path, hdr_tonemap_brightness)
     else:
         reader = QImageReader(str(path))
@@ -1297,7 +1337,7 @@ UI_TEXT_EN = {
     "Real-CUGANのStandard／ProとTTAは同じ倍率フォルダ名を使用します。": "Real-CUGAN Standard/Pro and TTA use the same scale-folder name.",
     "出力形式": "Output format",
     "元画像の形式を引き継ぐ": "Preserve source format",
-    "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、Gigapixel AIはCLIのpreserve指定を使います。独自のコマンドテンプレートでは {output_format} を含めてください。": "Output format: PNG always saves PNG. Preserve source format uses JPG/PNG/WebP for Real-CUGAN/Real-ESRGAN and Gigapixel AI's CLI preserve option. Include {output_format} in custom command templates.",
+    "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、Gigapixel AIはCLIのpreserve指定を使います。AVIF入力の処理結果は設定にかかわらずPNGで保存します。独自のコマンドテンプレートでは {output_format} を含めてください。": "Output format: PNG always saves PNG. Preserve source format uses JPG/PNG/WebP for Real-CUGAN/Real-ESRGAN and Gigapixel AI's CLI preserve option. Processed AVIF input is always saved as PNG regardless of this setting. Include {output_format} in custom command templates.",
     "アーカイブ表示中は保存先フォルダがないため、倍率フォルダ保存と倍率フォルダ読み込みは無効です。": "Scale-folder saving/loading is disabled while viewing archives because there is no output folder.",
     "再実行": "Run again",
     "コマンドテンプレート": "Command template",
@@ -2704,6 +2744,7 @@ class AppSignals(QObject):
     novelai_generation_started = Signal(str)
     novelai_generation_done = Signal(object)
     novelai_account_done = Signal(object)
+    novelai_tag_suggestions_done = Signal(object)
 
 
 class NovelAIClientAdapter:
@@ -2768,6 +2809,41 @@ class NovelAIClientAdapter:
             "anlas": int(subscription.anlas),
             "is_opus": bool(subscription.is_opus),
         }
+
+    def suggest_tags(self, prompt: str, model: str, japanese: bool = False) -> list[dict[str, object]]:
+        try:
+            from novelai.types import SuggestTagsParams
+        except ImportError as exc:
+            raise RuntimeError(
+                "novelai-sdk 0.14.0 or later is required for tag suggestions. "
+                "Run install_support.bat, then restart RAIV."
+            ) from exc
+        params = SuggestTagsParams(prompt=prompt, model=model)
+        if japanese:
+            suggestions = self.client.image.suggest_tags_jp(params)
+            return [
+                {
+                    "display": f"{suggestion.jp_tag}  →  {suggestion.en_tag}",
+                    "insert": str(suggestion.en_tag),
+                    "score": int(suggestion.power),
+                }
+                for suggestion in suggestions
+            ]
+        suggestions = self.client.image.suggest_tags(params)
+        return [
+            {
+                "display": f"{suggestion.tag}    {int(suggestion.count):,}",
+                "insert": str(suggestion.tag),
+                "score": int(suggestion.count),
+                "confidence": float(suggestion.confidence),
+            }
+            for suggestion in suggestions
+        ]
+
+    def close(self) -> None:
+        close = getattr(self.client, "close", None)
+        if callable(close):
+            close()
 
     def _build_api_request(self, request: dict[str, object]):
         params = self._build_params(request)
@@ -4297,6 +4373,7 @@ class NovelAIPromptTreeWidget(QTreeWidget):
 class NovelAIPromptListEditor(QWidget):
     changed = Signal()
     submitRequested = Signal()
+    tagEditorCreated = Signal(object)
 
     def __init__(self, text: str = "", parent=None) -> None:
         super().__init__(parent)
@@ -4929,6 +5006,7 @@ class NovelAIPromptListEditor(QWidget):
             parent.addChild(item)
             parent.setExpanded(True)
         self.list_widget.setItemWidget(item, 0, row)
+        self.tagEditorCreated.emit(row.text_edit)
         self.refresh_tag_item(item, row)
         return item
 
@@ -6644,7 +6722,7 @@ class GLImageView(QOpenGLWidget):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(self, initial_path: Path | None = None) -> None:
         super().__init__()
         self.initializing = True
         self.config_data = load_config()
@@ -6674,6 +6752,7 @@ class MainWindow(QMainWindow):
         self.signals.novelai_generation_started.connect(self.on_novelai_generation_started)
         self.signals.novelai_generation_done.connect(self.on_novelai_generation_done)
         self.signals.novelai_account_done.connect(self.on_novelai_account_done)
+        self.signals.novelai_tag_suggestions_done.connect(self.on_novelai_tag_suggestions_done)
 
         self.image_paths: list[Path] = []
         self.image_path_set: set[Path] = set()
@@ -6694,6 +6773,16 @@ class MainWindow(QMainWindow):
         self.novelai_preview_timer = QTimer(self)
         self.novelai_preview_timer.setSingleShot(True)
         self.novelai_preview_timer.timeout.connect(self.update_novelai_anlas_preview)
+        self.novelai_tag_suggestion_timer = QTimer(self)
+        self.novelai_tag_suggestion_timer.setSingleShot(True)
+        self.novelai_tag_suggestion_timer.timeout.connect(self.request_novelai_tag_suggestions)
+        self.novelai_tag_suggestion_request_serial = 0
+        self.novelai_tag_suggestion_target: QWidget | None = None
+        self.novelai_tag_suggestion_context: dict[str, object] | None = None
+        self.novelai_tag_suggestion_accepting = False
+        self.novelai_tag_suggestion_in_flight = False
+        self.novelai_tag_suggestion_pending_request: dict[str, object] | None = None
+        self.novelai_last_prompt_edit_monotonic = 0.0
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -6763,6 +6852,7 @@ class MainWindow(QMainWindow):
         self.novelai_account_error = ""
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = False
+        self.novelai_continuous_interval_ready_at = 0.0
         self.novelai_continuous_delay_timer = QTimer(self)
         self.novelai_continuous_delay_timer.setSingleShot(True)
         self.novelai_continuous_delay_timer.timeout.connect(self.run_next_novelai_continuous_generation)
@@ -6871,7 +6961,10 @@ class MainWindow(QMainWindow):
         self._restore_geometry()
         self._apply_settings_to_viewer()
         self.initializing = False
-        self.restore_last_image_if_needed()
+        if initial_path is None:
+            self.restore_last_image_if_needed()
+        else:
+            QTimer.singleShot(0, lambda p=initial_path: self.open_path_deferred(p))
 
         self.worker = threading.Thread(target=self._worker_loop, daemon=True)
         self.worker.start()
@@ -7126,7 +7219,8 @@ class MainWindow(QMainWindow):
 
         self.output_format_help = self.help_label(
             "出力形式: PNGは常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGAN/Real-ESRGANはJPG/PNG/WebP、"
-            "Gigapixel AIはCLIのpreserve指定を使います。独自のコマンドテンプレートでは {output_format} を含めてください。"
+            "Gigapixel AIはCLIのpreserve指定を使います。AVIF入力の処理結果は設定にかかわらずPNGで保存します。"
+            "独自のコマンドテンプレートでは {output_format} を含めてください。"
         )
         realcugan_layout.addWidget(self.output_format_help)
 
@@ -8150,6 +8244,7 @@ class MainWindow(QMainWindow):
         self.update_novelai_batch_buttons()
         self.update_novelai_anlas_preview()
         self.update_novelai_continuous_delay_visibility()
+        self.setup_novelai_tag_suggestions()
         return content
 
     def build_keyconfig_tab(self) -> QWidget:
@@ -8683,6 +8778,347 @@ class MainWindow(QMainWindow):
         self.sync_novelai_text_from_lists()
         self.update_novelai_reconstructed_prompt_labels()
         self.on_novelai_settings_changed()
+
+    def setup_novelai_tag_suggestions(self) -> None:
+        popup = QListWidget(self)
+        popup.setObjectName("novelaiTagSuggestionPopup")
+        popup.setFocusPolicy(Qt.NoFocus)
+        popup.viewport().setFocusPolicy(Qt.NoFocus)
+        popup.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        popup.setSelectionMode(QAbstractItemView.SingleSelection)
+        popup.setStyleSheet(
+            "#novelaiTagSuggestionPopup { background: palette(base); color: palette(text); "
+            "border: 1px solid palette(mid); }"
+        )
+        popup.itemClicked.connect(self.accept_novelai_tag_suggestion)
+        popup.hide()
+        self.novelai_tag_suggestion_popup = popup
+
+        for editor in (
+            self.novelai_prompt_edit,
+            self.novelai_negative_edit,
+            self.novelai_prompt_list_edit.input_edit,
+            self.novelai_negative_list_edit.input_edit,
+        ):
+            self.attach_novelai_tag_suggestion_editor(editor)
+        for list_editor in (self.novelai_prompt_list_edit, self.novelai_negative_list_edit):
+            list_editor.tagEditorCreated.connect(self.attach_novelai_tag_suggestion_editor)
+            for editor in list_editor.findChildren(InactiveEditablePromptLineEdit):
+                self.attach_novelai_tag_suggestion_editor(editor)
+        self.novelai_model_combo.currentTextChanged.connect(self.invalidate_novelai_tag_suggestions)
+        self.novelai_token_edit.textChanged.connect(self.invalidate_novelai_tag_suggestions)
+
+    def attach_novelai_tag_suggestion_editor(self, editor: object) -> None:
+        if not isinstance(editor, (QLineEdit, QTextEdit)):
+            return
+        if bool(editor.property("raivNovelAITagSuggestionEditor")):
+            return
+        editor.setProperty("raivNovelAITagSuggestionEditor", True)
+        editor.installEventFilter(self)
+        if isinstance(editor, QLineEdit):
+            editor.textEdited.connect(
+                lambda _text, target=editor: self.on_novelai_tag_suggestion_editor_changed(target)
+            )
+        else:
+            editor.textChanged.connect(
+                lambda target=editor: self.on_novelai_tag_suggestion_editor_changed(target)
+            )
+        editor.destroyed.connect(
+            lambda _object=None, editor_id=id(editor):
+            self.on_novelai_tag_suggestion_editor_destroyed(editor_id)
+        )
+
+    def on_novelai_tag_suggestion_editor_destroyed(self, editor_id: int) -> None:
+        target = self.novelai_tag_suggestion_target
+        if (
+            not getattr(self, "closing", False)
+            and target is not None
+            and id(target) == editor_id
+        ):
+            self.invalidate_novelai_tag_suggestions()
+
+    def on_novelai_tag_suggestion_editor_changed(self, editor: QWidget) -> None:
+        if not editor.hasFocus():
+            return
+        self.record_novelai_prompt_edit()
+        if self.novelai_tag_suggestion_accepting:
+            return
+        self.schedule_novelai_tag_suggestions(editor)
+
+    def record_novelai_prompt_edit(self) -> None:
+        self.novelai_last_prompt_edit_monotonic = time.monotonic()
+        if (
+            self.novelai_continuous_generation_enabled
+            and not self.novelai_continuous_generation_stopping
+            and not self.novelai_generation_running
+        ):
+            self.schedule_next_novelai_continuous_generation()
+
+    @staticmethod
+    def novelai_tag_query_context(editor: QWidget) -> dict[str, object] | None:
+        if isinstance(editor, QTextEdit):
+            cursor = editor.textCursor()
+            if cursor.hasSelection():
+                return None
+            text = editor.toPlainText()
+            cursor_position = cursor.position()
+        elif isinstance(editor, QLineEdit):
+            if editor.hasSelectedText():
+                return None
+            text = editor.text()
+            cursor_position = editor.cursorPosition()
+        else:
+            return None
+        cursor_position = max(0, min(len(text), int(cursor_position)))
+        delimiters = ",\n|"
+        segment_start = 0
+        for delimiter in delimiters:
+            segment_start = max(segment_start, text.rfind(delimiter, 0, cursor_position) + 1)
+        following = [position for delimiter in delimiters if (position := text.find(delimiter, cursor_position)) >= 0]
+        segment_end = min(following) if following else len(text)
+
+        content_start = segment_start
+        while content_start < segment_end and text[content_start].isspace():
+            content_start += 1
+        weight_match = re.match(
+            r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)::",
+            text[content_start:segment_end],
+        )
+        if weight_match is not None:
+            content_start += len(weight_match.group(0))
+        while content_start < segment_end and text[content_start] in "[{":
+            content_start += 1
+
+        content_end = segment_end
+        changed = True
+        while changed and content_end > content_start:
+            changed = False
+            while content_end > content_start and text[content_end - 1].isspace():
+                content_end -= 1
+                changed = True
+            while content_end > content_start and text[content_end - 1] in "]}":
+                content_end -= 1
+                changed = True
+            if content_end - 2 >= content_start and text[content_end - 2:content_end] == "::":
+                content_end -= 2
+                changed = True
+        query_end = max(content_start, min(cursor_position, content_end))
+        query = text[content_start:query_end].strip()
+        if not query or len(query) > 200 or query.startswith("<<RAIV_"):
+            return None
+        return {
+            "source_text": text,
+            "replace_start": content_start,
+            "replace_end": content_end,
+            "cursor_position": cursor_position,
+            "query": query,
+            "japanese": bool(re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", query)),
+        }
+
+    def schedule_novelai_tag_suggestions(self, editor: QWidget) -> None:
+        self.novelai_tag_suggestion_request_serial += 1
+        self.novelai_tag_suggestion_timer.stop()
+        popup = getattr(self, "novelai_tag_suggestion_popup", None)
+        if popup is not None:
+            popup.hide()
+        context = self.novelai_tag_query_context(editor)
+        token = self.novelai_token_edit.text().strip() if hasattr(self, "novelai_token_edit") else ""
+        if context is None or not token or not editor.isVisible():
+            self.novelai_tag_suggestion_target = None
+            self.novelai_tag_suggestion_context = None
+            return
+        self.novelai_tag_suggestion_target = editor
+        self.novelai_tag_suggestion_context = context
+        self.novelai_tag_suggestion_timer.start(NOVELAI_TAG_SUGGEST_DEBOUNCE_MS)
+
+    def invalidate_novelai_tag_suggestions(self, *_args) -> None:
+        self.novelai_tag_suggestion_request_serial += 1
+        self.novelai_tag_suggestion_timer.stop()
+        self.novelai_tag_suggestion_target = None
+        self.novelai_tag_suggestion_context = None
+        self.novelai_tag_suggestion_pending_request = None
+        popup = getattr(self, "novelai_tag_suggestion_popup", None)
+        if popup is not None:
+            popup.hide()
+
+    def request_novelai_tag_suggestions(self) -> None:
+        target = self.novelai_tag_suggestion_target
+        context = self.novelai_tag_suggestion_context
+        if (
+            target is None
+            or context is None
+            or getattr(self, "closing", False)
+            or not target.hasFocus()
+            or not target.isVisible()
+        ):
+            self.invalidate_novelai_tag_suggestions()
+            return
+        current_context = self.novelai_tag_query_context(target)
+        if current_context != context:
+            self.invalidate_novelai_tag_suggestions()
+            return
+        token = self.novelai_token_edit.text().strip()
+        model = self.novelai_model_combo.currentText().strip() or DEFAULT_NOVELAI_MODEL
+        serial = self.novelai_tag_suggestion_request_serial
+        query = str(context["query"])
+        japanese = bool(context["japanese"])
+        request: dict[str, object] = {
+            "serial": serial,
+            "token": token,
+            "model": model,
+            "query": query,
+            "japanese": japanese,
+        }
+        if self.novelai_tag_suggestion_in_flight:
+            self.novelai_tag_suggestion_pending_request = request
+            return
+        self.start_novelai_tag_suggestion_request(request)
+
+    def start_novelai_tag_suggestion_request(self, request: dict[str, object]) -> None:
+        self.novelai_tag_suggestion_in_flight = True
+
+        def worker() -> None:
+            adapter: NovelAIClientAdapter | None = None
+            try:
+                adapter = NovelAIClientAdapter(str(request["token"]))
+                suggestions = adapter.suggest_tags(
+                    str(request["query"]),
+                    str(request["model"]),
+                    bool(request["japanese"]),
+                )
+                result: dict[str, object] = {
+                    "ok": True,
+                    "serial": int(request["serial"]),
+                    "suggestions": suggestions[:NOVELAI_TAG_SUGGEST_MAX_RESULTS],
+                }
+            except Exception as exc:
+                result = {
+                    "ok": False,
+                    "serial": int(request["serial"]),
+                    "message": str(exc),
+                }
+            finally:
+                if adapter is not None:
+                    try:
+                        adapter.close()
+                    except Exception:
+                        pass
+            self.signals.novelai_tag_suggestions_done.emit(result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_novelai_tag_suggestions_done(self, result: object) -> None:
+        try:
+            if not isinstance(result, dict):
+                return
+            if int(result.get("serial", -1)) != self.novelai_tag_suggestion_request_serial:
+                return
+            target = self.novelai_tag_suggestion_target
+            context = self.novelai_tag_suggestion_context
+            if (
+                not result.get("ok")
+                or target is None
+                or context is None
+                or getattr(self, "closing", False)
+                or not target.hasFocus()
+                or not target.isVisible()
+                or self.novelai_tag_query_context(target) != context
+            ):
+                self.invalidate_novelai_tag_suggestions()
+                return
+            suggestions = result.get("suggestions")
+            if not isinstance(suggestions, list) or not suggestions:
+                self.invalidate_novelai_tag_suggestions()
+                return
+            self.show_novelai_tag_suggestions(target, suggestions)
+        finally:
+            self.novelai_tag_suggestion_in_flight = False
+            pending = self.novelai_tag_suggestion_pending_request
+            self.novelai_tag_suggestion_pending_request = None
+            if (
+                pending is not None
+                and int(pending.get("serial", -1)) == self.novelai_tag_suggestion_request_serial
+                and not getattr(self, "closing", False)
+            ):
+                self.start_novelai_tag_suggestion_request(pending)
+
+    def show_novelai_tag_suggestions(self, target: QWidget, suggestions: list[object]) -> None:
+        popup = self.novelai_tag_suggestion_popup
+        popup.clear()
+        widest = 0
+        for suggestion in suggestions[:NOVELAI_TAG_SUGGEST_MAX_RESULTS]:
+            if not isinstance(suggestion, dict):
+                continue
+            display = str(suggestion.get("display") or suggestion.get("insert") or "").strip()
+            insert = str(suggestion.get("insert") or "").strip()
+            if not display or not insert:
+                continue
+            item = QListWidgetItem(display)
+            item.setData(Qt.UserRole, insert)
+            item.setToolTip(display)
+            popup.addItem(item)
+            widest = max(widest, popup.fontMetrics().horizontalAdvance(display))
+        if popup.count() == 0:
+            self.invalidate_novelai_tag_suggestions()
+            return
+        popup.setCurrentRow(0)
+        row_height = max(22, popup.fontMetrics().height() + 8)
+        popup_height = min(8, popup.count()) * row_height + 4
+        maximum_width = max(180, min(520, self.width() - 8))
+        popup_width = min(maximum_width, max(180, min(target.width(), widest + 28)))
+
+        if isinstance(target, QTextEdit):
+            cursor_rect = target.cursorRect()
+            anchor_widget = target.viewport()
+        else:
+            cursor_rect = target.cursorRect()
+            anchor_widget = target
+        below_global = anchor_widget.mapToGlobal(cursor_rect.bottomLeft() + QPoint(0, 3))
+        above_global = anchor_widget.mapToGlobal(cursor_rect.topLeft() - QPoint(0, popup_height + 3))
+        position = self.mapFromGlobal(below_global)
+        if position.y() + popup_height > self.height() - 4:
+            position = self.mapFromGlobal(above_global)
+        position.setX(max(4, min(position.x(), self.width() - popup_width - 4)))
+        position.setY(max(4, min(position.y(), self.height() - popup_height - 4)))
+        popup.setFixedSize(popup_width, popup_height)
+        popup.move(position)
+        popup.raise_()
+        popup.show()
+
+    def accept_novelai_tag_suggestion(self, item: QListWidgetItem | None = None) -> bool:
+        popup = getattr(self, "novelai_tag_suggestion_popup", None)
+        target = self.novelai_tag_suggestion_target
+        context = self.novelai_tag_suggestion_context
+        if popup is None or target is None or context is None or not popup.isVisible():
+            return False
+        selected = item or popup.currentItem()
+        if selected is None or self.novelai_tag_query_context(target) != context:
+            self.invalidate_novelai_tag_suggestions()
+            return False
+        replacement = str(selected.data(Qt.UserRole) or "").strip()
+        if not replacement:
+            return False
+        start = int(context["replace_start"])
+        end = int(context["replace_end"])
+        self.novelai_tag_suggestion_accepting = True
+        try:
+            if isinstance(target, QTextEdit):
+                cursor = target.textCursor()
+                cursor.setPosition(start)
+                cursor.setPosition(end, QTextCursor.KeepAnchor)
+                cursor.insertText(replacement)
+                target.setTextCursor(cursor)
+            elif isinstance(target, QLineEdit):
+                target.setSelection(start, max(0, end - start))
+                target.insert(replacement)
+            else:
+                return False
+        finally:
+            self.novelai_tag_suggestion_accepting = False
+        self.record_novelai_prompt_edit()
+        self.invalidate_novelai_tag_suggestions()
+        target.setFocus(Qt.OtherFocusReason)
+        return True
 
     def sync_novelai_text_from_lists(self) -> None:
         self.novelai_prompt_edit.blockSignals(True)
@@ -9637,11 +10073,13 @@ class MainWindow(QMainWindow):
             self.novelai_continuous_generation_stopping = False
         else:
             self.novelai_continuous_delay_timer.stop()
+            self.novelai_continuous_interval_ready_at = 0.0
         self.update_novelai_generate_button_text()
         self.update_novelai_continuous_delay_visibility()
 
     def request_stop_novelai_continuous_generation(self) -> None:
         self.novelai_continuous_delay_timer.stop()
+        self.novelai_continuous_interval_ready_at = 0.0
         self.novelai_continuous_generation_enabled = False
         self.novelai_continuous_generation_stopping = bool(self.novelai_generation_running)
         self.update_novelai_generate_button_text()
@@ -9687,11 +10125,35 @@ class MainWindow(QMainWindow):
             and not self.novelai_continuous_generation_stopping
             and not getattr(self, "closing", False)
         ):
-            self.novelai_continuous_delay_timer.start(self.novelai_continuous_delay_ms())
+            self.novelai_continuous_interval_ready_at = (
+                time.monotonic() + self.novelai_continuous_delay_ms() / 1000.0
+            )
+            self.schedule_next_novelai_continuous_generation()
         else:
             self.set_novelai_continuous_generation_enabled(False)
             self.novelai_continuous_generation_stopping = False
             self.update_novelai_generate_button_text()
+
+    def novelai_continuous_generation_ready_at(self) -> float:
+        input_ready_at = (
+            self.novelai_last_prompt_edit_monotonic
+            + NOVELAI_CONTINUOUS_INPUT_IDLE_MS / 1000.0
+            if self.novelai_last_prompt_edit_monotonic > 0.0
+            else 0.0
+        )
+        return max(self.novelai_continuous_interval_ready_at, input_ready_at)
+
+    def schedule_next_novelai_continuous_generation(self) -> None:
+        if (
+            not self.novelai_continuous_generation_enabled
+            or self.novelai_continuous_generation_stopping
+            or self.novelai_generation_running
+            or getattr(self, "closing", False)
+        ):
+            return
+        remaining_seconds = self.novelai_continuous_generation_ready_at() - time.monotonic()
+        remaining_ms = max(1, int(math.ceil(max(0.0, remaining_seconds) * 1000.0)))
+        self.novelai_continuous_delay_timer.start(remaining_ms)
 
     def run_next_novelai_continuous_generation(self) -> None:
         if (
@@ -9701,6 +10163,13 @@ class MainWindow(QMainWindow):
             or getattr(self, "closing", False)
         ):
             return
+        remaining_seconds = self.novelai_continuous_generation_ready_at() - time.monotonic()
+        if remaining_seconds > 0.0:
+            self.novelai_continuous_delay_timer.start(
+                max(1, int(math.ceil(remaining_seconds * 1000.0)))
+            )
+            return
+        self.novelai_continuous_interval_ready_at = 0.0
         self.generate_novelai_images()
 
     def generate_novelai_images(self) -> None:
@@ -11158,6 +11627,12 @@ class MainWindow(QMainWindow):
 
     def processing_settings_tuple(self, source: Path) -> tuple:
         sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
+        engine_input = self.normalized_path(self.display_source_path(source))
+        output_format = (
+            OUTPUT_FORMAT_PNG
+            if is_avif_image_path(engine_input)
+            else self.current_output_format()
+        )
         return (
             self.normalized_path_text(source),
             self.current_engine(),
@@ -11170,7 +11645,7 @@ class MainWindow(QMainWindow):
             sharpen,
             compression,
             face_recovery,
-            self.current_output_format(),
+            output_format,
         )
 
     def create_upscale_task(
@@ -11189,7 +11664,11 @@ class MainWindow(QMainWindow):
         tta_enabled = self.current_engine_tta_enabled()
         model = self.current_engine_model()
         sharpen, compression, face_recovery = self.current_gigapixel_adjustments()
-        output_format = self.current_output_format()
+        output_format = (
+            OUTPUT_FORMAT_PNG
+            if is_avif_image_path(engine_input)
+            else self.current_output_format()
+        )
         key = (
             self.normalized_path_text(source),
             engine,
@@ -12501,7 +12980,7 @@ class MainWindow(QMainWindow):
             self,
             "画像を開く",
             start,
-            "Images/Archives (*.png *.apng *.jpg *.jpeg *.webp *.bmp *.gif *.jxr *.wdp *.hdp *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
+            "Images/Archives (*.png *.apng *.jpg *.jpeg *.webp *.bmp *.gif *.avif *.jxr *.wdp *.hdp *.zip *.cbz *.rar *.cbr *.7z *.cb7);;All files (*.*)",
         )
         if path:
             self.open_path(Path(path))
@@ -12703,11 +13182,13 @@ class MainWindow(QMainWindow):
         return False
 
     def should_hide_overlay_panel(self) -> bool:
+        tag_suggestion_popup = getattr(self, "novelai_tag_suggestion_popup", None)
         if (
             self.overlay_resizing
             or self.overlay_modal_guard
             or self.novelai_prompt_drag_active
             or self.novelai_filename_tooltip_active
+            or (tag_suggestion_popup is not None and tag_suggestion_popup.isVisible())
             or self.pin_button.isChecked()
             or not self.side_panel_overlay
         ):
@@ -13127,7 +13608,54 @@ class MainWindow(QMainWindow):
         if self.side_panel_overlay:
             self.position_overlay_side_panel()
 
+    def handle_novelai_tag_suggestion_event(self, watched: QWidget, event: QEvent) -> bool:
+        popup = getattr(self, "novelai_tag_suggestion_popup", None)
+        popup_active = bool(
+            popup is not None
+            and popup.isVisible()
+            and watched is self.novelai_tag_suggestion_target
+        )
+        if event.type() in {QEvent.KeyPress, QEvent.InputMethod}:
+            self.record_novelai_prompt_edit()
+        if event.type() == QEvent.KeyPress:
+            key = event.key()
+            modifiers = event.modifiers()
+            plain_key = not bool(
+                modifiers
+                & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+            )
+            if popup_active and key in {Qt.Key_Up, Qt.Key_Down} and popup.count() > 0:
+                row = popup.currentRow()
+                row = 0 if row < 0 else row
+                popup.setCurrentRow((row + (-1 if key == Qt.Key_Up else 1)) % popup.count())
+                return True
+            if popup_active and key == Qt.Key_Escape:
+                self.invalidate_novelai_tag_suggestions()
+                return True
+            if popup_active and plain_key and key in {Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab}:
+                return self.accept_novelai_tag_suggestion()
+            if popup_active:
+                self.invalidate_novelai_tag_suggestions()
+            elif key in {Qt.Key_Return, Qt.Key_Enter}:
+                self.invalidate_novelai_tag_suggestions()
+        elif event.type() == QEvent.InputMethod:
+            if popup_active:
+                self.invalidate_novelai_tag_suggestions()
+        elif event.type() in {QEvent.MouseButtonPress, QEvent.Wheel, QEvent.Hide}:
+            if watched is self.novelai_tag_suggestion_target:
+                self.invalidate_novelai_tag_suggestions()
+        elif event.type() == QEvent.FocusOut and watched is self.novelai_tag_suggestion_target:
+            QTimer.singleShot(0, lambda target=watched: self.hide_novelai_tag_suggestions_if_focus_lost(target))
+        return False
+
+    def hide_novelai_tag_suggestions_if_focus_lost(self, target: QWidget) -> None:
+        if target is self.novelai_tag_suggestion_target and not target.hasFocus():
+            self.invalidate_novelai_tag_suggestions()
+
     def eventFilter(self, watched, event) -> bool:
+        if isinstance(watched, QWidget) and bool(watched.property("raivNovelAITagSuggestionEditor")):
+            if self.handle_novelai_tag_suggestion_event(watched, event):
+                return True
         novelai_scroll = getattr(self, "novelai_scroll_area", None)
         if novelai_scroll is not None and watched is novelai_scroll.viewport() and event.type() == QEvent.Resize:
             self.update_novelai_prompt_tab_wrap_width(event.size().width())
@@ -14171,6 +14699,8 @@ class MainWindow(QMainWindow):
                 output_path.unlink(missing_ok=True)
 
     def command_output_format(self, task: UpscaleTask) -> str:
+        if is_avif_image_path(task.engine_input):
+            return OUTPUT_FORMAT_PNG
         if task.output_format != OUTPUT_FORMAT_PRESERVE:
             return OUTPUT_FORMAT_PNG
         if task.engine == ENGINE_GIGAPIXEL:
@@ -14286,12 +14816,16 @@ class MainWindow(QMainWindow):
         return folder / self.output_name_for_source(source)
 
     def output_name_for_source(self, source: Path, output_format: str | None = None) -> str:
+        if is_avif_image_path(source):
+            return f"{source.name}.png"
         output_format = output_format or self.current_output_format()
         if output_format == OUTPUT_FORMAT_PRESERVE or source.suffix.lower() == ".png":
             return source.name
         return f"{source.name}.png"
 
     def output_suffix_for_source(self, source: Path, output_format: str | None = None) -> str:
+        if is_avif_image_path(source):
+            return ".png"
         output_format = output_format or self.current_output_format()
         if output_format == OUTPUT_FORMAT_PRESERVE and source.suffix:
             return source.suffix
@@ -14615,6 +15149,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self.closing = True
         self.novelai_continuous_delay_timer.stop()
+        self.invalidate_novelai_tag_suggestions()
         self._show_fullscreen_cursor()
         self.viewer.shutdown_resample_workers()
         self.persist_config()
@@ -14634,6 +15169,7 @@ class MainWindow(QMainWindow):
 
 
 def main() -> None:
+    initial_path = Path(sys.argv[1]) if len(sys.argv) >= 2 else None
     enable_high_dpi_awareness()
     set_process_app_user_model_id()
     single_instance_mutex = acquire_single_instance_mutex_if_needed()
@@ -14641,7 +15177,7 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     if APP_ICON_ICO.exists():
         app.setWindowIcon(QIcon(str(APP_ICON_ICO)))
-    window = MainWindow()
+    window = MainWindow(initial_path=initial_path)
     window.show()
     try:
         app.exec()
