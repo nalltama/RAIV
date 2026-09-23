@@ -206,7 +206,7 @@ NovelAI生成:
 - アカウント情報の手動更新と生成成功後の自動更新により、契約プラン、有効状態、残りAnlasを表示。取得成功時はOpus判定を推定消費Anlasへ反映し、取得に失敗した場合は手動のOpus設定を使用
 - `novelai-sdk` による推定消費Anlas表示（実際の消費量と完全一致する保証はありません）
 - V5の透過背景生成。生成画像のアルファチャンネルは、RAIVで選択中の背景色に重ねて表示
-- 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入
+- 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入。自動表示は、生成画像の受信時ではなく、その画像の拡大処理が正常に完了してから処理済み画像へ切り替えるようにも設定できます
 - 生成設定を画像ごとのJSONサイドカーに保存
 - NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映。通常のPNGメタデータに加え、NovelAI SDKが対応する埋め込みメタデータも読み込みます。V5画像は埋め込みモデルハッシュからFull／Curatedを判別します
 
@@ -221,6 +221,7 @@ NovelAI生成機能を利用するには、ユーザー自身のNovelAI Persiste
 - AI彩色、NovelAI生成、キーコンフィグのタブ表示/非表示
 - 右ペインの左右移動。境界の三本線グリップをドラッグして幅を変更可能
 - 拡大縮小時の高品質補完。現在ページを最優先し、ビューアー先読み範囲ではReal-CUGANなどの拡大前の元画像も表示サイズに合わせて準備し、拡大完了後は処理済み画像を改めて準備します。ページ操作中は新しい処理を待機させ、未先読みのページやズーム／ウィンドウ変更時も操作を待たせず、高速表示から非同期で更新します
+- 画像読込・表示補正・フォルダ一覧取得・アーカイブ展開・GIF/APNGのフレーム準備はバックグラウンドで行い、準備済みの結果を再利用します。大きなズームでは選択中の補間方式を保ったまま可視領域をタイル処理します
 - 表示リサンプル方式: Lanczos3、Lanczos4、Bicubic、Area。見開き、比較モード、ズームと表示位置の維持、表示補正、DPIを含む表示条件ごとに結果を保持します
 - 表示リサンプリングのワーカー数をその他タブで変更できます。`0`は自動で、論理CPUスレッド数の半分（最低1）を使用します。手動では1からPCの論理CPUスレッド数まで指定でき、変更は次の処理から反映されます
 - アプリの二重起動禁止
@@ -529,7 +530,7 @@ NovelAI Generation:
 - Manually refresh account information and automatically refresh it after successful generation to show the subscription tier, active status, and remaining Anlas. A successful lookup applies the detected Opus status to the Anlas estimate; the manual Opus setting remains available as a fallback when lookup fails.
 - Estimated Anlas cost using `novelai-sdk` (not guaranteed to exactly match the actual charge)
 - V5 transparent-background generation. RAIV displays the resulting alpha channel over the selected background color.
-- Automatically display generated images and enqueue them for the selected upscaling engine
+- Automatically display generated images and enqueue them for the selected upscaling engine. Auto display can wait for that image's upscale to complete successfully before switching to the processed image.
 - Save generation settings as a JSON sidecar for each generated image
 - Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings. In addition to standard PNG metadata, RAIV reads embedded metadata supported by the NovelAI SDK. V5 images are identified as Full or Curated from their embedded model hash.
 
@@ -544,6 +545,7 @@ Other:
 - Show/hide AI Colorize, NovelAI Generation, and Key Config tabs
 - Move the side panel between the left and right side, and drag the three-line boundary grip to resize it
 - High-quality scaling for zoomed/resized display. The current page has top priority. Within the viewer prefetch range, RAIV prepares the original image before Real-CUGAN or another upscaler finishes, then prepares the processed image again when upscaling completes. New work waits during page interaction, while a cache miss or zoom/window change never blocks interaction; the fast display is replaced asynchronously.
+- Image loading, display adjustments, folder listing, archive extraction, and GIF/APNG frame preparation run in the background and reuse prepared results. Large zoomed images use visible-region tiles while retaining the selected resampling filter.
 - Display resampling method: Lanczos3, Lanczos4, Bicubic, Area. Results are cached for the complete display conditions, including spread view, compare mode, preserved zoom and position, display adjustments, and DPI.
 - The number of display-resampling workers can be changed in the Other tab. `0` selects Auto and uses half of the logical CPU threads (at least 1). A manual value from 1 through the PC's logical CPU thread count takes effect for subsequent work.
 - Prevent multiple app instances
