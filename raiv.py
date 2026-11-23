@@ -5579,7 +5579,9 @@ class GLImageView(QOpenGLWidget):
         secondary_processed: QImage | None = None,
         dual_page: bool = False,
         dual_page_reversed: bool = False,
+        preserve_fit: bool = False,
     ) -> None:
+        was_fitted = preserve_fit and abs(self.zoom - 1.0) <= 0.0001
         preserved_scale = self.current_scale() if preserve_view and not self.current_content_size().isEmpty() else None
         preserved_offset = QPoint(self.offset) if preserve_view else QPoint(0, 0)
         preserved_rotation = self.display_rotation if preserve_view else 0
@@ -5602,7 +5604,7 @@ class GLImageView(QOpenGLWidget):
             if not content_size.isEmpty() and self.width() > 0 and self.height() > 0:
                 self.fit_scale_anchor = min(self.width() / content_size.width(), self.height() / content_size.height())
                 self.fit_image_size = (content_size.width(), content_size.height())
-                self.zoom = self.clamp_zoom_factor(preserved_scale / max(self.fit_scale_anchor, 0.000001))
+                self.zoom = 1.0 if was_fitted else self.clamp_zoom_factor(preserved_scale / self.fit_scale_anchor)
                 self.offset = preserved_offset
                 self.zoomChanged.emit(self.current_scale())
             else:
@@ -13026,6 +13028,7 @@ class MainWindow(QMainWindow):
         preserve_view: bool = False,
         navigation: bool = False,
         scroll_thumbnail: bool = True,
+        preserve_fit: bool = False,
     ) -> None:
         if not self.image_paths or self.current_index < 0:
             return
@@ -13072,6 +13075,7 @@ class MainWindow(QMainWindow):
             secondary_processed=secondary_processed,
             dual_page=self.dual_page_enabled,
             dual_page_reversed=self.dual_page_reversed(),
+            preserve_fit=preserve_fit,
         )
         original_pixmap_key = self.original_pixmap_progress_key(self.display_source_path(path))
         self.viewer.mark_pixmap_ready(original_pixmap_key, self.viewer.source_image)
@@ -15260,7 +15264,7 @@ class MainWindow(QMainWindow):
             visible_sources = {self.normalized_path(self.display_source_path(path)) for path in visible}
             if (visible.intersection(finished_visible_probes) or visible_sources.intersection(originals)
                     or any(Path(key[0]) in visible for key in processed)):
-                self.display_current_image(preserve_view=True)
+                self.display_current_image(preserve_view=True, preserve_fit=True)
         if metadata and self.auto_scale_check.isChecked() and not self.prefetch_timer.isActive():
             self.request_schedule_prefetch()
 
