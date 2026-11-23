@@ -3,6 +3,7 @@
 import base64
 import copy
 import ctypes
+import heapq
 import io
 import json
 import locale
@@ -2731,9 +2732,10 @@ class ToneCurveGraph(QWidget):
 class AppSignals(QObject):
     process_started = Signal(object)
     process_done = Signal(object)
-    folder_images_ready = Signal(object, object)
+    folder_images_ready = Signal(int, int, object, object)
     location_ready = Signal(object)
     animation_ready = Signal(int, object, object)
+    colorized_directory_ready = Signal(int, object, object)
     prefetch_done = Signal(int, object, object, object, object, object)
     thumbnail_done = Signal(int, int, object)
     profile_event = Signal(str, float)
@@ -5502,6 +5504,7 @@ class GLImageView(QOpenGLWidget):
         self.resample_prefetch_lock = threading.Lock()
         self.resample_prefetch_queue: queue.PriorityQueue[tuple[int, int, int, object, QImage, int, int, str, object, object]] = queue.PriorityQueue()
         self.resample_prefetch_pending: dict[object, int] = {}
+        self.visible_tile_regions = {}
         self.resample_prefetch_plan_keys: set[object] = set()
         self.resample_progress_plan_keys: set[object] = set()
         self.resample_plan_rebuilding = False
@@ -5532,7 +5535,8 @@ class GLImageView(QOpenGLWidget):
         self.pixmap_cache_limit = 128
         self.pixmap_prefetch_queue: deque[tuple[object, QImage]] = deque()
         self.pixmap_prefetch_keys: set[object] = set()
-        self.pixmap_prefetch_done_keys: set[object] = set()
+        self.pixmap_prefetch_done_keys: dict[object, tuple] = {}
+        self.pixmap_progress_by_image: dict[tuple, set] = {}
         self.pixmap_prefetch_timer = QTimer(self)
         self.pixmap_prefetch_timer.setSingleShot(True)
         self.pixmap_prefetch_timer.timeout.connect(self.process_pixmap_prefetch)
@@ -5682,8 +5686,23 @@ class GLImageView(QOpenGLWidget):
         pixmap = QPixmap.fromImage(display_image)
         self.pixmap_cache[key] = pixmap
         while len(self.pixmap_cache) > self.pixmap_cache_limit:
-            self.pixmap_cache.popitem(last=False)
+            self.evict_oldest_pixmap()
         return pixmap
+
+    def evict_oldest_pixmap(self) -> None:
+        image_key, _ = self.pixmap_cache.popitem(last=False)
+        for stable_key in self.pixmap_progress_by_image.pop(image_key, ()):
+            self.pixmap_prefetch_done_keys.pop(stable_key, None)
+
+    def mark_pixmap_ready(self, stable_key, image: QImage) -> None:
+        image_key = self.pixmap_cache_key(image)
+        old = self.pixmap_prefetch_done_keys.get(stable_key)
+        if old == image_key or image_key not in self.pixmap_cache:
+            return
+        if old is not None:
+            self.pixmap_progress_by_image[old].discard(stable_key)
+        self.pixmap_progress_by_image.setdefault(image_key, set()).add(stable_key)
+        self.pixmap_prefetch_done_keys[stable_key] = image_key
 
     def pixmap_cache_key(self, raw_image: QImage) -> tuple[int]:
         return (int(raw_image.cacheKey()),)
@@ -5692,7 +5711,7 @@ class GLImageView(QOpenGLWidget):
         self.pixmap_cache_limit = max(24, int(limit))
         self.adjustment_cache.limit = self.pixmap_cache_limit
         while len(self.pixmap_cache) > self.pixmap_cache_limit:
-            self.pixmap_cache.popitem(last=False)
+            self.evict_oldest_pixmap()
 
     def set_resample_cache_limit(self, limit: int) -> None:
         self.resample_cache_limit = max(24, int(limit))
@@ -5738,6 +5757,7 @@ class GLImageView(QOpenGLWidget):
 
     def begin_resample_prefetch_plan(self, generation: int) -> None:
         self.resample_prefetch_generation = int(generation)
+        self.visible_tile_regions.clear()
         with self.resample_prefetch_lock:
             self.resample_plan_rebuilding = True
             self.resample_prefetch_plan_keys.clear()
@@ -5749,6 +5769,24 @@ class GLImageView(QOpenGLWidget):
         with self.resample_prefetch_lock:
             self.resample_progress_plan_keys = set(self.resample_prefetch_plan_keys)
             self.resample_plan_rebuilding = False
+
+    def prioritize_visible_tiles(self, base_key, tiles) -> None:
+        visible = frozenset(tiles)
+        if self.visible_tile_regions.get(base_key) == visible:
+            return
+        self.visible_tile_regions[base_key] = visible
+        with self.resample_prefetch_lock:
+            obsolete = {key for key in self.resample_prefetch_plan_keys
+                        if key[:-1] == base_key and key[-1] not in visible}
+            self.resample_prefetch_plan_keys.difference_update(obsolete)
+            self.resample_progress_plan_keys.difference_update(obsolete)
+            for key in obsolete:
+                self.resample_prefetch_pending.pop(key, None)
+            with self.resample_prefetch_queue.mutex:
+                jobs = self.resample_prefetch_queue.queue
+                jobs[:] = [(-100, *job[1:]) if job[3][:-1] == base_key else job
+                           for job in jobs if job[3] not in obsolete]
+                heapq.heapify(jobs)
 
     def queue_resample_request(
         self,
@@ -5775,7 +5813,11 @@ class GLImageView(QOpenGLWidget):
             ratio = self.display_pixel_ratio()
             view_w, view_h = max(1, round(self.width() * ratio)), max(1, round(self.height() * ratio))
             visible = QRect(max(0, (physical_width - view_w) // 2), max(0, (physical_height - view_h) // 2), view_w, view_h)
-            for tile in self.resample_tiles(physical_width, physical_height, visible):
+            base_key = self.resample_cache_key(identity, physical_width, physical_height, ratio, self.cpu_resample_algorithm)
+            tiles = self.visible_tile_regions.get(base_key)
+            if tiles is None:
+                tiles = self.resample_tiles(physical_width, physical_height, visible)
+            for tile in tiles:
                 self.queue_resample_request(image, physical_width, physical_height, identity=identity,
                     priority=priority, generation=generation, adjustment_snapshot=adjustment_snapshot, region=tile)
             return None
@@ -6087,7 +6129,7 @@ class GLImageView(QOpenGLWidget):
         for stable_key, image in items:
             if image.isNull():
                 continue
-            if stable_key in self.pixmap_prefetch_done_keys or stable_key in self.pixmap_prefetch_keys:
+            if self.pixmap_prefetch_done_keys.get(stable_key) == self.pixmap_cache_key(image) or stable_key in self.pixmap_prefetch_keys:
                 continue
             self.pixmap_prefetch_queue.append((stable_key, image))
             self.pixmap_prefetch_keys.add(stable_key)
@@ -6098,6 +6140,7 @@ class GLImageView(QOpenGLWidget):
         self.pixmap_prefetch_queue.clear()
         self.pixmap_prefetch_keys.clear()
         self.pixmap_prefetch_done_keys.clear()
+        self.pixmap_progress_by_image.clear()
         self.pixmap_prefetch_timer.stop()
 
     def process_pixmap_prefetch(self) -> None:
@@ -6107,10 +6150,10 @@ class GLImageView(QOpenGLWidget):
         while self.pixmap_prefetch_queue and warmed < budget:
             stable_key, image = self.pixmap_prefetch_queue.popleft()
             self.pixmap_prefetch_keys.discard(stable_key)
-            if image.isNull() or stable_key in self.pixmap_prefetch_done_keys:
+            if image.isNull() or self.pixmap_prefetch_done_keys.get(stable_key) == self.pixmap_cache_key(image):
                 continue
             self.pixmap_for_image(image, self.transformed_image(image))
-            self.pixmap_prefetch_done_keys.add(stable_key)
+            self.mark_pixmap_ready(stable_key, image)
             warmed += 1
         if warmed:
             self.pixmapPrefetchProgress.emit(
@@ -6429,10 +6472,17 @@ class GLImageView(QOpenGLWidget):
         x, y, tile_w, tile_h = region
         if width == image.width() and height == image.height():
             return image.copy(x, y, tile_w, tile_h)
-        source = image.convertToFormat(QImage.Format_RGBA8888)
+        # Crop the input footprint (including the filter halo) before any format conversion.
+        scale_x, scale_y = image.width() / width, image.height() / height
+        radius = {'area': 0.5, 'bicubic': 2, 'lanczos3': 3, 'lanczos4': 4}.get(algorithm, 3)
+        halo_x, halo_y = radius * max(1, scale_x), radius * max(1, scale_y)
+        left = max(0, math.floor(x * scale_x - halo_x))
+        top = max(0, math.floor(y * scale_y - halo_y))
+        right = min(image.width(), math.ceil((x + tile_w) * scale_x + halo_x))
+        bottom = min(image.height(), math.ceil((y + tile_h) * scale_y + halo_y))
+        source = image.copy(left, top, right - left, bottom - top).convertToFormat(QImage.Format_RGBA8888)
         if algorithm == 'lanczos4' and cv2 is not None and np is not None:
             # The full resize pixel grid and the eight-tap Lanczos4 filter are retained.
-            # Fixed-point coefficients match OpenCV's uint8 resize path (11 bits per axis).
             def taps(start, count, source_size, output_size):
                 positions = (np.arange(start, start + count, dtype=np.float64) + 0.5) * (source_size / output_size) - 0.5
                 base = np.floor(positions).astype(np.int64)
@@ -6440,13 +6490,16 @@ class GLImageView(QOpenGLWidget):
                 distance = positions[:, None] - indexes
                 weights = np.sinc(distance) * np.sinc(distance / 4.0)
                 weights /= weights.sum(axis=1, keepdims=True)
-                return np.clip(indexes, 0, source_size - 1), np.rint(weights * 2048).astype(np.int64)
-            ix, wx = taps(x, tile_w, source.width(), width)
-            iy, wy = taps(y, tile_h, source.height(), height)
+                return np.clip(indexes, 0, source_size - 1), weights.astype(np.float32)
+            ix, wx = taps(x, tile_w, image.width(), width)
+            iy, wy = taps(y, tile_h, image.height(), height)
+            ix -= left
+            iy -= top
             array = np.frombuffer(source.constBits(), dtype=np.uint8).reshape(source.height(), source.bytesPerLine())
             array = array[:, :source.width() * 4].reshape(source.height(), source.width(), 4)
             rows = np.unique(iy)
-            horizontal = (array[rows[:, None, None], ix[None, :, :], :].astype(np.int64)
+            array = GLImageView.premultiply_resample_pixels(array)
+            horizontal = (array[rows[:, None, None], ix[None, :, :], :]
                           * wx[None, :, :, None]).sum(axis=2)
             row_indexes = np.searchsorted(rows, iy)
             output = np.empty((tile_h, tile_w, 4), dtype=np.uint8)
@@ -6455,7 +6508,7 @@ class GLImageView(QOpenGLWidget):
                     return QImage()
                 end = min(tile_h, begin + 32)
                 values = (horizontal[row_indexes[begin:end]] * wy[begin:end, :, None, None]).sum(axis=1)
-                output[begin:end] = np.clip((values + (1 << 21)) >> 22, 0, 255).astype(np.uint8)
+                output[begin:end] = GLImageView.straight_resample_pixels(values)
             return QImage(output.tobytes(), tile_w, tile_h, QImage.Format_RGBA8888).copy()
         if PILImage is None:
             # Qt uses the same continuous full-image mapping, clipped to the output tile.
@@ -6463,7 +6516,7 @@ class GLImageView(QOpenGLWidget):
             output.fill(Qt.transparent)
             painter = QPainter(output)
             painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-            painter.drawImage(QRect(-x, -y, width, height), source)
+            painter.drawImage(QRect(-x, -y, width, height), image)
             painter.end()
             return output
         pil = PILImage.frombuffer('RGBA', (source.width(), source.height()), source.constBits(),
@@ -6471,8 +6524,8 @@ class GLImageView(QOpenGLWidget):
         if np is None:
             filters = {'area': PILImage.Resampling.BOX, 'bicubic': PILImage.Resampling.BICUBIC,
                        'lanczos3': PILImage.Resampling.LANCZOS, 'lanczos4': PILImage.Resampling.LANCZOS}
-            box = (x * source.width() / width, y * source.height() / height,
-                   (x + tile_w) * source.width() / width, (y + tile_h) * source.height() / height)
+            box = (x * scale_x - left, y * scale_y - top,
+                   (x + tile_w) * scale_x - left, (y + tile_h) * scale_y - top)
             output = pil.resize((tile_w, tile_h), filters.get(algorithm, PILImage.Resampling.LANCZOS), box=box)
         else:
             # Use the full resize grid rather than a float32 Pillow crop box. Tiny box
@@ -6499,8 +6552,10 @@ class GLImageView(QOpenGLWidget):
                 fixed = weights * (1 << 22)
                 fixed = np.where(fixed < 0, fixed - 0.5, fixed + 0.5).astype(np.int64)
                 return np.clip(indexes, 0, input_size - 1), fixed
-            ix, wx = taps(x, tile_w, source.width(), width)
-            iy, wy = taps(y, tile_h, source.height(), height)
+            ix, wx = taps(x, tile_w, image.width(), width)
+            iy, wy = taps(y, tile_h, image.height(), height)
+            ix -= left
+            iy -= top
             premultiplied = pil.convert('RGBa')
             array = np.frombuffer(premultiplied.tobytes(), dtype=np.uint8).reshape(source.height(), source.width(), 4)
             rows = np.unique(iy)
@@ -6559,6 +6614,19 @@ class GLImageView(QOpenGLWidget):
         return self.resample_qimage_with_algorithm(image, width, height, self.cpu_resample_algorithm)
 
     @staticmethod
+    def premultiply_resample_pixels(array):
+        pixels = array.astype(np.float32)
+        pixels[:, :, :3] *= pixels[:, :, 3:] / 255.0
+        return pixels
+
+    @staticmethod
+    def straight_resample_pixels(pixels):
+        alpha = pixels[:, :, 3:]
+        factor = np.divide(255.0, alpha, out=np.zeros_like(alpha), where=alpha > 0.5)
+        pixels[:, :, :3] *= factor
+        return np.rint(np.clip(pixels, 0, 255)).astype(np.uint8)
+
+    @staticmethod
     def resample_qimage_with_algorithm(
         image: QImage,
         width: int,
@@ -6568,20 +6636,14 @@ class GLImageView(QOpenGLWidget):
     ) -> QImage:
         if callable(cancelled) and cancelled():
             return QImage()
-        if PILImage is None:
+        if image.width() == width and image.height() == height:
+            return QImage(image)
+        opencv_lanczos = algorithm == 'lanczos4' and cv2 is not None and np is not None
+        if PILImage is None and not opencv_lanczos:
             return image.scaled(width, height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         source = image.convertToFormat(QImage.Format_RGBA8888)
         source_buffer = source.constBits()
-        pil = PILImage.frombuffer(
-            "RGBA",
-            (source.width(), source.height()),
-            source_buffer,
-            "raw",
-            "RGBA",
-            source.bytesPerLine(),
-            1,
-        )
-        if algorithm == "lanczos4" and cv2 is not None and np is not None:
+        if opencv_lanczos:
             row_bytes = source.bytesPerLine()
             array = np.frombuffer(
                 source_buffer,
@@ -6589,18 +6651,23 @@ class GLImageView(QOpenGLWidget):
                 count=row_bytes * source.height(),
             ).reshape(source.height(), row_bytes)
             array = array[:, :source.width() * 4].reshape(source.height(), source.width(), 4)
-            resized = cv2.resize(array, (width, height), interpolation=cv2.INTER_LANCZOS4)
+            if image.hasAlphaChannel() and array[:, :, 3].min() < 255:
+                resized = cv2.resize(GLImageView.premultiply_resample_pixels(array), (width, height), interpolation=cv2.INTER_LANCZOS4)
+                resized = GLImageView.straight_resample_pixels(resized)
+            else:
+                resized = cv2.resize(array, (width, height), interpolation=cv2.INTER_LANCZOS4)
             if callable(cancelled) and cancelled():
                 return QImage()
-            pil = PILImage.fromarray(resized, "RGBA")
-        else:
-            filters = {
-                "area": PILImage.Resampling.BOX,
-                "bicubic": PILImage.Resampling.BICUBIC,
-                "lanczos3": PILImage.Resampling.LANCZOS,
-                "lanczos4": PILImage.Resampling.LANCZOS,
-            }
-            pil = pil.resize((width, height), resample=filters.get(algorithm, PILImage.Resampling.LANCZOS))
+            return QImage(resized.data, width, height, resized.strides[0], QImage.Format_RGBA8888).copy()
+        pil = PILImage.frombuffer("RGBA", (source.width(), source.height()), source_buffer,
+                                  "raw", "RGBA", source.bytesPerLine(), 1)
+        filters = {
+            "area": PILImage.Resampling.BOX,
+            "bicubic": PILImage.Resampling.BICUBIC,
+            "lanczos3": PILImage.Resampling.LANCZOS,
+            "lanczos4": PILImage.Resampling.LANCZOS,
+        }
+        pil = pil.resize((width, height), resample=filters.get(algorithm, PILImage.Resampling.LANCZOS))
         if callable(cancelled) and cancelled():
             return QImage()
         output = pil.convert("RGBA")
@@ -6762,6 +6829,9 @@ class GLImageView(QOpenGLWidget):
             return
         ratio = self.display_pixel_ratio()
         width, height = max(1, round(target.width() * ratio)), max(1, round(target.height() * ratio))
+        if (width, height) == (image.width(), image.height()):
+            painter.drawPixmap(target, pixmap)
+            return
         if self.cpu_resample_cache_enabled and self.use_resample_tiles(width, height):
             inverse, invertible = painter.worldTransform().inverted()
             visible = inverse.mapRect(QRectF(self.rect())) if invertible else QRectF(target)
@@ -6770,7 +6840,10 @@ class GLImageView(QOpenGLWidget):
                              math.ceil(visible.width() * ratio) + 2, math.ceil(visible.height() * ratio) + 2)
             identity = self.resample_image_identity(image)
             base_key = self.resample_cache_key(identity, width, height, ratio, self.cpu_resample_algorithm)
-            for tile in self.resample_tiles(width, height, physical):
+            tiles = self.resample_tiles(width, height, physical)
+            if not self.resample_interaction_active:
+                self.prioritize_visible_tiles(base_key, tiles)
+            for tile in tiles:
                 key = (*base_key, tile)
                 cached = self.resample_cache.get(key)
                 x, y, tile_w, tile_h = tile
@@ -6842,12 +6915,7 @@ class GLImageView(QOpenGLWidget):
             painter.end()
             return
         painter.save()
-        center = target.center()
-        painter.translate(center)
-        painter.rotate(self.display_rotation)
-        painter.scale(-1 if self.display_flip_horizontal else 1, -1 if self.display_flip_vertical else 1)
-        base_center = base_target.center()
-        painter.translate(-base_center.x(), -base_center.y())
+        painter.setWorldTransform(self.image_display_transform(target, base_target), True)
         target = base_target
 
         entries = self.display_page_entries()
@@ -6962,7 +7030,7 @@ class GLImageView(QOpenGLWidget):
                 self.zoom_drag_start = event.position().toPoint()
                 self.pan_start = None
             elif self._drag_moves_compare_boundary(event):
-                self._set_split_from_x(round(event.position().x()))
+                self._set_split_from_position(event.position())
             elif not self.can_pan_view():
                 self.pan_start = None
             else:
@@ -6983,7 +7051,7 @@ class GLImageView(QOpenGLWidget):
                     self.pan_start = None
                     self.update()
             elif self._drag_moves_compare_boundary(event):
-                self._set_split_from_x(round(event.position().x()))
+                self._set_split_from_position(event.position())
                 self.pan_start = None
             elif self.pan_start is not None and self.can_pan_view():
                 pos = event.position().toPoint()
@@ -7013,11 +7081,21 @@ class GLImageView(QOpenGLWidget):
         shift = bool(event.modifiers() & Qt.ShiftModifier)
         return shift if self.compare_shift_drag_moves_boundary else not shift
 
-    def _set_split_from_x(self, x: int) -> None:
+    def image_display_transform(self, target: QRect, base: QRect) -> QTransform:
+        transform = QTransform()
+        transform.translate(target.center().x(), target.center().y())
+        transform.rotate(self.display_rotation)
+        transform.scale(-1 if self.display_flip_horizontal else 1, -1 if self.display_flip_vertical else 1)
+        return transform.translate(-base.center().x(), -base.center().y())
+
+    def _set_split_from_position(self, position: QPointF) -> None:
         target = self.image_rect()
-        if target.isNull() or target.width() <= 0:
+        base = self.base_image_rect(target)
+        if base.isEmpty():
             return
-        percent = round((x - target.x()) / target.width() * 1000)
+        inverse, _ = self.image_display_transform(target, base).inverted()
+        x = inverse.map(position).x()
+        percent = round((x - base.x()) / base.width() * 1000)
         self.compare_split = max(0, min(1000, percent))
         self.splitChanged.emit(self.compare_split)
         self.update()
@@ -7043,6 +7121,7 @@ class MainWindow(QMainWindow):
         self.signals.folder_images_ready.connect(self.on_folder_images_ready)
         self.signals.location_ready.connect(self.on_location_ready)
         self.signals.animation_ready.connect(self.on_animation_ready)
+        self.signals.colorized_directory_ready.connect(self.on_colorized_directory_ready)
         self.signals.prefetch_done.connect(self.queue_prefetch_results)
         self.signals.thumbnail_done.connect(self.on_thumbnail_done)
         self.signals.profile_event.connect(self.record_profile)
@@ -7090,6 +7169,8 @@ class MainWindow(QMainWindow):
         self.novelai_pending_auto_open_after_upscale: dict[Path, tuple] = {}
         self.novelai_last_prompt_edit_monotonic = 0.0
         self.location_request_serial = 0
+        self.folder_list_serial = 0
+        self.previous_spreads: dict[Path, Path] = {}
         self.last_navigation_step = 1
         self.folder_list_loading = False
         self.deferred_page_steps = 0
@@ -7106,6 +7187,7 @@ class MainWindow(QMainWindow):
         self.animation_timer.setSingleShot(True)
         self.animation_timer.timeout.connect(self.advance_animation_frames)
         self.processed_cache: OrderedDict[tuple, QImage] = OrderedDict()
+        self.saved_display_revisions: dict[str, int] = {}
         self.processing_paths: set[Path] = set()
         self.processing_task_keys: dict[Path, tuple] = {}
         self.queued_tasks: dict[Path, UpscaleTask] = {}
@@ -7123,6 +7205,7 @@ class MainWindow(QMainWindow):
         self.failed_original_paths = set()
         self.deferred_upscale_requests = {}
         self.pending_display_options = None
+        self.display_disk_probes: dict[Path, tuple[tuple, bool]] = {}
         self.prefetch_io_lock = threading.Lock()
         self.thumbnail_queue: queue.PriorityQueue[tuple[int, int, int, int, str, int, float]] = queue.PriorityQueue()
         self.thumbnail_sequence = 0
@@ -7168,6 +7251,9 @@ class MainWindow(QMainWindow):
         self.colorize_plan: list[Path] = []
         self.colorize_done_paths: set[Path] = set()
         self.colorized_session_paths: dict[Path, Path] = {}
+        self.colorized_directory_files: dict[Path, frozenset] = {}
+        self.pending_colorized_directories: set[Path] = set()
+        self.directory_work = SharedImageWork(32)
         self.novelai_generation_running = False
         self.novelai_account_refresh_running = False
         self.novelai_account_refresh_serial = 0
@@ -7561,7 +7647,7 @@ class MainWindow(QMainWindow):
         self.realcugan_prefetch_spin = QSpinBox()
         self.realcugan_prefetch_spin.setRange(0, 99999)
         self.realcugan_prefetch_spin.setValue(self.config_data.realcugan_prefetch_count)
-        self.realcugan_prefetch_spin.valueChanged.connect(self.on_processing_settings_changed)
+        self.realcugan_prefetch_spin.valueChanged.connect(self.on_engine_prefetch_count_changed)
         form3.addRow("エンジン先読み", self.realcugan_prefetch_spin)
         form3.addRow(self.help_label("現在画像から後続画像をファイル名順で優先し、先読み枠が残る場合は直前の画像から前方向へ拡大処理します。ページ移動時は待機中の先読みキューを現在位置から作り直します。大きいほど待ち時間を減らせますが、GPU負荷と一時ファイル作成が増えます。"))
         self.skip_tall_check = QCheckBox("縦サイズが閾値以上なら拡大処理しない")
@@ -8068,8 +8154,6 @@ class MainWindow(QMainWindow):
         colorize_tab.setWidget(colorize_content)
         self.detect_comfyui_nodes(update_status=False)
 
-        novelai_tab.setWidget(self.build_novelai_tab_content())
-        QTimer.singleShot(0, self.update_novelai_prompt_tab_wrap_width)
 
         other_content = QWidget()
         other_layout = QVBoxLayout(other_content)
@@ -8184,12 +8268,27 @@ class MainWindow(QMainWindow):
         self.normalize_form_labels(form, form3, viewer_form, background_form, compare_form, view_form, page_position_form, curve_form, comfy_form, colorize_prefetch_form, colorize_adjust_form, language_form, resample_form, folder_history_form, version_form)
 
         tab_index = {tab_id: index for index, tab_id in enumerate(SETTINGS_TAB_IDS)}.get(self.config_data.settings_tab, 0)
-        self.tabs.setCurrentIndex(tab_index)
         self.apply_settings_tab_visibility()
+        if self.tabs.isTabVisible(tab_index):
+            self.tabs.setCurrentIndex(tab_index)
         self.apply_engine_ui()
         self.update_hdr_tonemap_controls()
         QTimer.singleShot(0, self.apply_language)
         return root
+
+    def ensure_novelai_tab(self) -> None:
+        if self.novelai_scroll_area.widget() is not None:
+            return
+        # Building the controls emits Qt signals. Preserve the loaded settings until all exist.
+        initializing = self.initializing
+        self.initializing = True
+        try:
+            self.novelai_scroll_area.setWidget(self.build_novelai_tab_content())
+        finally:
+            self.initializing = initializing
+        if not initializing:
+            self.apply_language()
+        QTimer.singleShot(0, self.update_novelai_prompt_tab_wrap_width)
 
     def build_novelai_tab_content(self) -> QWidget:
         content = QWidget()
@@ -10515,6 +10614,7 @@ class MainWindow(QMainWindow):
         self.generate_novelai_images()
 
     def generate_novelai_images(self) -> None:
+        self.ensure_novelai_tab()
         if self.novelai_generation_running:
             self.novelai_status_label.setText("NovelAI生成は実行中です。")
             return
@@ -10760,10 +10860,10 @@ class MainWindow(QMainWindow):
         self.continue_novelai_generation_if_needed()
 
     def refresh_current_folder_after_novelai_generation(self, paths: list[Path]) -> None:
-        if self.archive_mode_active() or not self.image_paths or self.current_index < 0:
+        if self.archive_mode_active():
             return
         try:
-            current_path = self.image_paths[self.current_index].resolve()
+            current_path = self.image_paths[self.current_index] if self.current_index >= 0 else None
             current_folder = self.current_real_folder()
             generated_folders = {path.resolve().parent for path in paths}
         except OSError:
@@ -10811,24 +10911,56 @@ class MainWindow(QMainWindow):
     def colorized_output_path(self, source: Path) -> Path:
         return self.colorized_output_dir(source) / f"{source.stem}_comfyui.png"
 
-    def has_colorized_result(self, source: Path) -> bool:
-        if not source.is_file():
-            return False
-        session_path = self.colorized_session_paths.get(self.normalized_path(source))
-        if session_path is not None and session_path.exists():
+    def prepare_colorized_directory(self, source: Path, refresh: bool = False) -> bool:
+        if not (self.use_colorized_cache_check.isChecked() or self.colorize_prefetch_check.isChecked()):
             return True
+        folder = self.colorized_output_dir(source)
+        ready = folder in self.colorized_directory_files
+        if (refresh or not ready) and folder not in self.pending_colorized_directories:
+            self.pending_colorized_directories.add(folder)
+            self.queue_prefetch_io_task(self.prefetch_generation, -110, 'colorized_directory', folder, str(folder), '')
+        return ready
+
+    def on_colorized_directory_ready(self, epoch, folder, files) -> None:
+        if self.closing or epoch != self.image_io_epoch:
+            return
+        self.pending_colorized_directories.discard(folder)
+        previous = self.colorized_directory_files.get(folder)
+        self.colorized_directory_files[folder] = files
+        if self.current_index < 0 or folder != self.colorized_output_dir(self.image_paths[self.current_index]):
+            return
+        if previous is None:
+            if self.pending_display_options is None:
+                self.request_schedule_prefetch()
+        elif previous != files:
+            for source in self.image_paths:
+                name = self.colorized_output_path(source).name.casefold()
+                if (name in previous) != (name in files):
+                    self.discard_processed_image(self.processing_key(source))
+                    previous_path = self.colorized_output_path(source)
+                    if name in files and previous_path in self.failed_original_paths:
+                        self.failed_original_paths.discard(previous_path)
+                        self.image_read_work.clear()
+            self.display_current_image(preserve_view=True)
+
+    def has_colorized_result(self, source: Path) -> bool:
         path = self.colorized_output_path(source)
-        return path.exists()
+        session = self.colorized_session_paths.get(self.normalized_path(source))
+        return ((session is not None and session not in self.failed_original_paths)
+                or (path not in self.failed_original_paths
+                    and path.name.casefold() in self.colorized_directory_files.get(path.parent, ())))
 
     def existing_colorized_path(self, source: Path) -> Path | None:
-        if not self.use_colorized_cache_check.isChecked() or not self.has_colorized_result(source):
+        if not self.use_colorized_cache_check.isChecked():
             return None
         path = self.colorized_output_path(source)
-        return path if path.exists() else None
+        if path not in self.failed_original_paths and path.name.casefold() in self.colorized_directory_files.get(path.parent, ()):
+            return path
+        return None
 
     def display_source_path(self, source: Path) -> Path:
         session_path = self.colorized_session_paths.get(self.normalized_path(source))
-        if session_path is not None and session_path.exists():
+        if session_path is not None and session_path not in self.failed_original_paths:
             return session_path
         return self.existing_colorized_path(source) or source
 
@@ -11125,7 +11257,7 @@ class MainWindow(QMainWindow):
                 normalized_source = self.normalized_path(source)
                 self.colorized_session_paths[normalized_source] = path
                 self.colorize_done_paths.add(normalized_source)
-                self.processed_cache.pop(self.processing_key(normalized_source), None)
+                self.discard_processed_image(self.processing_key(normalized_source))
                 self.original_cache.pop(normalized_source, None)
                 self.original_cache.pop(self.normalized_path(path), None)
                 self.image_height_cache.pop(normalized_source, None)
@@ -11678,11 +11810,12 @@ class MainWindow(QMainWindow):
             return
         label = getattr(self, "page_position_count_label", None)
         slider.blockSignals(True)
-        if self.image_paths and self.current_index >= 0:
+        if self.image_paths:
             slider.setEnabled(True)
             total = len(self.image_paths)
-            if slider.minimum() != 1 or slider.maximum() != total:
-                slider.setRange(1, total)
+            minimum = 1 if self.current_index >= 0 else 0
+            if slider.minimum() != minimum or slider.maximum() != total:
+                slider.setRange(minimum, total)
             value = self.current_index + 1
             if slider.value() != value:
                 slider.setValue(value)
@@ -11862,6 +11995,9 @@ class MainWindow(QMainWindow):
         if self.current_engine() != ENGINE_REALCUGAN:
             return [-1, 0, 1, 2, 3]
         model = self.current_engine_model() or self.config_data.realcugan_model
+        if hasattr(self, "auto_scale_check") and self.auto_scale_check.isChecked():
+            scales = self.available_scales(ENGINE_REALCUGAN, model)
+            return sorted(set.intersection(*(set(REALCUGAN_DENOISE_LEVELS[model, s]) for s in scales)))
         try:
             scale = int(self.scale_combo.currentText())
         except (AttributeError, TypeError, ValueError):
@@ -12103,7 +12239,7 @@ class MainWindow(QMainWindow):
             if model in REALESRGAN_MODELS:
                 self.config_data.realesrgan_model = model
             self.config_data.realesrgan_scale = scale
-            self.config_data.realesrgan_tta_enabled = self.current_engine_tta_enabled()
+            self.config_data.realesrgan_tta_enabled = self.tta_check.isChecked()
             self.config_data.realesrgan_output_format = output_format
         elif engine == ENGINE_GIGAPIXEL:
             model = self.current_engine_model()
@@ -12122,7 +12258,7 @@ class MainWindow(QMainWindow):
             self.config_data.scale = scale
             self.config_data.denoise = int(self.denoise_combo.currentText())
             self.config_data.realcugan_syncgap_mode = self.current_realcugan_syncgap_mode()
-            self.config_data.realcugan_tta_enabled = self.current_engine_tta_enabled()
+            self.config_data.realcugan_tta_enabled = self.tta_check.isChecked()
             self.config_data.realcugan_output_format = output_format
 
     def apply_engine_ui(self) -> None:
@@ -12549,7 +12685,7 @@ class MainWindow(QMainWindow):
             self.deferred_page_steps = 0
             self.config_data.last_dir = str(path.parent)
             self.config_data.last_image_path = str(path)
-            QTimer.singleShot(0, lambda p=path: self.collect_folder_images_async(p.parent, p))
+            self.collect_folder_images_async(path.parent, path)
             QTimer.singleShot(0, self.persist_config)
             return
         QTimer.singleShot(0, lambda p=path: self.open_path(p))
@@ -12669,7 +12805,7 @@ class MainWindow(QMainWindow):
         except OSError:
             return str(folder)
 
-    def folder_history_index(self, folder: Path, images: list[Path]) -> int:
+    def folder_history_index(self, folder: Path, images: list[Path], resolved_links: dict[Path, Path] | None = None) -> int:
         if not self.folder_history_enabled() or not images:
             return 0
         entry = self.folder_history.get(self.folder_history_key(folder))
@@ -12683,10 +12819,12 @@ class MainWindow(QMainWindow):
             remembered_resolved = remembered_path.resolve()
         except OSError:
             remembered_resolved = remembered_path
-        for index, image in enumerate(images):
-            if image.resolve() == remembered_resolved:
-                return index
-        return 0
+        if resolved_links:
+            return next((i for i, p in enumerate(images) if resolved_links.get(p, p) == remembered_resolved), 0)
+        try:
+            return images.index(remembered_resolved)
+        except ValueError:
+            return 0
 
     def record_folder_history(self, image_path: Path) -> None:
         if self.archive_mode_active() or not self.folder_history_enabled():
@@ -12724,24 +12862,43 @@ class MainWindow(QMainWindow):
         save_folder_history(self.folder_history)
         self.folder_history_dirty = False
 
-    def collect_folder_images_async(self, folder: Path, selected_path: Path) -> None:
+    def collect_folder_images_async(self, folder: Path, selected_path: Path | None) -> None:
+        location = self.location_request_serial
+        self.folder_list_serial += 1
+        request = self.folder_list_serial
         def worker() -> None:
             started = time.perf_counter()
             try:
                 images = self.collect_images(folder)
-                resolved_selected = selected_path.resolve()
+                resolved_selected = selected_path.resolve() if selected_path is not None else None
             except Exception:
                 images = []
                 resolved_selected = selected_path
             self.signals.profile_event.emit("フォルダ画像列挙", (time.perf_counter() - started) * 1000)
-            self.signals.folder_images_ready.emit(images, resolved_selected)
+            if not self.closing:
+                self.signals.folder_images_ready.emit(location, request, images, resolved_selected)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def on_folder_images_ready(self, images: list[Path], selected_path: Path) -> None:
+    def on_folder_images_ready(self, location: int, request: int, images: list[Path], selected_path: Path | None) -> None:
+        if self.closing or location != self.location_request_serial or request != self.folder_list_serial:
+            return
         if not images:
             self.folder_list_loading = False
             return
+        if selected_path is None and self.current_index < 0:
+            self.folder_list_loading = False
+            self.image_paths = images
+            self.refresh_image_path_sets()
+            self.rebuild_thumbnail_items()
+            self.update_page_position_slider()
+            message = "Select an image" if self.ui_language() == "en" else "画像を選択してください"
+            self.viewer.set_empty_message(message, str(self.current_folder_path))
+            self.status_label.setText(f"0/{len(images)} {message}")
+            self.update_window_title()
+            return
+        if self.current_index >= 0 and self.image_paths:
+            selected_path = self.image_paths[self.current_index]
         try:
             selected_index = images.index(selected_path)
         except ValueError:
@@ -12771,6 +12928,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, lambda s=steps: self.queue_page_steps(s))
 
     def refresh_image_path_sets(self) -> None:
+        self.previous_spreads.clear()
         self.image_index_by_path = {path: index for index, path in enumerate(self.image_paths)}
         self.image_path_set = set()
         for path in self.image_paths:
@@ -12875,6 +13033,14 @@ class MainWindow(QMainWindow):
             self.clear_prefetch_work_queue()
         profile_start = time.perf_counter()
         path = self.image_paths[self.current_index]
+        visible_paths = {p for _, p in self.current_display_index_entries()}
+        for previous in self.display_disk_probes.keys() - visible_paths:
+            self.display_disk_probes.pop(previous)
+        if not self.prepare_colorized_directory(path):
+            self.pending_display_options = (path, preserve_view, navigation, defer_work, scroll_thumbnail)
+            self.status_label.setText('Loading image...' if self.ui_language() == 'en' else '画像を読み込み中...')
+            self.update_page_position_slider()
+            return
         source, processed, state, skipped = self.image_state_for_display(path, front=True)
         secondary_source = QImage()
         secondary_processed = None
@@ -12908,18 +13074,18 @@ class MainWindow(QMainWindow):
             dual_page_reversed=self.dual_page_reversed(),
         )
         original_pixmap_key = self.original_pixmap_progress_key(self.display_source_path(path))
-        self.viewer.pixmap_prefetch_done_keys.add(original_pixmap_key)
+        self.viewer.mark_pixmap_ready(original_pixmap_key, self.viewer.source_image)
         self.prefetch_pixmap_plan_keys.add(original_pixmap_key)
         if processed is not None and not processed.isNull():
-            self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+            self.viewer.mark_pixmap_ready(self.pixmap_progress_key("processed", path), self.viewer.processed_image)
             self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", path))
         if secondary_index is not None:
             secondary_path = self.image_paths[secondary_index]
             secondary_original_pixmap_key = self.original_pixmap_progress_key(self.display_source_path(secondary_path))
-            self.viewer.pixmap_prefetch_done_keys.add(secondary_original_pixmap_key)
+            self.viewer.mark_pixmap_ready(secondary_original_pixmap_key, self.viewer.secondary_source_image)
             self.prefetch_pixmap_plan_keys.add(secondary_original_pixmap_key)
             if secondary_processed is not None and not secondary_processed.isNull():
-                self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", secondary_path))
+                self.viewer.mark_pixmap_ready(self.pixmap_progress_key("processed", secondary_path), self.viewer.secondary_processed_image)
                 self.prefetch_pixmap_plan_keys.add(self.pixmap_progress_key("processed", secondary_path))
         display_entries = self.current_display_index_entries()
         if len(display_entries) > 1:
@@ -12939,8 +13105,9 @@ class MainWindow(QMainWindow):
         self.record_profile("表示切替", (time.perf_counter() - profile_start) * 1000)
 
     def update_window_title(self, source: QImage | None = None, processed: QImage | None = None, skipped: bool | None = None) -> None:
-        if not self.image_paths:
-            self.setWindowTitle(APP_NAME)
+        if self.current_index < 0 or not self.image_paths:
+            folder = self.current_folder_path
+            self.setWindowTitle(f"{folder.name} (0 / {len(self.image_paths)}) - {APP_NAME}" if folder else APP_NAME)
             return
         path = self.image_paths[self.current_index]
         display_entries = self.current_display_index_entries()
@@ -12951,7 +13118,7 @@ class MainWindow(QMainWindow):
             for _index, entry_path in display_entries:
                 entry_source = source if entry_path == path and source is not None else self.load_original(self.display_source_path(entry_path))
                 entry_skipped = self.should_skip_realcugan(entry_path)
-                entry_processed = None if entry_skipped else (
+                entry_processed = (
                     processed
                     if entry_path == path and processed is not None
                     else self.processed_image_from_cache(self.processing_key(entry_path))
@@ -12998,8 +13165,32 @@ class MainWindow(QMainWindow):
             self.prefetching_original_paths.add(path)
         return QImage()
 
+    def display_cache_key(self, key: tuple) -> tuple:
+        if (
+            self.auto_scale_check.isChecked()
+            and self.use_scale_cache_check.isChecked()
+            and not self.archive_mode_active()
+            and self.skip_tall_check.isChecked()
+            and self.image_height_for_scale(Path(key[0])) >= self.skip_height_spin.value()
+        ):
+            # A different saved scale is for display, not a completed engine task.
+            return (
+                *key, self.normalized_path_text(self.display_source_path(Path(key[0]))),
+                self.saved_display_revisions.get(key[0], 0), 'saved_scale_display',
+            )
+        return key
+
     def processed_image_from_cache(self, key: tuple) -> QImage | None:
-        return self.processed_cache.get(key)
+        saved = self.processed_cache.get(self.display_cache_key(key))
+        return saved if saved is not None else self.processed_cache.get(key)
+
+    def discard_processed_image(self, key: tuple) -> None:
+        self.processed_cache.pop(key, None)
+        self.display_disk_probes.pop(Path(key[0]), None)
+        self.saved_display_revisions[key[0]] = self.saved_display_revisions.get(key[0], 0) + 1
+        for saved_key in list(self.processed_cache):
+            if saved_key[0] == key[0] and saved_key[-1] == 'saved_scale_display':
+                self.processed_cache.pop(saved_key, None)
 
     def cache_processed_image(self, key: tuple, image: QImage) -> None:
         if image.isNull():
@@ -13050,6 +13241,24 @@ class MainWindow(QMainWindow):
             entries.reverse()
         return entries
 
+    def wait_for_display_disk_result(self, path: Path, task: UpscaleTask, front: bool) -> bool:
+        if not task.read_cache or task.cache_path is None or is_hdr_image_path(task.engine_input):
+            return False
+        key = self.display_cache_key(task.key)
+        if key in self.processed_cache:
+            return False
+        probe = self.display_disk_probes.get(path)
+        if probe is not None and probe[0] == key:
+            return probe[1]
+        self.display_disk_probes[path] = (key, True)
+        self.prefetching_processed_keys.add(key)
+        self.queue_prefetch_io_task(
+            self.prefetch_generation, -99 if front else -98,
+            'processed_max' if key != task.key else 'processed',
+            key, str(path), str(task.cache_path),
+        )
+        return True
+
     def image_state_for_display(self, path: Path, front: bool = False) -> tuple[QImage, QImage | None, str, bool]:
         source_path = self.display_source_path(path)
         source = self.load_original(source_path)
@@ -13059,12 +13268,16 @@ class MainWindow(QMainWindow):
         if self.is_animated_source_or_display(path):
             return source, None, '対象外', True
         key = self.processing_key(path)
+        skipped = self.should_skip_realcugan(path)
+        waiting = (self.use_scale_cache_check.isChecked()
+                   and self.wait_for_display_disk_result(path, self.create_upscale_task(path), front))
         processed = self.processed_image_from_cache(key)
         if processed is not None and not processed.isNull():
             return source, processed, '処理済み', False
-        if self.should_skip_realcugan(path):
+        if skipped:
             return source, None, '対象外', True
-        # The engine worker also consumes the shared reader for an existing disk result.
+        if waiting:
+            return source, None, '読込中', False
         self.enqueue_realcugan(path, front=front, check_existing=False, prefetch_managed=True)
         return source, None, f'{self.engine_label()}待ち', False
 
@@ -13083,21 +13296,40 @@ class MainWindow(QMainWindow):
             self.page_scroll_timer.stop()
             return
         step = 1 if self.pending_page_steps > 0 else -1
-        index_step = step * self.page_navigation_span()
+        index_step = step * self.page_navigation_span(step)
+        previous = self.image_paths[self.current_index] if self.current_index >= 0 else None
         if self.show_relative_image(index_step):
+            if self.dual_page_enabled and step > 0 and previous is not None:
+                self.previous_spreads[self.image_paths[self.current_index]] = previous
             self.pending_page_steps -= step
             if self.pending_page_steps:
                 self.page_scroll_timer.start(max(0, self.page_interval_spin.value()))
         else:
             self.pending_page_steps = 0
 
-    def page_navigation_span(self) -> int:
+    def page_navigation_span(self, direction: int = 1) -> int:
         if not self.dual_page_enabled:
             return 1
-        return 2 if self.secondary_page_index() is not None else 1
+        if self.current_index < 0:
+            return 1
+        if direction > 0:
+            return 2 if self.secondary_page_index() is not None else 1
+        # A landscape page is displayed alone. Walk back over the preceding spread.
+        previous = self.previous_spreads.get(self.image_paths[self.current_index])
+        index = self.image_index_by_path.get(previous)
+        if index is not None:
+            distance = (self.current_index - index) % len(self.image_paths)
+            if distance in (1, 2) and (index < self.current_index or self.wrap_page_check.isChecked()):
+                return distance
+        end = self.current_index or (len(self.image_paths) if self.wrap_page_check.isChecked() else 0)
+        if end < 2 or any(self.dual_page_landscape_single_enabled(i) for i in (end - 1, end - 2)):
+            return 1
+        return 2
 
     def show_relative_image(self, step: int) -> bool:
-        next_index = self.current_index + step
+        if not self.image_paths:
+            return False
+        next_index = (0 if self.current_index < 0 and step < 0 else self.current_index) + step
         if next_index < 0 or next_index >= len(self.image_paths):
             if not self.wrap_page_check.isChecked():
                 return False
@@ -13199,6 +13431,7 @@ class MainWindow(QMainWindow):
         self.set_dual_page_enabled(self.dual_page_check.isChecked())
 
     def on_dual_page_landscape_changed(self) -> None:
+        self.previous_spreads.clear()
         if self.image_paths and self.dual_page_enabled:
             self.display_current_image(preserve_view=False, navigation=True)
         self.persist_config()
@@ -13207,6 +13440,7 @@ class MainWindow(QMainWindow):
         enabled = bool(enabled)
         changed = self.dual_page_enabled != enabled
         self.dual_page_enabled = enabled
+        self.previous_spreads.clear()
         if hasattr(self, "dual_page_check") and self.dual_page_check.isChecked() != enabled:
             self.dual_page_check.blockSignals(True)
             self.dual_page_check.setChecked(enabled)
@@ -14469,6 +14703,8 @@ class MainWindow(QMainWindow):
 
     def on_settings_tab_changed(self, index: int) -> None:
         self.config_data.settings_tab = SETTINGS_TAB_IDS[max(0, min(len(SETTINGS_TAB_IDS) - 1, index))]
+        if self.config_data.settings_tab == "novelai":
+            self.ensure_novelai_tab()
         self.persist_config()
 
     def on_engine_changed(self, *_args) -> None:
@@ -14519,6 +14755,7 @@ class MainWindow(QMainWindow):
     def on_processing_settings_changed(self) -> None:
         self.apply_engine_ui()
         self.persist_config()
+        self.display_disk_probes.clear()
         self.processed_cache.clear()
         self.prefetching_processed_keys.clear()
         self.prefetch_engine_done_paths.clear()
@@ -14527,6 +14764,10 @@ class MainWindow(QMainWindow):
         self.prefetch_generation += 1
         if self.image_paths:
             self.display_current_image()
+
+    def on_engine_prefetch_count_changed(self) -> None:
+        self.persist_config()
+        self.request_schedule_prefetch(0)
 
     def on_viewer_prefetch_changed(self) -> None:
         self.persist_config()
@@ -14546,6 +14787,7 @@ class MainWindow(QMainWindow):
 
     def on_colorized_cache_settings_changed(self) -> None:
         self.persist_config()
+        self.display_disk_probes.clear()
         self.original_cache.clear()
         self.image_height_cache.clear()
         self.processed_cache.clear()
@@ -14574,10 +14816,10 @@ class MainWindow(QMainWindow):
             self.persist_config()
 
     def force_reprocess(self) -> None:
-        if not self.image_paths:
+        if self.current_index < 0 or not self.image_paths:
             return
         path = self.image_paths[self.current_index]
-        self.processed_cache.pop(self.processing_key(path), None)
+        self.discard_processed_image(self.processing_key(path))
         self.viewer.set_processed(None)
         self.enqueue_realcugan(path, front=True, force=True)
 
@@ -14624,6 +14866,8 @@ class MainWindow(QMainWindow):
     def queue_prefetch_io_task(self, generation: int, priority: int, kind: str, key: object, source: str, target: str) -> None:
         epoch = self.image_io_epoch
         brightness = float(self.config_data.hdr_tonemap_brightness)
+        if kind == 'processed':
+            key = (*key, self.saved_display_revisions.get(key[0], 0), 'disk_read')
         token = (epoch, kind, key, brightness)
         with self.prefetch_io_lock:
             if token in self.prefetch_io_pending:
@@ -14649,12 +14893,11 @@ class MainWindow(QMainWindow):
             with self.prefetch_io_queue.mutex:
                 kept = []
                 for item in self.prefetch_io_queue.queue:
-                    if item[2] == self.image_io_epoch and item[5] in wanted:
+                    if item[2] == self.image_io_epoch and (item[5] in wanted or item[3] == 'colorized_directory'):
                         kept.append(item)
                     else:
                         self.prefetch_io_pending.discard((item[2], item[3], item[4], item[7]))
                 self.prefetch_io_queue.queue[:] = kept
-                import heapq
                 heapq.heapify(self.prefetch_io_queue.queue)
 
     def read_shared_image(self, path: Path, brightness: float) -> QImage:
@@ -14668,6 +14911,10 @@ class MainWindow(QMainWindow):
 
     def reset_image_io(self) -> None:
         self.image_io_epoch += 1
+        self.display_disk_probes.clear()
+        self.colorized_directory_files.clear()
+        self.pending_colorized_directories.clear()
+        self.directory_work.clear()
         self.clear_prefetch_io_queue()
         self.image_read_work.clear()
         self.image_read_work.limit = viewer_pixmap_cache_limit(self.config_data.viewer_prefetch_count)
@@ -14676,6 +14923,31 @@ class MainWindow(QMainWindow):
         self.failed_original_paths.clear()
         self.deferred_upscale_requests.clear()
         self.pending_display_options = None
+
+    def colorized_file_names(self, folder: Path):
+        try:
+            stamp = folder.stat().st_mtime_ns
+            def scan():
+                with os.scandir(folder) as entries:
+                    return frozenset(e.name.casefold() for e in entries if e.name.lower().endswith('_comfyui.png') and e.is_file())
+            return self.directory_work.compute(('colorized', folder, stamp), scan)
+        except OSError:
+            return frozenset()
+
+    def saved_scale_candidates(self, target: Path):
+        parent = target.parent.parent
+        prefix = target.parent.name.rsplit('_x', 1)[0]
+        def scan():
+            pattern = re.compile(re.escape(prefix) + r'_x([1-9][0-9]*)', re.IGNORECASE)
+            folders = []
+            with os.scandir(parent) as entries:
+                for entry in entries:
+                    match = pattern.fullmatch(entry.name)
+                    if match and entry.is_dir():
+                        folders.append((int(match[1]), Path(entry.path)))
+            return tuple(folder for _, folder in sorted(folders, reverse=True))
+        folders = self.directory_work.compute(('scale', parent, prefix, parent.stat().st_mtime_ns), scan)
+        return [folder / target.name for folder in folders]
 
     def _prefetch_io_worker_loop(self) -> None:
         GLImageView.set_background_worker_priority()
@@ -14688,7 +14960,11 @@ class MainWindow(QMainWindow):
                 if epoch != self.image_io_epoch:
                     continue
                 path = self.normalized_path(Path(source))
-                if kind == 'original':
+                if kind == 'colorized_directory':
+                    files = self.colorized_file_names(path)
+                    if not self.closing:
+                        self.signals.colorized_directory_ready.emit(epoch, path, files)
+                elif kind == 'original':
                     attempted_originals.append(path)
                     image = self.read_shared_image(path, brightness)
                     metadata[path] = (image.size(), is_animated_image_path(path))
@@ -14700,13 +14976,23 @@ class MainWindow(QMainWindow):
                         self.signals.animation_ready.emit(epoch, path, frames)
                 elif kind == 'metadata':
                     metadata[path] = (read_image_size(path), is_animated_image_path(path))
-                elif kind == 'processed' and isinstance(key, tuple):
+                elif kind in {'processed', 'processed_max'} and isinstance(key, tuple):
                     attempted_processed.append(key)
                     target_path = Path(target)
-                    if target_path.exists():
-                        image = self.read_shared_image(target_path, brightness)
+                    if kind == 'processed_max':
+                        target_paths = self.saved_scale_candidates(target_path)
+                    else:
+                        target_paths = [target_path]
+                    for candidate in target_paths:
+                        if not candidate.is_file():
+                            continue
+                        try:
+                            image = self.read_shared_image(candidate, brightness)
+                        except Exception:
+                            continue
                         if not image.isNull():
                             processed[key] = image
+                            break
             except Exception:
                 if kind in {'original', 'metadata'}:
                     metadata[self.normalized_path(Path(source))] = (QSize(), False)
@@ -14717,7 +15003,9 @@ class MainWindow(QMainWindow):
                 self.signals.prefetch_done.emit(epoch, originals, processed, attempted_originals, attempted_processed, metadata)
 
     def schedule_prefetch(self) -> None:
-        if not self.image_paths:
+        if self.current_index < 0 or not self.image_paths:
+            return
+        if not self.prepare_colorized_directory(self.image_paths[self.current_index], refresh=True):
             return
         self.prefetch_generation += 1
         self.prefetching_original_paths.clear()
@@ -14761,7 +15049,8 @@ class MainWindow(QMainWindow):
         else:
             self.colorize_plan = []
             self.colorize_done_paths.clear()
-        self.prune_prefetch_io_queue([*viewer_plan, *realcugan_plan, *self.deferred_upscale_requests])
+        displayed_paths = [p for _, p in self.current_display_index_entries()]
+        self.prune_prefetch_io_queue([*displayed_paths, *viewer_plan, *realcugan_plan, *self.deferred_upscale_requests])
         self.start_viewer_prefetch(viewer_plan)
         for position, path in enumerate(upscale_plan):
             self.enqueue_realcugan(
@@ -14771,10 +15060,6 @@ class MainWindow(QMainWindow):
                 check_skip=False,
                 prefetch_managed=True,
             )
-        displayed_paths = [
-            path
-            for _index, path in sorted(self.current_display_index_entries(), key=lambda entry: entry[0])
-        ]
         self.rebuild_work_queue([*upscale_plan, *displayed_paths])
         self.schedule_resample_prefetch(invalidate=True)
         self.update_prefetch_progress_bars()
@@ -14800,14 +15085,14 @@ class MainWindow(QMainWindow):
         processed_candidates: list[tuple[tuple, Path]] = []
         if not self.archive_mode_active() and self.use_scale_cache_check.isChecked():
             for path in viewer_plan:
-                if self.should_skip_realcugan(path):
-                    continue
                 input_path = self.normalized_path(self.display_source_path(path))
+                if is_hdr_image_path(input_path) or self.is_animated_source_or_display(path):
+                    continue
                 if self.auto_scale_check.isChecked() and input_path not in self.image_info_cache:
                     self.queue_image_info(input_path)
                     continue
                 task = self.create_upscale_task(path)
-                key = task.key
+                key = self.display_cache_key(task.key)
                 if key in self.processed_cache or key in self.prefetching_processed_keys:
                     continue
                 if task.cache_path is None:
@@ -14848,7 +15133,7 @@ class MainWindow(QMainWindow):
             self.queue_prefetch_io_task(
                 generation,
                 priority_rank.get(source_path, len(priority_rank)) + 1,
-                "processed",
+                'processed_max' if key[-1] == 'saved_scale_display' else 'processed',
                 key,
                 key[0],
                 str(processed_path),
@@ -14885,6 +15170,12 @@ class MainWindow(QMainWindow):
     ) -> None:
         if getattr(self, 'closing', False) or generation != self.image_io_epoch:
             return
+        def valid_disk_key(key):
+            return key[-1] != 'disk_read' or key[-2] == self.saved_display_revisions.get(key[0], 0)
+        def result_key(key):
+            return key[:-2] if key[-1] == 'disk_read' else key
+        processed = {result_key(k): img for k, img in processed.items() if valid_disk_key(k)}
+        attempted_processed = [result_key(k) for k in attempted_processed if valid_disk_key(k)]
         for path, info in metadata.items():
             self.image_info_cache[path] = info
             if info[0].isValid():
@@ -14894,7 +15185,11 @@ class MainWindow(QMainWindow):
                 self.failed_original_paths.add(path)
         for path, options in list(self.deferred_upscale_requests.items()):
             input_path = self.normalized_path(self.display_source_path(path))
+            if not self.prepare_colorized_directory(path):
+                continue
             if path not in self.image_info_cache or input_path not in self.image_info_cache:
+                self.queue_image_info(path)
+                self.queue_image_info(input_path)
                 continue
             self.deferred_upscale_requests.pop(path, None)
             if not options.get('prefetch_managed') or path in self.image_path_set:
@@ -14903,8 +15198,13 @@ class MainWindow(QMainWindow):
                     return
         for path in attempted_originals:
             self.prefetching_original_paths.discard(path)
+        finished_visible_probes = set()
         for key in attempted_processed:
             self.prefetching_processed_keys.discard(key)
+            path = Path(key[0])
+            if self.display_disk_probes.get(path) == (key, True):
+                self.display_disk_probes[path] = (key, False)
+                finished_visible_probes.add(path)
         started = time.perf_counter()
         current_paths = self.image_path_set
         current_display_paths = set(self.prefetch_viewer_display_paths)
@@ -14923,11 +15223,11 @@ class MainWindow(QMainWindow):
         added_processed = 0
         engine_plan_paths = {self.normalized_path(path) for path in self.prefetch_engine_plan}
         for key, image in processed.items():
-            if self.is_current_processing_key(key, current_path_strings) and key not in self.processed_cache:
+            if self.is_current_display_cache_key(key, current_path_strings) and key not in self.processed_cache:
                 self.cache_processed_image(key, image)
                 added_processed += 1
             processed_source = self.normalized_path(Path(key[0]))
-            if processed_source in engine_plan_paths:
+            if processed_source in engine_plan_paths and self.is_current_processing_key(key, current_path_strings):
                 self.prefetch_engine_done_paths.add(processed_source)
         warm_items: list[tuple[object, QImage]] = [
             (self.original_pixmap_progress_key(path), image)
@@ -14937,7 +15237,7 @@ class MainWindow(QMainWindow):
         warm_items.extend(
             (self.pixmap_progress_key("processed", Path(key[0])), image)
             for key, image in processed.items()
-            if self.is_current_processing_key(key, current_path_strings) and not image.isNull()
+            if self.is_current_display_cache_key(key, current_path_strings) and not image.isNull()
         )
         if warm_items:
             self.prefetch_pixmap_plan_keys.update(key for key, _image in warm_items)
@@ -14958,10 +15258,17 @@ class MainWindow(QMainWindow):
         elif self.image_paths and self.current_index >= 0:
             visible = {p for _, p in self.current_display_index_entries()}
             visible_sources = {self.normalized_path(self.display_source_path(path)) for path in visible}
-            if any(Path(key[0]) in visible for key in processed) or bool(visible_sources.intersection(originals)):
+            if (visible.intersection(finished_visible_probes) or visible_sources.intersection(originals)
+                    or any(Path(key[0]) in visible for key in processed)):
                 self.display_current_image(preserve_view=True)
         if metadata and self.auto_scale_check.isChecked() and not self.prefetch_timer.isActive():
             self.request_schedule_prefetch()
+
+    def is_current_display_cache_key(self, key: tuple, current_paths: set[str]) -> bool:
+        if not key or key[0] not in current_paths:
+            return False
+        expected = self.processing_settings_tuple(Path(key[0]))
+        return key == expected or key == self.display_cache_key(expected)
 
     def is_current_processing_key(self, key: tuple, current_paths: set[str] | None = None) -> bool:
         if not key:
@@ -15018,7 +15325,7 @@ class MainWindow(QMainWindow):
         path = self.normalized_path(path)
         input_path = self.normalized_path(self.display_source_path(path))
         missing = [p for p in {path, input_path} if p not in self.image_info_cache]
-        if missing:
+        if not self.prepare_colorized_directory(path) or missing:
             previous = self.deferred_upscale_requests.get(path)
             if previous is not None and (
                 (previous.get('force') and not force)
@@ -15048,6 +15355,12 @@ class MainWindow(QMainWindow):
         if check_existing and not force and task.read_cache and task.cache_path is not None and task.cache_path.exists():
             return
         if check_skip and self.should_skip_realcugan(path):
+            return
+        if force:
+            self.display_disk_probes[path] = (self.display_cache_key(task.key), False)
+        if (prefetch_managed and not force and self.use_scale_cache_check.isChecked()
+                and path in (p for _, p in self.current_display_index_entries())
+                and self.wait_for_display_disk_result(path, task, front)):
             return
         if self.processing_task_keys.get(path) == task.key:
             return
@@ -15325,8 +15638,8 @@ class MainWindow(QMainWindow):
                     else None
                 )
                 if normalized == current_normalized:
-                    self.viewer.set_processed(result["image"], page_slot=0)
-                    self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+                    self.viewer.set_processed(self.processed_image_from_cache(key), page_slot=0)
+                    self.viewer.mark_pixmap_ready(self.pixmap_progress_key("processed", path), self.viewer.processed_image)
                     if secondary_index is not None:
                         display_entries = self.current_display_index_entries()
                         name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
@@ -15335,8 +15648,8 @@ class MainWindow(QMainWindow):
                         self.status_label.setText(f"{self.current_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {self.display_name(path)}")
                     self.update_window_title()
                 elif secondary_normalized is not None and normalized == secondary_normalized:
-                    self.viewer.set_processed(result["image"], page_slot=1)
-                    self.viewer.pixmap_prefetch_done_keys.add(self.pixmap_progress_key("processed", path))
+                    self.viewer.set_processed(self.processed_image_from_cache(key), page_slot=1)
+                    self.viewer.mark_pixmap_ready(self.pixmap_progress_key("processed", path), self.viewer.secondary_processed_image)
                     display_entries = self.current_display_index_entries()
                     name_text = " / ".join(self.display_name(entry_path) for _entry_index, entry_path in display_entries)
                     self.status_label.setText(f"{self.current_index + 1}-{secondary_index + 1}/{len(self.image_paths)} {self.state_text('処理済み')}: {name_text}")
@@ -15365,7 +15678,12 @@ class MainWindow(QMainWindow):
         return folder / self.output_name_for_source(source)
 
     def output_name_for_source(self, source: Path, output_format: str | None = None) -> str:
-        if is_avif_image_path(source):
+        # A name such as page.jpg.png already occupies the output name of page.jpg.
+        # Continue the suffix chain so every PNG input keeps its own result.
+        stem = source
+        while stem.suffix.lower() == ".png":
+            stem = stem.with_suffix("")
+        if is_avif_image_path(source) or (stem != source and stem.suffix.lower() in IMAGE_EXTENSIONS):
             return f"{source.name}.png"
         output_format = output_format or self.current_output_format()
         if output_format == OUTPUT_FORMAT_PRESERVE or source.suffix.lower() == ".png":
@@ -15407,7 +15725,7 @@ class MainWindow(QMainWindow):
             return APP_DIR
         return exe_path.parent if exe_path.is_file() else APP_DIR
 
-    def collect_images(self, folder: Path) -> list[Path]:
+    def collect_images(self, folder: Path, resolved_links: dict[Path, Path] | None = None) -> list[Path]:
         folder = folder.resolve()
         images: list[Path] = []
         try:
@@ -15417,7 +15735,13 @@ class MainWindow(QMainWindow):
                         continue
                     suffix = Path(entry.name).suffix.lower()
                     if suffix in IMAGE_EXTENSIONS:
-                        images.append(folder / entry.name)
+                        path = folder / entry.name
+                        images.append(path)
+                        if resolved_links is not None and entry.is_symlink():
+                            try:
+                                resolved_links[path] = path.resolve()
+                            except OSError:
+                                pass
         except OSError:
             return []
         return windows_logical_sorted(images, lambda path: path.name)
@@ -15431,6 +15755,7 @@ class MainWindow(QMainWindow):
     def open_location_async(self, path: Path, archive: bool = False, navigation: str = '') -> None:
         self.location_request_serial += 1
         serial = self.location_request_serial
+        restore_history = self.folder_history_enabled()
         self.status_label.setText('Loading...' if self.ui_language() == 'en' else '読み込み中...')
         def worker():
             temp_dir = None
@@ -15464,7 +15789,9 @@ class MainWindow(QMainWindow):
                     images, names = self.extract_archive_images(target, temp_dir)
                     result = dict(serial=serial, path=target, images=images, names=names, temp_dir=temp_dir)
                 else:
-                    result = dict(serial=serial, path=target, images=self.collect_images(target))
+                    links = {} if restore_history else None
+                    images = self.collect_images(target, links)
+                    result = dict(serial=serial, path=target, images=images, resolved_links=links)
             except Exception as exc:
                 if temp_dir is not None:
                     shutil.rmtree(temp_dir, ignore_errors=True)
@@ -15503,7 +15830,7 @@ class MainWindow(QMainWindow):
             self.set_archive_options_enabled(False)
             self.set_image_list(images, 0)
         elif images:
-            self.set_image_list(images, self.folder_history_index(path, images))
+            self.set_image_list(images, self.folder_history_index(path, images, result.get('resolved_links')))
             self.config_data.last_dir = str(path)
             self.persist_config()
         else:
@@ -15677,7 +16004,7 @@ class MainWindow(QMainWindow):
             entries = list(folder.iterdir())
         except OSError:
             return []
-        candidate_names = {source.name, self.output_name_for_source(source, OUTPUT_FORMAT_PNG)}
+        candidate_names = {self.output_name_for_source(source, fmt) for fmt in (OUTPUT_FORMAT_PRESERVE, OUTPUT_FORMAT_PNG)}
         for entry in entries:
             if not entry.is_dir() or not self.is_raiv_scale_folder(entry):
                 continue
@@ -15688,7 +16015,8 @@ class MainWindow(QMainWindow):
         return paths
 
     def delete_current_image(self) -> None:
-        if self.archive_mode_active() or not self.image_paths or self.current_index < 0:
+        if (self.archive_mode_active() or not self.image_paths or self.current_index < 0
+                or self.pending_display_options is not None):
             return
         source = self.normalized_path(self.image_paths[self.current_index])
         if not source.is_file():
@@ -15714,7 +16042,9 @@ class MainWindow(QMainWindow):
             finally:
                 self.fullscreen_cursor_hide_suspended = False
                 self._apply_fullscreen_cursor()
-            if answer != QMessageBox.Yes:
+            if (answer != QMessageBox.Yes or self.pending_display_options is not None
+                    or not 0 <= self.current_index < len(self.image_paths)
+                    or self.image_paths[self.current_index] != source):
                 return
         deleted_processing_key = self.processing_key(source)
         next_index = self.current_index
@@ -15726,7 +16056,7 @@ class MainWindow(QMainWindow):
         self.refresh_image_path_sets()
         self.original_cache.pop(source, None)
         self.image_height_cache.pop(source, None)
-        self.processed_cache.pop(deleted_processing_key, None)
+        self.discard_processed_image(deleted_processing_key)
         self.viewer.pixmap_cache.clear()
         self.viewer.clear_pixmap_prefetch_state()
         self.rebuild_thumbnail_items()

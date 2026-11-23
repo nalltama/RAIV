@@ -105,7 +105,7 @@ Gigapixel AIはRAIVへ同梱されません。利用にはTopaz Gigapixel AIの�
 
 開発者はGigapixel AIを保有していないため、この連携機能は公式ドキュメントで確認できる仕様に基づいて実装しており、実機での動作は未確認です。
 
-拡大結果の保存形式は、エンジンごとに `PNG`（既定）または `元画像の形式を引き継ぐ` から選べます。PNGを選んだ場合は常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGANとReal-ESRGANはJPG/PNG/WebPを使い、Gigapixel AIはCLIの `preserve` 指定で対応する入力形式を引き継ぎます。PNG保存では、同じフォルダに同名で拡張子だけが異なる元画像があっても衝突しないよう、元の拡張子を残した名前へ `.png` を付けます（例: `image.webp.png`）。
+拡大結果の保存形式は、エンジンごとに `PNG`（既定）または `元画像の形式を引き継ぐ` から選べます。PNGを選んだ場合は常にPNGで保存します。元画像の形式を引き継ぐ場合、Real-CUGANとReal-ESRGANはJPG/PNG/WebPを使い、Gigapixel AIはCLIの `preserve` 指定で対応する入力形式を引き継ぎます。PNG保存では、同じフォルダに同名で拡張子だけが異なる元画像があっても衝突しないよう、元の拡張子を残した名前へ `.png` を付けます（例: `image.webp.png`）。通常の `page.png` の結果は `page.png` のままです。`page.jpg` と `page.jpg.png` の結果は、それぞれ `page.jpg.png` と `page.jpg.png.png` になります。旧版で同じ保存名を共有していた結果は自動移行しません。
 
 Real-CUGAN はアニメ/イラスト画像向けに学習・調整された超解像モデルです。写真や一般画像では Real-ESRGAN が適する場合がありますが、アニメ、イラスト、漫画調の画像では、線や塗りの質感を保ちやすい Real-CUGAN の方が自然で高品質な結果になる可能性があります。まず Real-CUGAN を試し、必要に応じて Real-ESRGAN のアニメ向けモデルと比較してください。
 
@@ -114,7 +114,7 @@ Real-CUGANモデル:
 - `Standard`: 従来の標準モデル。2倍/3倍/4倍に対応
 - `Pro`: リンギング、テクスチャの塗り潰し、異常ノイズの増幅を抑えるよう調整されたモデル。2倍/3倍に対応
 
-Standardの2倍ではノイズ値-1/0/1/2/3、Standardの3倍/4倍とProでは-1/0/3を選択できます。-1は保守モデル、0はノイズ除去なし、1/2/3は数値が大きいほど強いノイズ除去です。
+手動倍率ではStandardの2倍でノイズ値-1/0/1/2/3、Standardの3倍/4倍とProで-1/0/3を選択できます。自動倍率では倍率選択を優先し、すべての倍率で使用できる-1/0/3を表示します。-1は保守モデル、0はノイズ除去なし、1/2/3は数値が大きいほど強いノイズ除去です。
 
 Real-ESRGAN モデル:
 
@@ -138,7 +138,7 @@ Real-ESRGAN モデル:
 - 指定縦解像度以上の画像を拡大処理しない設定
 - 縦サイズ閾値へ届く最小倍率を画像ごとに自動選択
 - 拡大結果を倍率フォルダへ保存
-- 倍率フォルダがあれば表示に使う。Real-CUGANのStandard／ProとTTAは同じフォルダ名を使用します。タイル間同期は従来どおり設定別のフォルダを使用します
+- 倍率フォルダがあれば表示に使う。縦サイズ閾値以上で新規拡大の対象外になっても、保存済み画像は表示に使用します。自動倍率がオンで閾値以上の場合、同じエンジン設定で使う倍率フォルダの保存画像から最も高い倍率を選びます。Real-CUGANのStandard／ProとTTAは同じフォルダ名を使用します。タイル間同期は従来どおり設定別のフォルダを使用します
 
 全般:
 
@@ -206,7 +206,7 @@ NovelAI生成:
 - アカウント情報の手動更新と生成成功後の自動更新により、契約プラン、有効状態、残りAnlasを表示。取得成功時はOpus判定を推定消費Anlasへ反映し、取得に失敗した場合は手動のOpus設定を使用
 - `novelai-sdk` による推定消費Anlas表示（実際の消費量と完全一致する保証はありません）
 - V5の透過背景生成。生成画像のアルファチャンネルは、RAIVで選択中の背景色に重ねて表示
-- 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入。自動表示は、生成画像の受信時ではなく、その画像の拡大処理が正常に完了してから処理済み画像へ切り替えるようにも設定できます
+- 生成後の自動表示と選択中の拡大エンジンへの処理キュー投入。自動表示は、生成画像の受信時ではなく、その画像の拡大処理が正常に完了してから処理済み画像へ切り替えるようにも設定できます。自動表示がオフでも、現在開いているフォルダが生成先なら一覧を更新します。空フォルダの最初の画像は、選択すると表示します
 - 生成設定を画像ごとのJSONサイドカーに保存
 - NovelAI生成画像のPNGメタデータをインポートし、プロンプト、除外したい要素、品質タグ、除外プリセット、モデル、サンプラー、ノイズスケジュール、画像サイズ、ステップ数、プロンプトガイダンス、シード値などを生成設定へ反映。通常のPNGメタデータに加え、NovelAI SDKが対応する埋め込みメタデータも読み込みます。V5画像は埋め込みモデルハッシュからFull／Curatedを判別します
 
@@ -429,7 +429,7 @@ Gigapixel AI is not bundled with RAIV. It requires an installed copy of Topaz Gi
 
 The developer does not own Gigapixel AI. This integration is implemented from specifications available in the official documentation and has not been verified with an installed copy of the product.
 
-For each engine, choose `PNG` (the default) or `Preserve source format` for saved processed results. PNG always saves PNG. When preserving the source format, Real-CUGAN and Real-ESRGAN use JPG/PNG/WebP, while Gigapixel AI uses its CLI `preserve` option for supported input formats. To avoid collisions between originals with the same name but different extensions, PNG results retain the original extension in the filename before adding `.png` (for example, `image.webp.png`).
+For each engine, choose `PNG` (the default) or `Preserve source format` for saved processed results. PNG always saves PNG. When preserving the source format, Real-CUGAN and Real-ESRGAN use JPG/PNG/WebP, while Gigapixel AI uses its CLI `preserve` option for supported input formats. To avoid collisions between originals with the same name but different extensions, PNG results retain the original extension in the filename before adding `.png` (for example, `image.webp.png`). A plain `page.png` keeps its name. The results for `page.jpg` and `page.jpg.png` are named `page.jpg.png` and `page.jpg.png.png`, respectively. Existing results that shared a filename in older versions are not migrated automatically.
 
 Real-CUGAN is trained and tuned for anime/illustration images. Real-ESRGAN may be better for photos and general images, but for anime, illustration, and manga-like artwork, Real-CUGAN is more likely to preserve linework and flat-color texture naturally. Try Real-CUGAN first for those images, then compare it with Real-ESRGAN's anime-oriented models if needed.
 
@@ -438,7 +438,7 @@ Real-CUGAN models:
 - `Standard`: the previous standard model, supporting 2x/3x/4x
 - `Pro`: tuned to reduce ringing, texture smearing, and abnormal noise amplification, supporting 2x/3x
 
-Standard at 2x supports denoise values -1/0/1/2/3. Standard at 3x/4x and Pro support -1/0/3. -1 selects the conservative model, 0 disables denoising, and 1/2/3 apply progressively stronger denoising.
+With manual scaling, Standard at 2x supports denoise values -1/0/1/2/3. Standard at 3x/4x and Pro support -1/0/3. Automatic scaling offers -1/0/3 so every available scale has a matching model. -1 selects the conservative model, 0 disables denoising, and 1/2/3 apply progressively stronger denoising.
 
 Real-ESRGAN models:
 
@@ -462,7 +462,7 @@ Engine settings:
 - Skip processing for images above a specified vertical resolution
 - Automatically choose the smallest per-image scale that reaches the vertical threshold
 - Save processed images to a scale folder
-- Use an existing scale folder as display cache. Real-CUGAN Standard/Pro and TTA share the same folder name. Tile synchronization continues to use separate folders for each mode
+- Use an existing scale folder as display cache, including for images excluded from new upscaling by the vertical threshold. With automatic scale enabled, images at or above the threshold use the highest saved scale available in the folders for the same engine settings. Real-CUGAN Standard/Pro and TTA share the same folder name. Tile synchronization continues to use separate folders for each mode
 
 General:
 
@@ -530,7 +530,7 @@ NovelAI Generation:
 - Manually refresh account information and automatically refresh it after successful generation to show the subscription tier, active status, and remaining Anlas. A successful lookup applies the detected Opus status to the Anlas estimate; the manual Opus setting remains available as a fallback when lookup fails.
 - Estimated Anlas cost using `novelai-sdk` (not guaranteed to exactly match the actual charge)
 - V5 transparent-background generation. RAIV displays the resulting alpha channel over the selected background color.
-- Automatically display generated images and enqueue them for the selected upscaling engine. Auto display can wait for that image's upscale to complete successfully before switching to the processed image.
+- Automatically display generated images and enqueue them for the selected upscaling engine. Auto display can wait for that image's upscale to complete successfully before switching to the processed image. With auto display off, generation refreshes the list if the output folder is currently open. In a previously empty folder, select the first image to display it.
 - Save generation settings as a JSON sidecar for each generated image
 - Import PNG metadata from NovelAI-generated images and apply prompt, undesired content, quality tags, undesired content preset, model, sampler, noise schedule, size, steps, prompt guidance, seed, and related settings. In addition to standard PNG metadata, RAIV reads embedded metadata supported by the NovelAI SDK. V5 images are identified as Full or Curated from their embedded model hash.
 
